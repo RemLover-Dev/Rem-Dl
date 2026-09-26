@@ -1224,6 +1224,14 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             "nekosia": {"safe", "sensitive"},
             "waifu.im": {"safe", "explicit"},
             "pixiv": {"safe", "explicit"},
+            "zerochan": {"safe"},
+            "nekos.best": {"safe"},
+            "nekos_best": {"safe"},
+            "nekos.life": {"safe"},
+            "nekos_life": {"safe"},
+            "anime_dl": {"safe"},
+            "eshuushuu": {"safe"},
+            "pinterest": {"safe"},
         }
         rating_aliases = {
             "safe": ["safe", "rating:safe", "general", "rating:general", "rating:g"],
@@ -1236,9 +1244,13 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             # ponytail: rule34 is all-explicit with no rating in path or tags
             if site == "rule34" and "explicit" in rating_filters:
                 return True
-            # ponytail: pinterest has no rating system — treated as all-safe
-            if site == "pinterest" and "safe" in rating_filters:
-                return True
+            # Safe-only / SFW imageboards and sources:
+            is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
+            if is_inherently_safe and "safe" in rating_filters:
+                fpl = img.get("filepath", "").lower()
+                all_tags = [t.lower() for t in _get_all_tags(img)]
+                if not any(exp in fpl or any(exp in t for t in all_tags) for exp in ("explicit", "nsfw", "rating:e", "r18")):
+                    return True
             fpl = img.get("filepath", "").lower()
             all_tags = _get_all_tags(img)
             for rf in rating_filters:

@@ -302,7 +302,7 @@
                     <div class="gallery-dropdown">
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('sourceDropdown')">All Sources ▾</button>
                         <div id="sourceDropdown" class="gallery-dropdown-menu">
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
                         </div>
                     </div>
                     <input type="text" id="gallerySearch" placeholder="Search tags, filename..." onkeydown="if(event.key==='Enter')loadGallery(1)">
@@ -316,30 +316,34 @@
                     <div class="gallery-dropdown">
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('typeDropdown')">All Types ▾</button>
                         <div id="typeDropdown" class="gallery-dropdown-menu">
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>All</span><input type="checkbox" value="" checked></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>Images</span><input type="checkbox" value="image"></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>GIFs</span><input type="checkbox" value="gif"></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>Videos</span><input type="checkbox" value="video"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Images</span><input type="checkbox" value="image" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>GIFs</span><input type="checkbox" value="gif" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Videos</span><input type="checkbox" value="video" checked></div>
                         </div>
                     </div>
                     <div class="gallery-dropdown">
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('ratingDropdown')">All Ratings ▾</button>
                         <div id="ratingDropdown" class="gallery-dropdown-menu">
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>All</span><input type="checkbox" value="" checked></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>Safe</span><input type="checkbox" value="safe"></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>Sensitive</span><input type="checkbox" value="sensitive"></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>Questionable</span><input type="checkbox" value="questionable"></div>
-                            <div class="dd-item" onclick="toggleCheck(this)"><span>NSFW</span><input type="checkbox" value="explicit"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="safe" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="sensitive" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="questionable" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="explicit" checked></div>
                         </div>
                     </div>
+                    <button id="gallerySelectModeBtn" class="gallery-select-toggle-btn" onclick="toggleSelectMode()" title="Select Mode: choose multiple images to copy or delete"><svg width="1.15em" height="1.15em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.15em;"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="2"/><path d="M8 12l3 3 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <span>Select</span></button>
+                    <button id="galleryBlurBtn" class="gallery-blur-btn active" onclick="toggleGalleryBlur()" title="Toggle NSFW blur protection"><span class="blur-icon">🔞</span> <span>Blur NSFW</span></button>
                     <button id="galleryFavBtn" class="gallery-fav-btn" onclick="toggleFavFilter()" title="Favorites only"><svg width="1.3em" height="1.3em" viewBox="-1 -1 18 18" shape-rendering="geometricPrecision" style="display:block; vertical-align:middle;"><path fill="currentColor" stroke="none" d="M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z"/></svg></button>
                     <button class="action-btn" onclick="rescanGallery()" title="Scan download folder for new images" style="display:inline-flex; align-items:center; gap:6px;"><svg width="1.2em" height="1.2em" viewBox="0 0 24 24" fill="none" style="display:block;"><path fill="currentColor" d="M12 3c2.4856 0.0001 4.735 1.00787 6.3633 2.63574l0.9297 -0.92871c0.6299 -0.62982 1.7069 -0.18374 1.707 0.70703V9c0 0.55228 -0.4477 1 -1 1h-3.5859c-0.8908 -0.00012 -1.3369 -1.07709 -0.7071 -1.70703l1.2422 -1.24317C15.6821 5.78291 13.9319 5.0001 12 5c-3.86582 0.0002 -7 3.13413 -7 7 0 3.8659 3.13418 6.9998 7 7 3.5687 -0.0002 6.5158 -2.6721 6.9463 -6.124 0.0685 -0.5479 0.5683 -0.9365 1.1162 -0.8682 0.5477 0.0687 0.9364 0.5684 0.8682 1.1162C20.3768 17.5644 16.5901 20.9998 12 21c-4.97039 -0.0002 -9 -4.0296 -9 -9 0 -4.97044 4.02961 -8.9998 9 -9"></path></svg></button>
                 </div>
                 <div id="gallerySelectBar" class="gallery-select-bar" style="display:none">
-                    <span id="gallerySelectCount" class="gallery-select-count"></span>
-                    <button class="action-btn" onclick="selectCopy()">Copy</button>
-                    <button class="action-btn stop-btn" onclick="selectDelete()">Delete</button>
-                    <button class="action-btn" onclick="exitSelectMode()">Exit</button>
+                    <span id="gallerySelectCount" class="gallery-select-count">0 selected</span>
+                    <button class="action-btn" onclick="selectAllCurrentPage()" title="Select all on this page">Select Page</button>
+                    <button class="action-btn" onclick="clearSelection()" title="Deselect all">Clear</button>
+                    <button class="action-btn" onclick="selectCopy()" title="Copy selected images to clipboard"><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none" style="vertical-align:-0.15em;"><path fill="currentColor" fill-rule="evenodd" d="M17.55 0.68C19.06 0.59 21.21 0.5 24 0.5s4.94 0.09 6.45 0.18c0.91 0.06 1.73 0.43 2.34 1.01 1.97 0.09 3.63 0.2 4.98 0.31 3.52 0.29 6.26 3 6.55 6.54 0.27 3.26 0.54 8.44 0.54 15.96s-0.27 12.7-0.54 15.96c-0.29 3.54-3.03 6.25-6.55 6.54-3.05 0.25-7.69 0.5-13.91 0.5s-10.86-0.25-13.91-0.5c-3.52-0.29-6.27-3-6.55-6.54C3.27 37.2 3 32.02 3 24.5s0.27-12.7 0.54-15.96c0.29-3.54 3.03-6.25 6.55-6.54 1.35-0.11 3.01-0.22 4.98-0.31 0.61-0.58 1.42-0.96 2.34-1.01zM14.16 5.74c-1.45 0.08-2.69 0.17-3.74 0.25-1.59 0.13-2.77 1.31-2.89 2.88C7.27 12.01 7 17.09 7 24.5s0.27 12.49 0.53 15.63c0.12 1.57 1.3 2.75 2.89 2.88 2.94 0.24 7.47 0.49 13.58 0.49s10.64-0.25 13.58-0.49c1.59-0.13 2.77-1.31 2.89-2.88 0.26-3.14 0.53-8.22 0.53-15.63s-0.27-12.49-0.53-15.63c-0.12-1.57-1.3-2.75-2.89-2.88-1.05-0.08-2.29-0.17-3.74-0.25-0.03 0.45-0.07 0.87-0.11 1.25-0.16 1.72-1.48 3.11-3.25 3.26-1.41 0.13-3.53 0.25-6.48 0.25s-5.08-0.12-6.48-0.25c-1.77-0.15-3.09-1.54-3.25-3.26-0.04-0.38-0.08-0.8-0.11-1.25z" clip-rule="evenodd"/></svg> Copy</button>
+                    <button class="action-btn stop-btn" onclick="selectDelete()" title="Delete selected images from disk"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.15em;"><path fill="currentColor" d="M15.22 0c0.22 0 0.44 0.07 0.61 0.21 0.18 0.14 0.3 0.33 0.36 0.55L16.62 3H24v2h-3v16c0 0.8-0.32 1.56-0.88 2.12S18.8 24 18 24H6c-0.8 0-1.56-0.32-2.12-0.88C3.32 22.56 3 21.8 3 21V5H0V3h7.38L7.81 0.76c0.05-0.22 0.18-0.41 0.36-0.55C8.34 0.07 8.56 0 8.78 0zM8 19h2V8H8zm6-11v11h2V8z"/></svg> Delete</button>
+                    <button class="action-btn" onclick="exitSelectMode()" title="Exit select mode">✕ Done</button>
                 </div>
                 <div id="galleryGrid"></div>
                 <div id="galleryPagination" class="gallery-pagination"></div>

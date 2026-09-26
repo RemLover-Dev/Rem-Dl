@@ -1940,6 +1940,10 @@ window.onload = async function () {
     } catch (e) {}
 
     await _startupTail;
+    const gGrid = document.getElementById("galleryGrid");
+    if (gGrid) gGrid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    const gBlurBtn = document.getElementById("galleryBlurBtn");
+    if (gBlurBtn) gBlurBtn.classList.toggle("active", galleryBlurNsfw);
     loadGallery();
     populateGallerySiteFilter();
 };
@@ -2063,7 +2067,10 @@ function openTab(tabName, btn) {
     btn.classList.add("active");
     updateBackground(tabName);
     if (tabName === "Gallery") {
-        // re-measure rows now that the grid is actually visible
+        const grid = document.getElementById("galleryGrid");
+        if (grid) grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+        const blurBtn = document.getElementById("galleryBlurBtn");
+        if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
         clearTimeout(_resizeTimer);
         _resizeTimer = setTimeout(() => loadGallery(), 60);
     }
@@ -2547,14 +2554,113 @@ const gallerySelected = new Map(); // id -> filepath snapshot (survives search/f
 let _dragPaint = false;
 let _dragSelect = true;
 let _dragSuppressClick = false;
-const SOURCE_RATINGS = { safebooru: ['safe'], danbooru: ['safe', 'sensitive', 'questionable', 'explicit'], gelbooru: ['safe', 'sensitive', 'questionable', 'explicit'], gsbooru: ['safe', 'sensitive', 'questionable', 'explicit'], konachan: ['safe', 'questionable', 'explicit'], yande: ['safe', 'questionable', 'explicit'], sankaku: ['safe', 'questionable', 'explicit'], rule34: ['explicit'], nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'], nekosia: ['safe', 'sensitive'], 'waifu.im': ['safe', 'explicit'], pinterest: ['safe'], pixiv: ['safe', 'explicit'] };
-// ... [rest of gallery code stays intact] ...
+let galleryBlurNsfw = localStorage.getItem('gallery_blur_nsfw') !== 'false';
+function toggleGalleryBlur() {
+    galleryBlurNsfw = !galleryBlurNsfw;
+    localStorage.setItem('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
+    const btn = document.getElementById("galleryBlurBtn");
+    if (btn) btn.classList.toggle("active", galleryBlurNsfw);
+    const grid = document.getElementById("galleryGrid");
+    if (grid) grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+}
+
+function getGalleryImageRating(img) {
+    if (!img) return "safe";
+    let allTags = [];
+    let tagsDict = normalizeTags(img.tags || {});
+    TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
+    let pLow = ((img.filepath || img.filename || "") + " " + allTags.join(' ')).toLowerCase();
+    let siteLower = (img.site || "").toLowerCase();
+    if (siteLower === "rule34") return "explicit";
+    if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e') || pLow.includes('r18') || pLow.includes('/nsfw')) return "explicit";
+    if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive') || pLow.includes('suggestive') || pLow.includes('rating:s')) return "sensitive";
+    if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q') || pLow.includes('borderline')) return "questionable";
+    return "safe";
+}
+
+function toggleSelectMode() {
+    if (gallerySelectMode) {
+        exitSelectMode();
+    } else {
+        gallerySelectMode = true;
+        updateSelectBar();
+    }
+}
+
+function selectAllCurrentPage() {
+    if (!galleryState.images) return;
+    galleryState.images.forEach(img => {
+        gallerySelected.set(img.id, img.filepath || "");
+    });
+    document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.add('selected'));
+    updateSelectBar();
+}
+
+function clearSelection() {
+    gallerySelected.clear();
+    document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.remove('selected'));
+    updateSelectBar();
+}
+
+const SOURCE_RATINGS = {
+    safebooru: ['safe'],
+    danbooru: ['safe', 'sensitive', 'questionable', 'explicit'],
+    gelbooru: ['safe', 'sensitive', 'questionable', 'explicit'],
+    gsbooru: ['safe', 'sensitive', 'questionable', 'explicit'],
+    konachan: ['safe', 'questionable', 'explicit'],
+    yande: ['safe', 'questionable', 'explicit'],
+    sankaku: ['safe', 'questionable', 'explicit'],
+    rule34: ['explicit'],
+    nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'],
+    nekosia: ['safe', 'sensitive'],
+    'waifu.im': ['safe', 'explicit'],
+    pinterest: ['safe'],
+    pixiv: ['safe', 'explicit'],
+    zerochan: ['safe'],
+    'nekos.best': ['safe'],
+    'nekos_best': ['safe'],
+    'nekos.life': ['safe'],
+    'nekos_life': ['safe'],
+    anime_dl: ['safe'],
+    eshuushuu: ['safe']
+};
+
+function toggleDropdownCheck(el, event) {
+    if (event && event.target && event.target.tagName === 'INPUT') {
+        // Native checkbox clicked, checked state already toggled
+    } else {
+        const cb = el.querySelector('input[type="checkbox"]');
+        if (cb) cb.checked = !cb.checked;
+    }
+    const clickedCb = el.querySelector('input[type="checkbox"]');
+    const menu = el.closest('.gallery-dropdown-menu');
+    if (!clickedCb || !menu) return;
+
+    const allCheck = menu.querySelector('input[value=""]');
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+
+    if (clickedCb === allCheck) {
+        // Clicking "All" toggles every individual item
+        const targetState = allCheck.checked;
+        itemChecks.forEach(c => c.checked = targetState);
+    } else {
+        // Clicking an individual item updates "All" to checked only if all items are checked
+        const allItemsChecked = itemChecks.length > 0 && itemChecks.every(c => c.checked);
+        if (allCheck) allCheck.checked = allItemsChecked;
+    }
+
+    if (menu.id === 'sourceDropdown') onSourceChange();
+    else if (menu.id === 'ratingDropdown') onRatingChange();
+    else if (menu.id === 'typeDropdown') onTypeChange();
+}
+
 function updateRatingDropdown() {
-    const checks = document.querySelectorAll('#sourceDropdown input[type="checkbox"]');
-    let selectedSources = [];
-    let allSelected = false;
-    checks.forEach(c => { if (c.checked) { if (c.value === '') allSelected = true; else selectedSources.push(c.value); } });
-    if (allSelected || selectedSources.length === 0) {
+    const sourceChecks = [...document.querySelectorAll('#sourceDropdown input[type="checkbox"]')].filter(c => c.value !== '');
+    const allSourcesCheck = document.querySelector('#sourceDropdown input[value=""]');
+    let selectedSources = sourceChecks.filter(c => c.checked).map(c => c.value);
+    let allSelected = (allSourcesCheck && allSourcesCheck.checked) || selectedSources.length === sourceChecks.length || selectedSources.length === 0;
+
+    if (allSelected) {
         document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => el.style.display = '');
         return;
     }
@@ -2564,79 +2670,79 @@ function updateRatingDropdown() {
         if (common === null) common = new Set(r);
         else common = new Set([...common].filter(x => r.includes(x)));
     });
-        if (common === null) common = new Set();
-        common.add('');
+    if (common === null) common = new Set();
+    common.add('');
     document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => {
         const cb = el.querySelector('input[type="checkbox"]');
+        if (!cb) return;
         const show = common.has(cb.value);
         el.style.display = show ? '' : 'none';
-        if (!show) cb.checked = false;
     });
-        const firstCheck = document.querySelector('#ratingDropdown .dd-item input[type="checkbox"]');
-        if (firstCheck) {
-            const anyChecked = [...document.querySelectorAll('#ratingDropdown input[type="checkbox"]')].some(c => c.checked);
-            if (!anyChecked) firstCheck.checked = true;
-        }
 }
+
 function updateSourceDropdown() {
-    const checks = document.querySelectorAll('#ratingDropdown input[type="checkbox"]');
-    let selectedRatings = [];
-    let allSelected = false;
-    checks.forEach(c => { if (c.checked) { if (c.value === '') allSelected = true; else selectedRatings.push(c.value); } });
-    if (allSelected || selectedRatings.length === 0) {
+    const ratingChecks = [...document.querySelectorAll('#ratingDropdown input[type="checkbox"]')].filter(c => c.value !== '');
+    const allRatingCheck = document.querySelector('#ratingDropdown input[value=""]');
+    let selectedRatings = ratingChecks.filter(c => c.checked).map(c => c.value);
+    let allSelected = (allRatingCheck && allRatingCheck.checked) || selectedRatings.length === ratingChecks.length || selectedRatings.length === 0;
+
+    if (allSelected) {
         document.querySelectorAll('#sourceDropdown .dd-item').forEach(el => el.style.display = '');
         return;
     }
     document.querySelectorAll('#sourceDropdown .dd-item').forEach(el => {
         const cb = el.querySelector('input[type="checkbox"]');
-        if (cb.value === '') { el.style.display = ''; return; }
+        if (!cb || cb.value === '') { el.style.display = ''; return; }
         const ratings = SOURCE_RATINGS[cb.value.toLowerCase()];
-        const show = ratings && selectedRatings.every(r => ratings.includes(r));
+        const show = ratings && selectedRatings.some(r => ratings.includes(r));
         el.style.display = show ? '' : 'none';
-        if (!show) cb.checked = false;
     });
-        const firstCheck = document.querySelector('#sourceDropdown .dd-item input[type="checkbox"]');
-        if (firstCheck) {
-            const anyChecked = [...document.querySelectorAll('#sourceDropdown input[type="checkbox"]')].some(c => c.checked);
-            if (!anyChecked) firstCheck.checked = true;
-        }
 }
+
 function getMultiSelectValues(id) {
-    const checks = document.querySelectorAll(`#${id} input[type="checkbox"]`);
-    const vals = [];
-    let allChecked = false;
-    checks.forEach(c => { if (c.checked) { if (c.value === '') allChecked = true; else vals.push(c.value); } });
-    if (allChecked || vals.length === 0) return '';
-    return vals.join(',');
+    const menu = document.getElementById(id);
+    if (!menu) return '';
+    const allCheck = menu.querySelector('input[value=""]');
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    if (allCheck && allCheck.checked) return '';
+    const checkedVals = itemChecks.filter(c => c.checked).map(c => c.value);
+    if (checkedVals.length === itemChecks.length && itemChecks.length > 0) {
+        if (allCheck) allCheck.checked = true;
+        return '';
+    }
+    if (checkedVals.length === 0) return '__none__';
+    return checkedVals.join(',');
 }
-function getMultiLabel(id, noneLabel) {
-    const checks = document.querySelectorAll(`#${id} input[type="checkbox"]`);
-    let count = 0;
-    let allChecked = false;
-    let singleName = "";
-    checks.forEach(c => {
-        if (c.checked) {
-            if (c.value === '') allChecked = true;
-            else {
-                count++;
-                if (count === 1) {
-                    const item = c.closest('.dd-item');
-                    const label = item ? item.querySelector('span') : null;
-                    singleName = (label ? label.textContent : c.value).replace(/\s*\(\d+\)\s*$/, '').trim();
-                }
-            }
-        }
-    });
-    if (allChecked || count === 0) return noneLabel;
-    if (count === 1 && singleName) return singleName;
-    return `${count} selected`;
+
+function getMultiLabel(id, defaultLabel) {
+    const menu = document.getElementById(id);
+    if (!menu) return defaultLabel;
+    const allCheck = menu.querySelector('input[value=""]');
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    if (allCheck && allCheck.checked) return defaultLabel;
+    const checkedItems = itemChecks.filter(c => c.checked);
+    if (checkedItems.length === itemChecks.length && itemChecks.length > 0) return defaultLabel;
+    if (checkedItems.length === 0) {
+        if (id === 'sourceDropdown') return 'None (No Sources)';
+        if (id === 'typeDropdown') return 'None (No Types)';
+        if (id === 'ratingDropdown') return 'None (No Ratings)';
+        return 'None Selected';
+    }
+    if (checkedItems.length === 1) {
+        const item = checkedItems[0].closest('.dd-item');
+        const span = item ? item.querySelector('span') : null;
+        return (span ? span.textContent : checkedItems[0].value).replace(/\s*\(\d+\)\s*$/, '').trim();
+    }
+    return `${checkedItems.length} Selected`;
 }
+
 function getGalleryTargetTileWidth() {
     const w = window.innerWidth;
-    if (w >= 3840) return 220; // 4K / UHD
-    if (w >= 2560) return 190; // 1440p / 2K
-    if (w >= 1920) return 165; // 1080p
-    return 148; // Standard / smaller laptop displays
+    if (w >= 3840) return 170; // 4K / UHD
+    if (w >= 2560) return 140; // 1440p / 2K
+    if (w >= 1920) return 120; // 1080p -> ~10-12 columns
+    if (w >= 1400) return 118; // Desktop -> ~10 columns
+    return 112; // Standard / smaller laptop displays -> ~8-9 columns
 }
 
 function getGridEstimatedWidth(grid) {
@@ -2667,23 +2773,15 @@ function galleryPerPage() {
     let rows;
     try {
         if (grid && grid.clientHeight > 80) {
-            // measure a real probe tile — no more guessing heights
-            const probe = document.createElement('div');
-            probe.className = 'gallery-card';
-            probe.style.visibility = 'hidden';
-            probe.style.position = 'absolute';
-            probe.style.pointerEvents = 'none';
-            grid.appendChild(probe);
-            const tileH = probe.offsetHeight || targetW;
-            probe.remove();
             const cs = getComputedStyle(grid);
-            const gap = parseFloat(cs.rowGap) || (window.innerWidth >= 2560 ? 16 : (window.innerWidth >= 1920 ? 12 : 8));
+            const gap = parseFloat(cs.rowGap) || (window.innerWidth >= 2560 ? 12 : 10);
             const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
             const avail = grid.clientHeight - padY;
-            rows = Math.max(1, Math.floor((avail + gap) / (tileH + gap)));
+            const actualTileW = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
+            rows = Math.max(1, Math.floor((avail + gap) / (actualTileW + gap)));
         } else {
             const estH = Math.max(300, window.innerHeight * 0.94 - 180);
-            const gap = window.innerWidth >= 2560 ? 16 : (window.innerWidth >= 1920 ? 12 : 8);
+            const gap = window.innerWidth >= 2560 ? 12 : 10;
             rows = Math.max(1, Math.floor((estH + gap) / (targetW + gap)));
         }
     } catch (e) {
@@ -2734,13 +2832,73 @@ async function loadGalleryPage(page, callback) {
         if (callback) callback();
     } catch (e) {}
 }
+function resetGalleryFilters() {
+    const s = document.getElementById("gallerySearch");
+    if (s) s.value = "";
+    galleryFavFilter = false;
+    const favBtn = document.getElementById("galleryFavBtn");
+    if (favBtn) favBtn.classList.remove("active");
+
+    ['sourceDropdown', 'typeDropdown', 'ratingDropdown'].forEach(id => {
+        const menu = document.getElementById(id);
+        if (menu) {
+            menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        }
+    });
+    const srcBtn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
+    if (srcBtn) srcBtn.textContent = 'All Sources ▾';
+    const typeBtn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]');
+    if (typeBtn) typeBtn.textContent = 'All Types ▾';
+    const ratingBtn = document.querySelector('[onclick="toggleDropdown(\'ratingDropdown\')"]');
+    if (ratingBtn) ratingBtn.textContent = 'All Ratings ▾';
+
+    loadGallery(1);
+    populateGallerySiteFilter();
+}
+
 function renderGallery() {
     const grid = document.getElementById("galleryGrid");
     const pagination = document.getElementById("galleryPagination");
     if (!grid) return;
+    grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    const blurBtn = document.getElementById("galleryBlurBtn");
+    if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
+
     const { images, total, page, total_pages, per_page } = galleryState;
     if (images.length === 0) {
-        grid.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-color);opacity:0.5;font-size:14px;">No images found.</div>';
+        const isNoneSource = getMultiSelectValues('sourceDropdown') === '__none__';
+        const isNoneType = getMultiSelectValues('typeDropdown') === '__none__';
+        const isNoneRating = getMultiSelectValues('ratingDropdown') === '__none__';
+        const searchVal = (document.getElementById("gallerySearch") ? document.getElementById("gallerySearch").value : '').trim();
+
+        let hint = "No images found";
+        let detail = "No images match the current filters.";
+        if (isNoneSource) {
+            hint = "No Sources Selected";
+            detail = "The source filter is currently set to None. Open the sources dropdown and select \"All\" or pick specific downloaders.";
+        } else if (isNoneType) {
+            hint = "No Types Selected";
+            detail = "All file types are deselected. Please select at least one type in the Types dropdown.";
+        } else if (isNoneRating) {
+            hint = "No Ratings Selected";
+            detail = "All ratings are deselected. Please select at least one rating in the Ratings dropdown.";
+        } else if (searchVal) {
+            hint = "No Matches Found";
+            detail = `No downloaded images matched "${searchVal}".`;
+        } else if (galleryFavFilter) {
+            hint = "No Favorites";
+            detail = "You have not marked any images as favorites yet.";
+        } else if (total === 0) {
+            hint = "Gallery is Empty";
+            detail = "No downloaded images found in the gallery folder. Download some images or click Rescan.";
+        }
+
+        grid.innerHTML = `<div class="gallery-empty-state" style="grid-column: 1 / -1; width: 100%; padding: 60px 20px; text-align: center; color: var(--text-color); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
+            <div style="font-size: 36px; opacity: 0.6;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg></div>
+            <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${hint}</div>
+            <div style="font-size: 13px; opacity: 0.65; max-width: 480px; line-height: 1.5;">${detail}</div>
+            <button class="action-btn" onclick="resetGalleryFilters()" style="margin-top: 8px; padding: 6px 18px; font-size: 13px; cursor: pointer;">Reset All Filters</button>
+        </div>`;
         pagination.innerHTML = '';
         return;
     }
@@ -2753,7 +2911,23 @@ function renderGallery() {
         const imgTag = `<img src="${src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
-        html += `<div class="gallery-card${selCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
+
+        const rating = getGalleryImageRating(img);
+        const isExplicit = rating === "explicit";
+        const isSensitive = rating === "sensitive";
+        const isQuestionable = rating === "questionable";
+
+        let ratingBadge = "";
+        if (isExplicit) ratingBadge = '<span class="gallery-card-badge rating nsfw">NSFW</span>';
+        else if (isSensitive) ratingBadge = '<span class="gallery-card-badge rating sensitive">SENSITIVE</span>';
+        else if (isQuestionable) ratingBadge = '<span class="gallery-card-badge rating questionable">16+</span>';
+
+        const siteBadge = ''; // User requested: do not show site name on cards
+        const nsfwOverlay = isExplicit ? '<div class="gallery-card-nsfw-overlay"><span class="nsfw-pill">🔞 NSFW</span><span class="nsfw-hint">Hover to view</span></div>' : '';
+        const nsfwClass = isExplicit ? ' is-nsfw' : '';
+        const favCls = img.favourite ? ' is-fav' : '';
+
+        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${nsfwOverlay}${ratingBadge}${siteBadge}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
     });
     // pin the column count so the last row is always full
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
@@ -2828,9 +3002,11 @@ function openGalleryViewer(id) {
 
 function updateSelectBar() {
     const bar = document.getElementById("gallerySelectBar");
-    if (!bar) return;
-    bar.style.display = gallerySelectMode ? "flex" : "none";
-    document.getElementById("gallerySelectCount").textContent = gallerySelected.size + " selected";
+    if (bar) bar.style.display = gallerySelectMode ? "flex" : "none";
+    const btn = document.getElementById("gallerySelectModeBtn");
+    if (btn) btn.classList.toggle("active", gallerySelectMode);
+    const countEl = document.getElementById("gallerySelectCount");
+    if (countEl) countEl.textContent = gallerySelected.size + " selected";
     const grid = document.getElementById("galleryGrid");
     if (grid) grid.classList.toggle("select-mode", gallerySelectMode);
 }
@@ -2864,7 +3040,7 @@ function exitSelectMode() {
     _dragPaint = false;
     _dragSuppressClick = false;
     updateSelectBar();
-    renderGallery();
+    document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.remove('selected'));
 }
 
 async function selectCopy() {
@@ -3451,13 +3627,68 @@ function toggleViewerFav() {
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
     async function importGallery() { if (localStorage.getItem('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { localStorage.setItem('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
     async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
-    function toggleCheck(el) { const cb = el.querySelector('input[type="checkbox"]'); const menu = el.closest('.gallery-dropdown-menu'); if (cb.value !== '') { const allCheck = menu.querySelector('input[value=""]'); if (allCheck && allCheck.checked) allCheck.checked = false; } cb.checked = !cb.checked; if (menu.id === 'sourceDropdown') onSourceChange(); else if (menu.id === 'ratingDropdown') onRatingChange(); else if (menu.id === 'typeDropdown') onTypeChange(); }
     let _siteFilterSeq = 0;
-    async function populateGallerySiteFilter() { const seq = ++_siteFilterSeq; const container = document.getElementById("sourceDropdown"); const prevSelected = getMultiSelectValues('sourceDropdown'); container.innerHTML = '<div class="dd-item" onclick="toggleCheck(this)"><span>All</span><input type="checkbox" value="" checked></div>'; const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') }); if (galleryFavFilter) params.set("favourites", "true"); try { let resp = await fetch(`/api/gallery/sources?${params}`); const counts = await resp.json(); if (seq !== _siteFilterSeq) return; const sorted = Object.entries(counts).sort((a,b) => a[0].localeCompare(b[0])); sorted.forEach(([site, count]) => { const div = document.createElement("div"); div.className = "dd-item"; div.onclick = function() { toggleCheck(this); }; div.innerHTML = `<span>${siteLabel(site)} (${count})</span><input type="checkbox" value="${site}">`; container.appendChild(div); }); if (prevSelected) { const sel = prevSelected.split(','); document.querySelectorAll('#sourceDropdown input[type="checkbox"]').forEach(cb => { if (cb.value && sel.includes(cb.value)) cb.checked = true; }); } const allCb = container.querySelector('input[value=""]'); if (allCb) allCb.checked = !prevSelected; } catch (e) {} const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]'); if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾'; updateSourceDropdown(); }
+    async function populateGallerySiteFilter() {
+        const seq = ++_siteFilterSeq;
+        const container = document.getElementById("sourceDropdown");
+        if (!container) return;
+        const prevSelected = getMultiSelectValues('sourceDropdown');
+        container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
+        const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') });
+        if (galleryFavFilter) params.set("favourites", "true");
+        try {
+            let resp = await fetch(`/api/gallery/sources?${params}`);
+            const counts = await resp.json();
+            if (seq !== _siteFilterSeq) return;
+            const sorted = Object.entries(counts).sort((a,b) => a[0].localeCompare(b[0]));
+            
+            const allSelectedBefore = !prevSelected || prevSelected === '';
+            const selList = prevSelected && prevSelected !== '__none__' ? prevSelected.split(',') : [];
+
+            sorted.forEach(([site, count]) => {
+                const div = document.createElement("div");
+                div.className = "dd-item";
+                div.onclick = function(e) { toggleDropdownCheck(this, e); };
+                const isChecked = allSelectedBefore || selList.includes(site);
+                div.innerHTML = `<span>${siteLabel(site)} (${count})</span><input type="checkbox" value="${site}" ${isChecked ? 'checked' : ''}>`;
+                container.appendChild(div);
+            });
+
+            const allCb = container.querySelector('input[value=""]');
+            if (allCb) {
+                if (allSelectedBefore) {
+                    allCb.checked = true;
+                } else if (prevSelected === '__none__') {
+                    allCb.checked = false;
+                    container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+                } else {
+                    const itemCbs = [...container.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+                    allCb.checked = itemCbs.length > 0 && itemCbs.every(c => c.checked);
+                }
+            }
+        } catch (e) {}
+        const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
+        if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
+        updateSourceDropdown();
+    }
     function toggleDropdown(id) { const menu = document.getElementById(id); document.querySelectorAll('.gallery-dropdown-menu.open').forEach(m => { if (m.id !== id) m.classList.remove('open'); }); menu.classList.toggle('open'); }
-    function onSourceChange() { const checks = document.querySelectorAll('#sourceDropdown input[type="checkbox"]'); const allCheck = checks[0]; if (allCheck.checked) { for (let i = 1; i < checks.length; i++) checks[i].checked = false; } else { let anyChecked = false; for (let i = 1; i < checks.length; i++) { if (checks[i].checked) { anyChecked = true; break; } } if (!anyChecked) allCheck.checked = true; } const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]'); if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾'; updateRatingDropdown(); loadGallery(1); }
-    function onRatingChange() { const checks = document.querySelectorAll('#ratingDropdown input[type="checkbox"]'); const allCheck = checks[0]; if (allCheck.checked) { for (let i = 1; i < checks.length; i++) checks[i].checked = false; } else { let anyChecked = false; for (let i = 1; i < checks.length; i++) { if (checks[i].checked) { anyChecked = true; break; } } if (!anyChecked) allCheck.checked = true; } const btn = document.querySelector('[onclick="toggleDropdown(\'ratingDropdown\')"]'); if (btn) btn.textContent = getMultiLabel('ratingDropdown', 'All Ratings') + ' ▾'; updateSourceDropdown(); loadGallery(1); }
-    function onTypeChange() { const checks = document.querySelectorAll('#typeDropdown input[type="checkbox"]'); const allCheck = checks[0]; if (allCheck.checked) { for (let i = 1; i < checks.length; i++) checks[i].checked = false; } else { let anyChecked = false; for (let i = 1; i < checks.length; i++) { if (checks[i].checked) { anyChecked = true; break; } } if (!anyChecked) allCheck.checked = true; } const btn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]'); if (btn) btn.textContent = getMultiLabel('typeDropdown', 'All Types') + ' ▾'; loadGallery(1); }
+    function onSourceChange() {
+        const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
+        if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
+        updateRatingDropdown();
+        loadGallery(1);
+    }
+    function onRatingChange() {
+        const btn = document.querySelector('[onclick="toggleDropdown(\'ratingDropdown\')"]');
+        if (btn) btn.textContent = getMultiLabel('ratingDropdown', 'All Ratings') + ' ▾';
+        updateSourceDropdown();
+        loadGallery(1);
+    }
+    function onTypeChange() {
+        const btn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]');
+        if (btn) btn.textContent = getMultiLabel('typeDropdown', 'All Types') + ' ▾';
+        loadGallery(1);
+    }
     function selectSort(el, value) { document.getElementById("sortDropdown").dataset.sort = value; const btn = document.querySelector('[onclick="toggleDropdown(\'sortDropdown\')"]'); btn.textContent = el.textContent.trim() + ' ▾'; document.getElementById("sortDropdown").classList.remove('open'); loadGallery(1); }
     document.addEventListener('click', function(e) { if (!e.target.closest('.gallery-dropdown')) { document.querySelectorAll('.gallery-dropdown-menu.open').forEach(m => m.classList.remove('open')); } });
 

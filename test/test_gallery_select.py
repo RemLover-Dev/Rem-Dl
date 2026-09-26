@@ -135,3 +135,33 @@ def test_favourite_single_toggle(client, monkeypatch):
     assert r.get_json() == {"success": True, "favourite": True}
     r = client.post("/api/gallery/favourite", json={"id": "aaa"}, headers=H)
     assert r.get_json()["favourite"] is False
+
+
+def test_gallery_rating_and_site_filters():
+    mock_images = [
+        {"id": "1", "filename": "safe1.png", "site": "zerochan", "filepath": "Zerochan/safe1.png", "tags": {"tag": ["1girl", "smile"]}},
+        {"id": "2", "filename": "safe2.png", "site": "nekos.best", "filepath": "Nekos.best/safe2.png", "tags": {"tag": ["neko"]}},
+        {"id": "3", "filename": "safe3.png", "site": "anime_dl", "filepath": "AnimePictures/safe3.png", "tags": {"tag": ["blue hair"]}},
+        {"id": "4", "filename": "nsfw1.png", "site": "rule34", "filepath": "Rule34/nsfw1.png", "tags": {"tag": ["nude"]}},
+        {"id": "5", "filename": "nsfw2.png", "site": "yande", "filepath": "Yande/NSFW/nsfw2.png", "tags": {"tag": ["explicit", "nipples"]}},
+    ]
+    # Filter safe only
+    safe_res = Rems_Dl._apply_gallery_filters(mock_images, "", [], False, [], ["safe"])
+    safe_ids = {i["id"] for i in safe_res}
+    assert "1" in safe_ids
+    assert "2" in safe_ids
+    assert "3" in safe_ids
+    assert "4" not in safe_ids
+    assert "5" not in safe_ids
+
+    # Filter explicit only
+    nsfw_res = Rems_Dl._apply_gallery_filters(mock_images, "", [], False, [], ["explicit"])
+    nsfw_ids = {i["id"] for i in nsfw_res}
+    assert "4" in nsfw_ids
+    assert "5" in nsfw_ids
+    assert "1" not in nsfw_ids
+
+    # Filter by specific site
+    site_res = Rems_Dl._apply_gallery_filters(mock_images, "", ["zerochan"], False, [], [])
+    assert len(site_res) == 1
+    assert site_res[0]["id"] == "1"
