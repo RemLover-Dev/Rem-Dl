@@ -2763,6 +2763,15 @@ function getGridEstimatedWidth(grid) {
     return Math.max(280, Math.floor(w * panelPct - sidebarW - 32));
 }
 
+function getGridEstimatedHeight() {
+    const tabContainer = document.querySelector(".tab-container") || document.querySelector(".glass-panel-content");
+    const containerH = (tabContainer && tabContainer.clientHeight > 80)
+        ? tabContainer.clientHeight
+        : Math.max(300, window.innerHeight * 0.94 - 80);
+    // Deduct: toolbar (~44px) + pagination (~38px) + tab padding (24px) + margins (~14px) = ~120px
+    return Math.max(200, containerH - 120);
+}
+
 let galleryCols = 0;
 function galleryPerPage() {
     const grid = document.getElementById("galleryGrid");
@@ -2772,18 +2781,10 @@ function galleryPerPage() {
     if (grid) grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
     let rows;
     try {
-        if (grid && grid.clientHeight > 80) {
-            const cs = getComputedStyle(grid);
-            const gap = parseFloat(cs.rowGap) || (window.innerWidth >= 2560 ? 12 : 10);
-            const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-            const avail = grid.clientHeight - padY;
-            const actualTileW = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
-            rows = Math.max(1, Math.floor((avail + gap) / (actualTileW + gap)));
-        } else {
-            const estH = Math.max(300, window.innerHeight * 0.94 - 180);
-            const gap = window.innerWidth >= 2560 ? 12 : 10;
-            rows = Math.max(1, Math.floor((estH + gap) / (targetW + gap)));
-        }
+        const gap = window.innerWidth >= 2560 ? 12 : 10;
+        const availH = getGridEstimatedHeight();
+        const actualTileW = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
+        rows = Math.max(1, Math.floor((availH + gap) / (actualTileW + gap)));
     } catch (e) {
         rows = Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10)));
     }

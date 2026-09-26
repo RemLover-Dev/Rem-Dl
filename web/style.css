@@ -668,7 +668,17 @@ select option:hover, select option:checked { background: var(--title-color); col
 @keyframes toastSlideOut { 0% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(120%); opacity: 0; } }
 
 /* ===== GALLERY TAB ===== */
-.gallery-tab { background: #0f1420; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.3); border-radius: 8px; gap: 0 !important; padding: 12px; flex-direction: column !important; }
+.gallery-tab {
+    background: #0f1420;
+    border: 1px solid transparent;
+    box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.3);
+    border-radius: 8px;
+    gap: 0 !important;
+    padding: 12px;
+    flex-direction: column !important;
+    height: auto !important;
+    max-height: 100%;
+}
 .gallery-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding-bottom: 10px; flex-shrink: 0; }
 .gallery-toolbar select, .gallery-toolbar input { background: #0a0e17; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25); border-radius: 6px; color: #e0e0e0; padding: 6px 10px; font-size: 13px; outline: none; }
 .gallery-dropdown { position: relative; display: inline-block; }
@@ -728,7 +738,8 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-blur-btn.active { background: #e74c3c; color: #fff; box-shadow: 0 2px 8px rgba(231, 76, 60, 0.4); }
 
 #galleryGrid {
-    flex: 1;
+    flex: 0 1 auto;
+    max-height: calc(100% - 90px);
     overflow-y: auto;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
@@ -943,7 +954,7 @@ select option:hover, select option:checked { background: var(--title-color); col
 }
 
 .gallery-card-play { position: absolute; inset: 0; margin: auto; width: 44px; height: 44px; border-radius: 50%; background: rgba(0,210,211,0.85); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpolygon points='10,7 10,17 18,12' fill='white'/%3E%3C/svg%3E") no-repeat center / 60%; z-index: 2; pointer-events: none; }
-.gallery-pagination { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 2px 0 0; margin-top: 14px; flex-shrink: 0; flex-wrap: wrap; }
+.gallery-pagination { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 2px 0 0; margin-top: 14px; margin-bottom: 2px; flex-shrink: 0; flex-wrap: wrap; }
 .gallery-pagination:empty { display: none; margin-top: 0; }
 .gallery-pagination button { background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25); color: #c0d0e0; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: 0.1s; }
 .gallery-pagination button.active { background: #2dd4bf; color: #0a0e17; font-weight: 600; }
