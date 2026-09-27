@@ -29,6 +29,7 @@ import urllib3
 import urllib.parse
 import random
 import hashlib
+import webbrowser
 from PIL import Image
 from datetime import datetime
 
@@ -986,16 +987,13 @@ def get_eshuushuu_suggestions():
     data = request.json or {}
     query = (data.get("query", "") or "").lower().strip()
     if len(query) < 2: return jsonify([])
-    local = _suggest(ESHUUSHUU_TAGS_DB, query) if ESHUUSHUU_TAGS_DB else []
-    if local:
-        return jsonify(local)
     try:
         session = get_session("eshuushuu", data.get("net_config", {}))
-        resp = session.get("https://e-shuushuu.net/api/v1/tags",
-                           params={"search": query}, timeout=8)
+        resp = session.get("https://e-shuushuu.net/api/v1/search",
+                           params={"q": query, "limit": 25}, timeout=8)
         if resp.status_code == 200:
             payload = resp.json()
-            items = payload.get("tags", payload) if isinstance(payload, dict) else payload
+            items = payload.get("hits", payload) if isinstance(payload, dict) else payload
             # ponytail: typed objects, not bare names — same title can be an
             # artist, a character and a general tag at once; the UI colors rows
             # by type so identical titles stay distinguishable
@@ -1014,7 +1012,7 @@ def get_eshuushuu_suggestions():
             if out: return jsonify(out[:50])
     except Exception:
         pass
-    return jsonify(local)
+    return jsonify([])
 
 @app.route("/api/tags/nekosapi", methods=["POST"])
 def get_nekosapi_suggestions():
@@ -1023,8 +1021,6 @@ def get_nekosapi_suggestions():
     if len(query) < 2: return jsonify([])
     live = _refresh_nekosapi_live_tags(data.get("net_config", {}))
     out = [t for t in live if t.lower().startswith(query)]
-    if NEKOSAPI_TAGS_DB:
-        out += [t for t in NEKOSAPI_TAGS_DB if t.lower().startswith(query) and t not in out]
     return jsonify(out[:50])
 
 _nekosapi_live_cache = {"tags": [], "at": 0.0}
@@ -1095,9 +1091,7 @@ def get_nekosia_suggestions():
                 _nekosia_tags_cache["at"] = _time.time()
         except Exception: pass
     live = [t for t in _nekosia_tags_cache["tags"] if t.lower().startswith(query)][:50]
-    if live: return jsonify(live)
-    if not NEKOSIA_TAGS_DB: return jsonify([])
-    return jsonify([t for t in NEKOSIA_TAGS_DB if t.lower().startswith(query)][:50])
+    return jsonify(live)
 
 @app.route("/api/tags/gsbooru", methods=["POST"])
 def get_gsbooru_suggestions():
@@ -1805,7 +1799,6 @@ if __name__ == "__main__":
     except ImportError:
         print("NOTE: pywebview is not installed or GUI libraries are missing.")
         print(f"Starting Rems Dl in web browser mode on {url} ...")
-        import webbrowser
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True)
         sys.exit(0)
@@ -1889,7 +1882,7 @@ if __name__ == "__main__":
                 gui="gtk" if sys.platform == "linux" else "edgechromium",
                 icon=icon_path
             )
-        except Exception as _icon_e:
+        except Exception:
             # If the OS windowing system rejects the icon format, start cleanly without the custom icon
             _pywebview.start(
                 user_agent="RemsDlDesktopApp/1.0",
@@ -1898,7 +1891,6 @@ if __name__ == "__main__":
         _shutdown_now()
     except Exception as e:
         print(f"Desktop window could not be opened ({e}). Falling back to browser...")
-        import webbrowser
         webbrowser.open(url)
         try:
             server_thread.join()
