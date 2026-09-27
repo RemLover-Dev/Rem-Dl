@@ -3,7 +3,11 @@ var workerRunning = {};
 let uiConfig = {};
 let currentActiveTheme = 'dark';
 
-const TAG_CATEGORIES = ["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "mangaka", "game", "theme", "source", "meta", "vtuber", "series", "studio", "tag"];
+// localStorage throws when blocked (private mode / file://) — a crash here kills the whole script
+function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+
+const TAG_CATEGORIES =["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "mangaka", "game", "theme", "source", "meta", "vtuber", "series", "studio", "tag"];
 const RATING_INPUT_BY_WORKER = {dan:'danRating', gelbooru:'gelbooruRating', gsbooru:'gsbooruRating', kona:'konaRating', yande:'yandeRating', sankaku:'sankakuRating', nekosapi:'nekosapiRating', nekosia:'nekosiaRating', pixiv:'pixivRating'};
 
 function getTagCategoryClass(cat) {
@@ -54,7 +58,7 @@ function normalizeTags(tagsInput) {
 }
 
 function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()); }
-function siteLabel(site) { const s = site || "unknown"; return s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " "); }
+function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -70,6 +74,7 @@ function heartIcon(filled) {
         : 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"';
     return `<svg width="1em" height="1em" viewBox="-1 -1 18 18" shape-rendering="geometricPrecision" style="display:block; vertical-align:middle;"><path ${paint} d="${HEART_PATH}"/></svg>`;
 }
+
 
 function renderCategorizedTags(tagsInput, clickable) {
     let tagsDict = normalizeTags(tagsInput);
@@ -2554,10 +2559,11 @@ const gallerySelected = new Map(); // id -> filepath snapshot (survives search/f
 let _dragPaint = false;
 let _dragSelect = true;
 let _dragSuppressClick = false;
-let galleryBlurNsfw = localStorage.getItem('gallery_blur_nsfw') !== 'false';
+let _paintPending = false, _paintCard = null, _paintPt = [0, 0];
+let galleryBlurNsfw = storeGet('gallery_blur_nsfw') !== 'false';
 function toggleGalleryBlur() {
     galleryBlurNsfw = !galleryBlurNsfw;
-    localStorage.setItem('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
+    storeSet('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
     const btn = document.getElementById("galleryBlurBtn");
     if (btn) btn.classList.toggle("active", galleryBlurNsfw);
     const grid = document.getElementById("galleryGrid");
@@ -2578,27 +2584,25 @@ function getGalleryImageRating(img) {
     return "safe";
 }
 
-function toggleSelectMode() {
-    if (gallerySelectMode) {
-        exitSelectMode();
-    } else {
-        gallerySelectMode = true;
-        updateSelectBar();
-    }
-}
-
 function selectAllCurrentPage() {
     if (!galleryState.images) return;
-    galleryState.images.forEach(img => {
-        gallerySelected.set(img.id, img.filepath || "");
+    const idSet = new Set(galleryState.images.map(img => img.id));
+    const allSel = idSet.size > 0 && [...idSet].every(id => gallerySelected.has(id));
+    if (allSel) idSet.forEach(id => gallerySelected.delete(id));
+    else galleryState.images.forEach(img => gallerySelected.set(img.id, img.filepath || ""));
+    document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => {
+        const on = allSel ? false : idSet.has(card.dataset.id);
+        card.classList.toggle("selected", on);
+        const box = card.querySelector(".gallery-card-select");
+        if (box) box.checked = on;
     });
-    document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.add('selected'));
     updateSelectBar();
 }
 
 function clearSelection() {
     gallerySelected.clear();
     document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.remove('selected'));
+    document.querySelectorAll('#galleryGrid .gallery-card-select').forEach(b => b.checked = false);
     updateSelectBar();
 }
 
@@ -2640,13 +2644,15 @@ function toggleDropdownCheck(el, event) {
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
 
     if (clickedCb === allCheck) {
-        // Clicking "All" toggles every individual item
-        const targetState = allCheck.checked;
-        itemChecks.forEach(c => c.checked = targetState);
+        // "All" is exclusive: it represents the whole set, so items show no checkmarks
+        itemChecks.forEach(c => c.checked = false);
     } else {
-        // Clicking an individual item updates "All" to checked only if all items are checked
+        // Clicking items drops "All"; if they end up covering everything, collapse to All
         const allItemsChecked = itemChecks.length > 0 && itemChecks.every(c => c.checked);
-        if (allCheck) allCheck.checked = allItemsChecked;
+        if (allCheck) {
+            allCheck.checked = allItemsChecked;
+            if (allItemsChecked) itemChecks.forEach(c => c.checked = false);
+        }
     }
 
     if (menu.id === 'sourceDropdown') onSourceChange();
@@ -2707,7 +2713,9 @@ function getMultiSelectValues(id) {
     if (allCheck && allCheck.checked) return '';
     const checkedVals = itemChecks.filter(c => c.checked).map(c => c.value);
     if (checkedVals.length === itemChecks.length && itemChecks.length > 0) {
+        // every item selected == All; keep only All's checkmark
         if (allCheck) allCheck.checked = true;
+        itemChecks.forEach(c => c.checked = false);
         return '';
     }
     if (checkedVals.length === 0) return '__none__';
@@ -2738,11 +2746,11 @@ function getMultiLabel(id, defaultLabel) {
 
 function getGalleryTargetTileWidth() {
     const w = window.innerWidth;
-    if (w >= 3840) return 170; // 4K / UHD
-    if (w >= 2560) return 140; // 1440p / 2K
-    if (w >= 1920) return 120; // 1080p -> ~10-12 columns
-    if (w >= 1400) return 118; // Desktop -> ~10 columns
-    return 112; // Standard / smaller laptop displays -> ~8-9 columns
+    if (w >= 3840) return 200; // 4K / UHD
+    if (w >= 2560) return 170; // 1440p / 2K
+    if (w >= 1920) return 155; // 1080p
+    if (w >= 1400) return 150; // Desktop
+    return 140; // Standard / smaller laptop displays
 }
 
 function getGridEstimatedWidth(grid) {
@@ -2779,19 +2787,38 @@ function galleryPerPage() {
     const targetW = getGalleryTargetTileWidth();
     galleryCols = Math.max(2, Math.floor(availW / targetW));
     if (grid) grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
-    let rows;
     try {
-        const gap = window.innerWidth >= 2560 ? 12 : 10;
-        const availH = getGridEstimatedHeight();
-        const actualTileW = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
-        rows = Math.max(1, Math.floor((availH + gap) / (actualTileW + gap)));
+        const w = window.innerWidth;
+        const gap = w >= 3840 ? 14 : w >= 2560 ? 12 : w >= 1920 ? 10 : 8;
+        // ponytail: grid is flex:1, so its box is a real measured height — guessing (-120)
+        // overshoots on wrapped toolbars and forces a scroll
+        const cs = grid ? getComputedStyle(grid) : null;
+        const padY = cs ? (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) : 0;
+        const availH = (grid && grid.clientHeight > 80) ? grid.clientHeight - padY : getGridEstimatedHeight();
+        const tile = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
+        const floorR = Math.max(1, Math.floor((availH + gap) / (tile + gap)));
+        const rowHFor = r => (availH - (r - 1) * gap) / r;
+        // ponytail: square tiles always leave <1 row of dead space — try floor and floor+1
+        // rows and take the one whose natural height stays within ±15% of square: that
+        // fills the panel exactly; past that we'd rather keep cards near-square
+        const cands = [floorR, floorR + 1]
+            .map(r => ({ r: r, rh: rowHFor(r) }))
+            .filter(c => c.rh >= tile * 0.85 && c.rh <= tile * 1.15);
+        let rows = floorR, rowH = Math.min(rowHFor(floorR), tile * 1.15);
+        if (cands.length) {
+            cands.sort((a, b) => Math.abs(a.rh - tile) - Math.abs(b.rh - tile));
+            rows = cands[0].r;
+            rowH = cands[0].rh;
+        }
+        if (grid) grid.style.setProperty('--gal-row-h', rowH + 'px');
+        // ponytail: no 24-item floor — it added a row the grid can't show, i.e. a scrollbar
+        return Math.min(400, galleryCols * rows);
     } catch (e) {
-        rows = Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10)));
+        return Math.min(400, galleryCols * Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10))));
     }
-    return Math.min(400, Math.max(24, galleryCols * rows));
 }
 let galleryReqId = 0;
-async function loadGallery(page) {
+async function loadGallery(page, remeasured) {
     const reqId = ++galleryReqId;
     const reqW = window.innerWidth;
     if (page) currentGalleryPage = page;
@@ -2810,6 +2837,11 @@ async function loadGallery(page) {
         if (window.innerWidth !== reqW) return loadGallery(page);
         galleryState = data;
         renderGallery();
+        // empty-state hides pagination (grid box grows ~44px) so per_page above was
+        // measured against the wrong height — re-measure with pagination restored and
+        // refetch once if the stale per_page overshoots the grid (scrollbar bug)
+        const pp = galleryPerPage();
+        if (!remeasured && data.images && data.images.length > pp) return loadGallery(page, true);
         populateGallerySiteFilter();
     } catch (e) {}
 }
@@ -2843,7 +2875,7 @@ function resetGalleryFilters() {
     ['sourceDropdown', 'typeDropdown', 'ratingDropdown'].forEach(id => {
         const menu = document.getElementById(id);
         if (menu) {
-            menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+            menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = cb.value === '');
         }
     });
     const srcBtn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
@@ -2924,11 +2956,13 @@ function renderGallery() {
         else if (isQuestionable) ratingBadge = '<span class="gallery-card-badge rating questionable">16+</span>';
 
         const siteBadge = ''; // User requested: do not show site name on cards
-        const nsfwOverlay = isExplicit ? '<div class="gallery-card-nsfw-overlay"><span class="nsfw-pill">🔞 NSFW</span><span class="nsfw-hint">Hover to view</span></div>' : '';
-        const nsfwClass = isExplicit ? ' is-nsfw' : '';
+        // blur covers explicit + questionable only — sensitive/safe stay visible
+        const isBlurTarget = isExplicit || isQuestionable;
+        const nsfwClass = isBlurTarget ? ' is-nsfw' : '';
         const favCls = img.favourite ? ' is-fav' : '';
+        const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${img.id}', this.checked)">`;
 
-        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${nsfwOverlay}${ratingBadge}${siteBadge}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
+        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
     });
     // pin the column count so the last row is always full
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
@@ -2947,6 +2981,7 @@ function renderGallery() {
     if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+')">»</button>';
     pHtml += countPill;
     pagination.innerHTML = pHtml;
+    updateSelectBar();
 }
 function paginationRange(current, total) {
     if (total <= 7) return Array.from({length: total}, (_,i)=>i+1);
@@ -2983,6 +3018,23 @@ function pageJumpInput(btn) {
     input.addEventListener('blur', go);
 }
 function toggleFavFilter() { galleryFavFilter = !galleryFavFilter; document.getElementById("galleryFavBtn").classList.toggle("active", galleryFavFilter); loadGallery(1); }
+function onGalleryFavBtn() {
+    if (gallerySelectMode) favouriteCurrentPage();
+    else toggleFavFilter();
+}
+// edit mode: heart toggles the whole page — all favourited → unfavourite all, otherwise favourite the rest
+async function favouriteCurrentPage() {
+    const imgs = galleryState.images || [];
+    if (!imgs.length) return;
+    const allFav = imgs.every(i => i.favourite);
+    const targets = allFav ? imgs.filter(i => i.favourite) : imgs.filter(i => !i.favourite);
+    for (const img of targets) {
+        try {
+            await fetch("/api/gallery/favourite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: img.id }) });
+        } catch (e) {}
+    }
+    loadGallery();
+}
 async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) {} }
 let viewerIndex = -1;
 let viewerZoom = 1;
@@ -3001,15 +3053,43 @@ function openGalleryViewer(id) {
     showViewerImage();
 }
 
+// card checkbox: checking it (from anywhere) enters edit/select mode
+function galleryCardSelectClick(id, on) {
+    if (on && !gallerySelectMode) gallerySelectMode = true;
+    setGallerySelected(id, on);
+}
+
 function updateSelectBar() {
+    // pin toolbar height to its normal-mode height BEFORE the select bar is
+    // shown below — capture after that and the wrapped select bar inflates it
+    {
+        const tab = document.getElementById("Gallery");
+        if (tab) {
+            const wasActive = tab.classList.contains("select-active");
+            if (gallerySelectMode !== wasActive) {
+                const tb = tab.querySelector(".gallery-toolbar");
+                if (tb) tb.style.minHeight = gallerySelectMode ? tb.offsetHeight + "px" : "";
+            }
+        }
+    }
     const bar = document.getElementById("gallerySelectBar");
     if (bar) bar.style.display = gallerySelectMode ? "flex" : "none";
-    const btn = document.getElementById("gallerySelectModeBtn");
-    if (btn) btn.classList.toggle("active", gallerySelectMode);
     const countEl = document.getElementById("gallerySelectCount");
     if (countEl) countEl.textContent = gallerySelected.size + " selected";
+    // page button reflects state: whole page selected → it deselects
+    const spBtn = document.getElementById("gallerySelectPageBtn");
+    if (spBtn && galleryState.images) {
+        const ids = galleryState.images.map(i => i.id);
+        spBtn.textContent = (ids.length > 0 && ids.every(id => gallerySelected.has(id))) ? "Deselect Page" : "Select Page";
+    }
+    // heart = favourite-only filter normally, bulk "favourite page" in edit mode
+    const favBtn = document.getElementById("galleryFavBtn");
+    if (favBtn) favBtn.title = gallerySelectMode ? "Favorite all on this page" : "Favorites only";
     const grid = document.getElementById("galleryGrid");
     if (grid) grid.classList.toggle("select-mode", gallerySelectMode);
+    // top bar compacts while the select bar is out (height pinned at entry above)
+    const tab = document.getElementById("Gallery");
+    if (tab) tab.classList.toggle("select-active", gallerySelectMode);
 }
 
 function setGallerySelected(id, on) {
@@ -3023,7 +3103,11 @@ function setGallerySelected(id, on) {
         gallerySelected.delete(id);
     }
     const card = document.querySelector(`.gallery-card[data-id="${id}"]`);
-    if (card) card.classList.toggle("selected", on);
+    if (card) {
+        card.classList.toggle("selected", on);
+        const box = card.querySelector(".gallery-card-select");
+        if (box && box.checked !== on) box.checked = on;
+    }
     updateSelectBar();
 }
 
@@ -3040,8 +3124,10 @@ function exitSelectMode() {
     gallerySelected.clear();
     _dragPaint = false;
     _dragSuppressClick = false;
+    _paintPending = false;
     updateSelectBar();
     document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.remove('selected'));
+    document.querySelectorAll('#galleryGrid .gallery-card-select').forEach(b => b.checked = false);
 }
 
 async function selectCopy() {
@@ -3085,17 +3171,38 @@ document.addEventListener('keydown', function(e) {
 
 // drag-paint: hold left button and sweep across cards to select/deselect
 document.addEventListener('mousedown', function(e) {
-    if (!gallerySelectMode || e.button !== 0) return;
+    if (e.button !== 0) { _paintPending = false; return; }
     const card = e.target.closest && e.target.closest('.gallery-card');
-    if (!card || !card.dataset.id || e.target.closest('.gallery-card-heart')) {
+    if (!card || !card.dataset.id || e.target.closest('.gallery-card-heart, .gallery-card-select')) {
         _dragSuppressClick = false;
+        _paintPending = false;
         return;
     }
     e.preventDefault(); // block native image drag
+    if (gallerySelectMode) {
+        _dragPaint = true;
+        _dragSelect = !gallerySelected.has(card.dataset.id);
+        _dragSuppressClick = true;
+        setGallerySelected(card.dataset.id, _dragSelect);
+        return;
+    }
+    // normal mode: arm a pending paint; a plain click still opens the viewer,
+    // only a real drag (threshold below) promotes into select mode
+    _paintPending = true;
+    _paintCard = card.dataset.id;
+    _paintPt = [e.clientX, e.clientY];
+}, true);
+
+// promote an armed drag from normal mode into select mode (paint mode)
+document.addEventListener('mousemove', function(e) {
+    if (!_paintPending || _dragPaint) return;
+    if (Math.hypot(e.clientX - _paintPt[0], e.clientY - _paintPt[1]) < 6) return;
+    _paintPending = false;
+    gallerySelectMode = true;
     _dragPaint = true;
-    _dragSelect = !gallerySelected.has(card.dataset.id);
+    _dragSelect = !gallerySelected.has(_paintCard);
     _dragSuppressClick = true;
-    setGallerySelected(card.dataset.id, _dragSelect);
+    setGallerySelected(_paintCard, _dragSelect);
 }, true);
 
 document.addEventListener('mouseover', function(e) {
@@ -3105,8 +3212,8 @@ document.addEventListener('mouseover', function(e) {
     setGallerySelected(card.dataset.id, _dragSelect);
 });
 
-document.addEventListener('mouseup', function() { _dragPaint = false; });
-window.addEventListener('blur', function() { _dragPaint = false; });
+document.addEventListener('mouseup', function() { _dragPaint = false; _paintPending = false; });
+window.addEventListener('blur', function() { _dragPaint = false; _paintPending = false; });
 
 // ctrl/cmd+A: select all images on the current page (again = clear)
 document.addEventListener('keydown', function(e) {
@@ -3626,13 +3733,15 @@ function toggleViewerFav() {
     document.getElementById("galleryViewerImg").addEventListener('mousedown', function(e) { if (viewerZoom <= 1 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (localStorage.getItem('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { localStorage.setItem('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
     async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
     let _siteFilterSeq = 0;
     async function populateGallerySiteFilter() {
         const seq = ++_siteFilterSeq;
         const container = document.getElementById("sourceDropdown");
         if (!container) return;
+        // rebuild wipes innerHTML, which would snap an open, scrolled menu to the top
+        const prevScroll = container.scrollTop;
         const prevSelected = getMultiSelectValues('sourceDropdown');
         container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
         const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') });
@@ -3650,7 +3759,7 @@ function toggleViewerFav() {
                 const div = document.createElement("div");
                 div.className = "dd-item";
                 div.onclick = function(e) { toggleDropdownCheck(this, e); };
-                const isChecked = allSelectedBefore || selList.includes(site);
+                const isChecked = !allSelectedBefore && selList.includes(site);
                 div.innerHTML = `<span>${siteLabel(site)} (${count})</span><input type="checkbox" value="${site}" ${isChecked ? 'checked' : ''}>`;
                 container.appendChild(div);
             });
@@ -3664,13 +3773,16 @@ function toggleViewerFav() {
                     container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
                 } else {
                     const itemCbs = [...container.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
-                    allCb.checked = itemCbs.length > 0 && itemCbs.every(c => c.checked);
+                    const allItems = itemCbs.length > 0 && itemCbs.every(c => c.checked);
+                    allCb.checked = allItems;
+                    if (allItems) itemCbs.forEach(c => c.checked = false);
                 }
             }
         } catch (e) {}
         const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
         if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
         updateSourceDropdown();
+        container.scrollTop = prevScroll;
     }
     function toggleDropdown(id) { const menu = document.getElementById(id); document.querySelectorAll('.gallery-dropdown-menu.open').forEach(m => { if (m.id !== id) m.classList.remove('open'); }); menu.classList.toggle('open'); }
     function onSourceChange() {
