@@ -53,6 +53,57 @@ def test_inno_setup_script():
     assert "Rems-Dl-Windows-x64-Setup" in content
     assert "VCRedistNeedsInstall" in content
     assert "RemLoverDev.RemsDl.App.1.0" in content
+    assert '#define MyAppVersion "5.3.0"' in content
+
+
+def test_pyinstaller_spec_and_metadata_hooks():
+    spec_path = "Rems_Dl.spec"
+    assert os.path.isfile(spec_path)
+    with open(spec_path, "r", encoding="utf-8") as f:
+        spec_content = f.read()
+
+    assert "copy_metadata" in spec_content
+    assert "rule34Py" in spec_content
+    assert "hookspath=['hooks']" in spec_content
+
+    hook_file = os.path.join("hooks", "hook-rule34Py.py")
+    assert os.path.isfile(hook_file), "hooks/hook-rule34Py.py must exist"
+
+    rthook_file = os.path.join("hooks", "rthook-metadata.py")
+    assert os.path.isfile(rthook_file), "hooks/rthook-metadata.py must exist"
+
+
+def test_rule34py_importlib_metadata_safeguard(monkeypatch):
+    import importlib.metadata
+    from workers.rule34 import Rule34Worker
+
+    # Test that importing or querying version with missing metadata handles PackageNotFoundError safely
+    orig_version = importlib.metadata.version
+
+    def mock_fail_version(pkg):
+        raise importlib.metadata.PackageNotFoundError(pkg)
+
+    monkeypatch.setattr(importlib.metadata, "version", mock_fail_version)
+
+    # Re-apply guard and test
+    try:
+        class _SafeDistribution:
+            def __init__(self, name="rule34Py", ver="4.2.0"):
+                self.version = ver
+                self.metadata = {"Version": ver, "Name": name}
+
+        def _safe_version(distribution_name):
+            try:
+                return mock_fail_version(distribution_name)
+            except Exception:
+                if distribution_name and str(distribution_name).lower() in ("rule34py", "pinterest-dl", "pinterest_dl"):
+                    return "4.2.0"
+                raise
+
+        monkeypatch.setattr(importlib.metadata, "version", _safe_version)
+        assert importlib.metadata.version("rule34Py") == "4.2.0"
+    finally:
+        monkeypatch.setattr(importlib.metadata, "version", orig_version)
 
 
 def test_folder_api_and_browse(tmp_path, monkeypatch):

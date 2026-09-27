@@ -1,6 +1,6 @@
 <div align="center">
 
-# Rems Dl 5.2
+# Rems Dl 5.3
 
 **A massive multi-threaded image & media scraping application with a beautiful glass-morphism UI.**
 
@@ -10,13 +10,26 @@ Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Waifu.im, Nekos.best, N
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-5.2.0-ff9ff3.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-5.3.0-ff9ff3.svg)](CHANGELOG.md)
 
 [English](README.md) | [فارسی](README_fa.md) | [Linux & Docker](#-run-on-linux--docker)
 
 </div>
 
 ---
+
+## ✨ New in Version 5.3 (Rem 5.3)
+- **PyInstaller Metadata Fix (`rule34Py`):** Resolved startup failure in frozen standalone/portable builds by packaging distribution metadata and implementing runtime safeguards.
+- **Gallery Multi-Selection & Bulk Actions:** Interactive drag-paint selection, Ctrl+A select page, bulk clipboard copy, and bulk disk deletion.
+- **Native OS Clipboard Integration:** Direct copying of full-resolution images and file paths to the system clipboard across Windows, Linux, and macOS.
+- **Desktop Folder Picker:** Native folder selection dialog with quick-open folder button.
+- **Deduplication Sync:** Real-time synchronization between image deletions and hash database cleanup.
+
+## ✨ New in Version 5.2 (Rem 5.2)
+- **Responsive Gallery Sizing:** Adaptive tile and column calculations for 1080p, 2K/1440p, and 4K displays.
+- **Windows Setup Installer:** Inno Setup installer with automatic Visual C++ runtime detection & installation.
+- **Taskbar Identity:** Explicit Windows AppUserModelID for custom taskbar icons.
+- **Cross-Platform Path Sanitization:** Safe directory sanitization across POSIX and Windows.
 
 ## ✨ New in Version 5.1 (Rem 5.1)
 - **Pixiv Support:** Brand-new worker (gallery-dl based) with ugoira-to-GIF conversion.

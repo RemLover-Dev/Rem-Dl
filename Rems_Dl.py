@@ -85,6 +85,42 @@ for _k in ("no_proxy", "NO_PROXY"):
     if not {"127.0.0.1", "localhost"}.issubset(_have):
         os.environ[_k] = ",".join(sorted(_have | {"127.0.0.1", "localhost"}))
 
+# Guard against missing distribution metadata in frozen PyInstaller bundles (e.g. rule34Py)
+try:
+    import importlib.metadata
+    _orig_meta_version = importlib.metadata.version
+    _orig_meta_distribution = importlib.metadata.distribution
+
+    class _SafeDistribution:
+        def __init__(self, name="rule34Py", ver="4.2.0"):
+            self.version = ver
+            self.metadata = {"Version": ver, "Name": name}
+
+    def _safe_meta_version(distribution_name):
+        try:
+            return _orig_meta_version(distribution_name)
+        except Exception:
+            if distribution_name and str(distribution_name).lower() in (
+                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+            ):
+                return "4.2.0"
+            raise
+
+    def _safe_meta_distribution(distribution_name):
+        try:
+            return _orig_meta_distribution(distribution_name)
+        except Exception:
+            if distribution_name and str(distribution_name).lower() in (
+                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+            ):
+                return _SafeDistribution(str(distribution_name))
+            raise
+
+    importlib.metadata.version = _safe_meta_version
+    importlib.metadata.distribution = _safe_meta_distribution
+except Exception:
+    pass
+
 import core.shared as shared
 from workers.rule34 import worker_rule34
 from workers.safebooru import worker_safebooru

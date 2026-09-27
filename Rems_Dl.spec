@@ -12,6 +12,17 @@ added_files = [
     ('.env.example', '.'),
 ]
 
+# Collect package distribution metadata so importlib.metadata finds them in frozen bundles
+try:
+    from PyInstaller.utils.hooks import copy_metadata
+    for pkg in ['rule34Py', 'gallery-dl', 'pinterest-dl', 'curl_cffi']:
+        try:
+            added_files.extend(copy_metadata(pkg))
+        except Exception:
+            pass
+except Exception:
+    pass
+
 hidden_imports = [
     'engineio.async_drivers.threading',
     'flask_socketio',
@@ -52,9 +63,9 @@ a = Analysis(
     binaries=[],
     datas=added_files,
     hiddenimports=hidden_imports,
-    hookspath=[],
+    hookspath=['hooks'],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['hooks/rthook-metadata.py'] if os.path.exists('hooks/rthook-metadata.py') else [],
     excludes=['tkinter', 'matplotlib', 'scipy', 'numpy', 'torch'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

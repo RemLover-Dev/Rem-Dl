@@ -1,6 +1,43 @@
 import os, re, random
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+
+# Safeguard importlib.metadata in frozen bundles (e.g. PyInstaller standalone / portable builds)
+try:
+    import importlib.metadata
+    _orig_meta_version = importlib.metadata.version
+    _orig_meta_distribution = importlib.metadata.distribution
+
+    class _SafeDistribution:
+        def __init__(self, name="rule34Py", ver="4.2.0"):
+            self.version = ver
+            self.metadata = {"Version": ver, "Name": name}
+
+    def _safe_meta_version(distribution_name):
+        try:
+            return _orig_meta_version(distribution_name)
+        except Exception:
+            if distribution_name and str(distribution_name).lower() in (
+                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+            ):
+                return "4.2.0"
+            raise
+
+    def _safe_meta_distribution(distribution_name):
+        try:
+            return _orig_meta_distribution(distribution_name)
+        except Exception:
+            if distribution_name and str(distribution_name).lower() in (
+                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+            ):
+                return _SafeDistribution(str(distribution_name))
+            raise
+
+    importlib.metadata.version = _safe_meta_version
+    importlib.metadata.distribution = _safe_meta_distribution
+except Exception:
+    pass
+
 from rule34Py import rule34Py
 from rule34Py.tag import TagType
 

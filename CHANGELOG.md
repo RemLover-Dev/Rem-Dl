@@ -4,6 +4,25 @@ All notable changes to Rems Dl will be documented in this file.
 
 ---
 
+## [5.3.0] - Rem 5.3: PyInstaller Metadata Fix, Multi-Select & Productivity Overhaul - 2026-09-27
+
+### Fixed
+- **PyInstaller Metadata Crash (`rule34Py`):** Resolved startup failure (`importlib.metadata.PackageNotFoundError: No package metadata was found for rule34Py`) in frozen standalone and portable executable builds.
+  - Configured `copy_metadata` in `Rems_Dl.spec` to automatically bundle distribution `.dist-info` directories.
+  - Added dedicated PyInstaller hook `hooks/hook-rule34Py.py` and runtime hook `hooks/rthook-metadata.py`.
+  - Added defense-in-depth runtime fallback in `workers/rule34.py` and `Rems_Dl.py` so that missing metadata lookups never crash the app.
+- **Tag Entity Decoding:** Fixed HTML entity encoding for tags in Gelbooru and Safebooru workers.
+- **Gallery Layout Spacing:** Removed excess bottom whitespace between gallery grid and pagination controls.
+
+### Added
+- **Gallery Multi-Select Mode:** Interactive multi-selection with drag-paint selection, Ctrl+A select page, bulk clipboard copying, and bulk disk deletion.
+- **Cross-Platform Clipboard Integration:** Native image and file list copying to clipboard across Windows, Linux, and macOS.
+- **Native Desktop Folder Picker:** Added system folder picker dialog and updated `/api/folder` endpoint.
+- **Deduplication Store Sync:** Synchronized dedup hash deletions directly with gallery removal operations.
+- **Compact Gallery Grid:** Improved card density, responsive columns, and filter bar controls.
+
+---
+
 ## [5.2.0] - Rem 5.2: Responsive Gallery, Windows Installer & Cross-Platform CI - 2026-09-23
 
 ### Added
