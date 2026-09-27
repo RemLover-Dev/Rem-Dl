@@ -676,8 +676,7 @@ select option:hover, select option:checked { background: var(--title-color); col
     gap: 0 !important;
     padding: 12px;
     flex-direction: column !important;
-    height: auto !important;
-    max-height: 100%;
+    height: 100%;
 }
 .gallery-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding-bottom: 10px; flex-shrink: 0; }
 .gallery-toolbar select, .gallery-toolbar input { background: #0a0e17; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25); border-radius: 6px; color: #e0e0e0; padding: 6px 10px; font-size: 13px; outline: none; }
@@ -688,32 +687,6 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-dropdown-menu .dd-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: #ccc; cursor: pointer; user-select: none; }
 .gallery-dropdown-menu .dd-item:hover { background: rgba(45, 212, 191, 0.12); color: #fff; }
 .gallery-dropdown-menu .dd-item input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; accent-color: #2dd4bf; }
-
-.gallery-select-toggle-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: #0a0e17;
-    border: 1px solid transparent;
-    box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.4);
-    border-radius: 20px;
-    color: #2dd4bf;
-    padding: 6px 14px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    line-height: 1;
-}
-.gallery-select-toggle-btn:hover {
-    background: rgba(45, 212, 191, 0.15);
-    box-shadow: 0 0 0 1px #2dd4bf;
-}
-.gallery-select-toggle-btn.active {
-    background: #2dd4bf;
-    color: #0a0e17;
-    box-shadow: 0 2px 10px rgba(45, 212, 191, 0.4);
-}
 
 .gallery-fav-btn { display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px #e040a0; border-radius: 20px; color: #e040a0; padding: 6px 14px; font-size: 13px; cursor: pointer; transition: 0.15s; line-height: 1; }
 .gallery-fav-btn.active { background: #e040a0; color: #fff; }
@@ -738,16 +711,16 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-blur-btn.active { background: #e74c3c; color: #fff; box-shadow: 0 2px 8px rgba(231, 76, 60, 0.4); }
 
 #galleryGrid {
-    flex: 0 1 auto;
-    max-height: calc(100% - 90px);
+    flex: 1;
     overflow-y: auto;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
-    gap: 10px;
-    row-gap: 10px;
-    column-gap: 10px;
-    padding: 6px 4px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+    padding: 4px 2px;
     min-height: 0;
+    /* JS sets --gal-row-h so rows fill the panel exactly (height kept within ±15%
+       of square) — square tracks always leave a dead band; max-content = no-JS fallback */
+    grid-auto-rows: var(--gal-row-h, max-content);
     align-content: start;
     scrollbar-width: thin;
     scrollbar-color: #2a3a5a #0a0e17;
@@ -764,7 +737,6 @@ select option:hover, select option:checked { background: var(--title-color); col
     background: #0a0e17;
     border: 1px solid rgba(45, 212, 191, 0.16);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-    aspect-ratio: 1 / 1;
     width: 100%;
     transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
@@ -785,46 +757,60 @@ select option:hover, select option:checked { background: var(--title-color); col
 }
 .gallery-card.broken { opacity: 0.3; }
 
-#galleryGrid.select-mode .gallery-card::after {
-    content: "";
+/* real checkbox — mirrors the heart, other side of the card
+   (.gallery-card prefix needed: global input[type=checkbox] = 0,1,1 beats 0,1,0) */
+.gallery-card .gallery-card-select {
     position: absolute;
-    top: 8px;
-    left: 8px;
-    z-index: 5;
-    width: 22px;
-    height: 22px;
-    box-sizing: border-box;
-    border: 2px solid rgba(45, 212, 191, 0.9);
-    border-radius: 5px;
-    background: rgba(10, 14, 23, 0.85);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
-    transition: all 0.15s ease;
+    top: 7px;
+    left: 7px;
+    z-index: 4;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    cursor: pointer;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
 }
-#galleryGrid.select-mode .gallery-card.selected::after {
-    background-color: rgb(45, 212, 191);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%230a0e17' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M3 8.5l3.5 3.5L13 5'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: 15px;
+.gallery-card:hover .gallery-card-select,
+#galleryGrid.select-mode .gallery-card-select {
+    opacity: 1;
+    pointer-events: auto;
 }
+#galleryGrid.select-mode .gallery-card-heart {
+    opacity: 1;
+    pointer-events: auto;
+}
+
 .gallery-select-bar {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 6px;
     align-items: center;
-    padding: 8px 12px;
-    margin-bottom: 10px;
+    padding: 3px 8px;
+    margin-left: auto;
     background: rgba(45, 212, 191, 0.08);
     border: 1px solid rgba(45, 212, 191, 0.25);
     border-radius: 8px;
     flex-shrink: 0;
 }
+.gallery-select-bar .action-btn { padding: 3px 10px; font-size: 12px; border-radius: 6px; }
 .gallery-select-count {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
     color: #2dd4bf;
     margin-right: 6px;
 }
+
+/* edit mode: top bar compacts so the select bar costs no grid height */
+.gallery-tab.select-active .gallery-toolbar { padding-bottom: 4px; gap: 6px; }
+.gallery-tab.select-active .gallery-toolbar .gallery-dropdown-btn,
+.gallery-tab.select-active .gallery-toolbar input { padding: 3px 8px; font-size: 12px; }
+#Gallery.select-active .gallery-toolbar input#gallerySearch { padding: 3px 8px !important; font-size: 12px !important; min-width: 0 !important; }
+.gallery-tab.select-active .gallery-toolbar .gallery-blur-btn,
+.gallery-tab.select-active .gallery-toolbar .gallery-fav-btn,
+.gallery-tab.select-active .gallery-toolbar .action-btn { padding: 3px 8px; font-size: 12px; }
 
 .gallery-card img {
     position: absolute;
@@ -854,24 +840,7 @@ select option:hover, select option:checked { background: var(--title-color); col
     display: none !important;
 }
 .gallery-card-badge.rating {
-    top: 6px;
-    left: 6px;
-}
-.gallery-card-badge.rating.nsfw {
-    background: rgba(231, 76, 60, 0.92);
-    color: #fff;
-    box-shadow: 0 2px 6px rgba(231, 76, 60, 0.4);
-}
-.gallery-card-badge.rating.sensitive {
-    background: rgba(155, 89, 182, 0.92);
-    color: #fff;
-}
-.gallery-card-badge.rating.questionable {
-    background: rgba(243, 156, 18, 0.92);
-    color: #fff;
-}
-#galleryGrid.select-mode .gallery-card-badge.rating {
-    display: none;
+    display: none !important;
 }
 
 /* NSFW Blur Filter */
@@ -883,40 +852,6 @@ select option:hover, select option:checked { background: var(--title-color); col
     filter: blur(0);
     transform: scale(1);
 }
-.gallery-card-nsfw-overlay {
-    display: none;
-}
-#galleryGrid.blur-nsfw .gallery-card.is-nsfw .gallery-card-nsfw-overlay {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    background: rgba(10, 14, 23, 0.35);
-    z-index: 2;
-    pointer-events: none;
-    transition: opacity 0.2s ease;
-}
-#galleryGrid.blur-nsfw .gallery-card.is-nsfw:hover .gallery-card-nsfw-overlay {
-    opacity: 0;
-}
-.gallery-card-nsfw-overlay .nsfw-pill {
-    background: #e74c3c;
-    color: #fff;
-    font-size: 11px;
-    font-weight: 800;
-    padding: 3px 8px;
-    border-radius: 12px;
-    box-shadow: 0 2px 10px rgba(231, 76, 60, 0.5);
-    letter-spacing: 0.5px;
-}
-.gallery-card-nsfw-overlay .nsfw-hint {
-    font-size: 9px;
-    color: rgba(255, 255, 255, 0.75);
-    font-weight: 500;
-}
 
 .gallery-card-heart {
     position: absolute;
@@ -925,30 +860,33 @@ select option:hover, select option:checked { background: var(--title-color); col
     background: rgba(10, 14, 23, 0.65);
     backdrop-filter: blur(4px);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    font-size: 14px;
+    font-size: 18px;
     cursor: pointer;
     color: #ff4080;
-    padding: 3px;
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
+    padding: 5px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     line-height: 1;
     transition: all 0.15s ease;
     z-index: 3;
     display: flex;
     align-items: center;
     justify-content: center;
-    opacity: 0.85;
+    opacity: 0;
+    pointer-events: none;
+}
+.gallery-card:hover .gallery-card-heart {
+    opacity: 1;
     pointer-events: auto;
 }
-.gallery-card-heart:hover {
+.gallery-card:hover .gallery-card-heart:hover {
     transform: scale(1.12);
     opacity: 1;
     background: rgba(10, 14, 23, 0.9);
     border-color: #ff4080;
 }
 .gallery-card.is-fav .gallery-card-heart {
-    opacity: 1;
     border-color: rgba(255, 64, 128, 0.5);
     background: rgba(255, 64, 128, 0.2);
 }
