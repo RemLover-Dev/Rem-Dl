@@ -1,7 +1,6 @@
 import pytest
 from core.database import DatabaseManager
 import os
-import json
 import tempfile
 import shutil
 import unittest.mock as mock

@@ -1,7 +1,5 @@
 import pytest
 from core.database import SettingsManager
-import os
-import json
 import tempfile
 import shutil
 

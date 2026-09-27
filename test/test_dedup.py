@@ -1,11 +1,12 @@
 import os
+import random
 import tempfile
 import shutil
 import pytest
 from PIL import Image
-from core.dedup_store import DedupStore, compute_signature, PureHash
-from core.shared import check_duplicate, remove_gallery_files
-from core.database import SettingsManager, get_settings
+from core.dedup_store import DedupStore, PureHash
+from core.shared import check_duplicate
+from core.database import get_settings
 
 
 class TestDedupStore:
@@ -95,8 +96,9 @@ class TestDedupStore:
         store, tmp_dir = dedup_env
         p1 = os.path.join(tmp_dir, "keep.png")
         p2 = os.path.join(tmp_dir, "remove.png")
-        Image.new("RGB", (100, 100), color=(1, 2, 3)).save(p1)
-        Image.new("RGB", (100, 100), color=(4, 5, 6)).save(p2)
+        # noise images, not solid colours — near-black solids share every hash
+        Image.frombytes("RGB", (100, 100), random.Random(1).randbytes(30000)).save(p1)
+        Image.frombytes("RGB", (100, 100), random.Random(2).randbytes(30000)).save(p2)
         store.check_and_add(p1)
         store.check_and_add(p2)
         assert store.count() == 2
