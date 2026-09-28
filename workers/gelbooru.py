@@ -11,17 +11,25 @@ class GelbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
 
-        dan_to_gel_rating = {"rating:g": "rating:general", "rating:s": "rating:sensitive", "rating:q": "rating:questionable", "rating:e": "rating:explicit"}
-        self.api_tag = self.original_tag
-        if self.rating:
-            api_rating = dan_to_gel_rating.get(self.rating, self.rating)
-            self.api_tag = f"{self.original_tag} {api_rating}".strip()
-
+        code_of = {"rating:g": "g", "rating:s": "s", "rating:q": "q", "rating:e": "e",
+                   "rating:general": "g", "rating:sensitive": "s",
+                   "rating:questionable": "q", "rating:explicit": "e"}
         self.rating_code_map = {"g": "general", "s": "sensitive", "q": "questionable", "e": "explicit"}
         self.rating_label_map = {"general": "Safe", "sensitive": "Sensitive", "questionable": "Questionable", "explicit": "NSFW"}
-        self.rating_display = ""
-        if self.rating:
-            self.rating_display = self.rating_label_map.get(self.rating_code_map.get(self.rating.split(":")[-1], ""), "")
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        self.rating_allowed = {self.rating_code_map[c] for c in codes}
+
+        # ponytail: gelbooru ANDs rating tags (g+s returns count 0, no OR keyword),
+        # so a multi-rating subset is expressed by negating the complement instead
+        self.api_tag = self.original_tag
+        if codes and len(codes) < len(self.rating_code_map):
+            if len(codes) == 1:
+                self.api_tag = f"{self.original_tag} rating:{self.rating_code_map[codes[0]]}".strip()
+            else:
+                neg = " ".join(f"-rating:{self.rating_code_map[c]}" for c in self.rating_code_map if c not in codes)
+                self.api_tag = f"{self.original_tag} {neg}".strip()
+
+        self.rating_display = ", ".join(self.rating_label_map[self.rating_code_map[c]] for c in codes)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         self.safe_tag_name = sanitize_path_component(clean_tag, fallback="gelbooru")
@@ -141,9 +149,8 @@ class GelbooruWorker(BaseWorker):
                 if not isinstance(post, dict): continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_code = self.rating.split(":")[-1]
-                    if post_rating != self.rating_code_map.get(filter_code, filter_code): continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 file_url = post.get("file_url", "")
                 if not file_url: continue
