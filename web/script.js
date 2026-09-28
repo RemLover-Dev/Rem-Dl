@@ -499,12 +499,12 @@ function logToConsole(tabID, msg) {
         else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Rating: Safe</div>`;
         }
-        // ponytail: badge only matters when the tab isn't already filtered to one rating
+        // ponytail: badge only matters when the tab's rating filter doesn't pin it down
         const _ratingInputByWorker = RATING_INPUT_BY_WORKER;
         const _rsId = _ratingInputByWorker[tabID];
         if (_rsId) {
             const _rsEl = document.getElementById(_rsId);
-            if (_rsEl && _rsEl.value) ratingHtml = "";
+            if (_rsEl && _rsEl.value && _rsEl.value.split(/\s+/).length === 1) ratingHtml = "";
         }
         // ponytail: safebooru is all-safe and rule34 all-explicit — badge states the obvious
         if (tabID === 'safe' || tabID === 'rule34') ratingHtml = "";
@@ -2459,7 +2459,7 @@ function jumpToSite(site, tag, rating) {
     if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
     if (rating) {
         const rsId = RATING_INPUT_BY_WORKER[site];
-        if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) rsEl.value = rating; }
+        if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) { rsEl.value = rating; rsEl.dispatchEvent(new Event('change')); } }
     }
 }
 
@@ -2671,7 +2671,39 @@ function toggleDropdownCheck(el, event) {
     if (menu.id === 'sourceDropdown') onSourceChange();
     else if (menu.id === 'ratingDropdown') onRatingChange();
     else if (menu.id === 'typeDropdown') onTypeChange();
+    else if (menu.id === 'gelRatingDropdown') onGelRatingChange();
 }
+
+function onGelRatingChange() {
+    const menu = document.getElementById('gelRatingDropdown');
+    const hidden = document.getElementById('gelbooruRating');
+    if (!menu || !hidden) return;
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    const checkedItems = itemChecks.filter(c => c.checked);
+    const allCheck = menu.querySelector('input[value=""]');
+    // zero checked means the same as All — normalize so the value stays truthful
+    if (checkedItems.length === 0 && allCheck) allCheck.checked = true;
+    hidden.value = checkedItems.map(c => c.value).join(' ');
+    const btn = document.querySelector('[onclick="toggleDropdown(\'gelRatingDropdown\')"]');
+    if (btn) btn.textContent = getMultiLabel('gelRatingDropdown', 'All Ratings') + ' ▾';
+}
+
+// jumpToSite writes the hidden input's value directly for history restores;
+// keep the checkboxes and button label in sync with it
+document.addEventListener('DOMContentLoaded', function () {
+    const hidden = document.getElementById('gelbooruRating');
+    if (!hidden) return;
+    hidden.addEventListener('change', function () {
+        const menu = document.getElementById('gelRatingDropdown');
+        if (!menu) return;
+        const vals = this.value.split(/\s+/).filter(Boolean);
+        menu.querySelectorAll('input[type="checkbox"]').forEach(c => {
+            c.checked = c.value === '' ? vals.length === 0 : vals.includes(c.value);
+        });
+        const btn = document.querySelector('[onclick="toggleDropdown(\'gelRatingDropdown\')"]');
+        if (btn) btn.textContent = getMultiLabel('gelRatingDropdown', 'All Ratings') + ' ▾';
+    });
+});
 
 function updateRatingDropdown() {
     const sourceChecks = [...document.querySelectorAll('#sourceDropdown input[type="checkbox"]')].filter(c => c.value !== '');
