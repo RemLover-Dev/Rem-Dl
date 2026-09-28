@@ -358,16 +358,29 @@ def folder_manager():
         _invalidate_fp_cache()
     return jsonify({"folder": MASTER_FOLDER})
 
+def _safe_dialog_start_path(start: str) -> str:
+    """Sanitize a start path before it is passed to native folder picker subprocesses."""
+    raw = str(start or "").strip()
+    candidate = os.path.normpath(raw) if raw else ""
+    if not candidate:
+        candidate = os.path.expanduser("~")
+    # Prevent option-like values from being interpreted as CLI flags.
+    if os.path.basename(candidate).startswith("-"):
+        candidate = os.path.expanduser("~")
+    return candidate
+
 def _pick_folder_desktop(start: str):
     """User's desktop folder dialog (pywebview window -> OS native dialog -> tkinter).
     Returns path str if selected, None if cancelled, or False if no picker available.
     """
+    safe_start = _safe_dialog_start_path(start)
+
     # 1. Try active pywebview window
     try:
         import webview
         wins = list(webview.windows)
         if wins:
-            result = wins[0].create_file_dialog(webview.FileDialog.FOLDER, directory=start)
+            result = wins[0].create_file_dialog(webview.FileDialog.FOLDER, directory=safe_start)
             if not result:
                 return None
             picked = result[0] if isinstance(result, (list, tuple)) else str(result)
@@ -383,7 +396,7 @@ def _pick_folder_desktop(start: str):
                 "$ErrorActionPreference = 'Stop'; "
                 "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
                 f"$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
-                f"$f.SelectedPath = '{start}'; "
+                f"$f.SelectedPath = '{safe_start}'; "
                 f"$f.Description = 'Select download folder'; "
                 "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
             )
@@ -396,7 +409,7 @@ def _pick_folder_desktop(start: str):
             pass
     elif sys.platform == "darwin":
         try:
-            osa = f'POSIX path of (choose folder with prompt "Select download folder:" default location POSIX file "{start}")'
+            osa = f'POSIX path of (choose folder with prompt "Select download folder:" default location POSIX file "{safe_start}")'
             r = subprocess.run(["osascript", "-e", osa], capture_output=True, text=True, timeout=120)
             if r.returncode == 0:
                 out = (r.stdout or "").strip()
@@ -406,8 +419,8 @@ def _pick_folder_desktop(start: str):
             pass
     elif sys.platform.startswith("linux"):
         for cmd in (
-            ["kdialog", "--getexistingdirectory", start],
-            ["zenity", "--file-selection", "--directory", f"--filename={start}/"],
+            ["kdialog", "--getexistingdirectory", safe_start],
+            ["zenity", "--file-selection", "--directory", f"--filename={safe_start}/"],
         ):
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
