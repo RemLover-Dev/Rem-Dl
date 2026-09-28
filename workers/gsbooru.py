@@ -22,9 +22,13 @@ from core.shared import (
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
+    load_tag_cache,
+    save_tag_cache,
+    TAG_TYPE_MAP,
 )
 
 POSTS_API = "https://gsbooru.org/api/posts"
+TAGS_API = "https://gsbooru.org/api/tags"
 
 # API schema: rating is an integer {0: g, 1: s, 2: q, 3: e}
 RATING_WORD_BY_INT = {0: "general", 1: "sensitive", 2: "questionable", 3: "explicit"}
@@ -49,6 +53,7 @@ class GsbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
         self.api_key = os.getenv("GSBOORU_API_KEY", "")
+        self.tag_cache = load_tag_cache("gsbooru")
 
         # UI sends rating:g / rating:s / rating:q (space-separated when multi).
         # Site has General, Sensitive, and Questionable (rating=e is empty live).
@@ -113,9 +118,9 @@ class GsbooruWorker(BaseWorker):
     async def fetch_posts(self):
         await self.scraper_task()
 
-    async def _api_get(self, params):
-        """GET /api/posts with Bearer auth. Returns the parsed dict, or None
-        after logging a whitelisted 'API error' line (visible in the console)."""
+    async def _api_get(self, params, url=POSTS_API):
+        """GET a JSON API endpoint with Bearer auth. Returns the parsed dict,
+        or None after logging a whitelisted 'API error' line (console-visible)."""
         if not self.api_key:
             self.log("API error: GSBOORU_API_KEY missing in .env — generate one in gsbooru account settings.")
             return None
@@ -126,7 +131,7 @@ class GsbooruWorker(BaseWorker):
                 return None
             try:
                 async with self.session.get(
-                        POSTS_API, params=params, headers=headers, timeout=30) as resp:
+                        url, params=params, headers=headers, timeout=30) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         if isinstance(data, dict) and data.get("status") == "ok":
@@ -150,6 +155,78 @@ class GsbooruWorker(BaseWorker):
             await asyncio.sleep(5)
         self.log(f"API error: {last}")
         return None
+
+    async def _throttled_get(self, params_list):
+        """Run several GETs with launches 1.7 s apart (the API allows 3 queries
+        / 5 s per key) and up to 3 in flight (the server parallel-handles)."""
+        sem = asyncio.Semaphore(3)
+
+        async def one(p):
+            async with sem:
+                return await self._api_get(p, url=TAGS_API)
+
+        tasks = []
+        for p in params_list:
+            tasks.append(asyncio.create_task(one(p)))
+            await asyncio.sleep(1.7)
+        return await asyncio.gather(*tasks)
+
+    async def _fetch_tag_types(self, tag_names):
+        """Categorize tags via batched prefix lookups on /api/tags (the server
+        takes ~3 s per exact query, so group by first letter), cached on disk."""
+        remaining = {t for t in tag_names if t not in self.tag_cache}
+        if not remaining:
+            return
+        by_char = {}
+        for t in remaining:
+            by_char.setdefault(t[0].lower(), []).append(t)
+        try:
+            # wave 1: one prefix page per first letter (top 100 by post_count)
+            if self.stop_event.is_set():
+                return
+            chars = list(by_char)
+            results = await self._throttled_get(
+                [{"tag_string": f"{ch}*", "limit": 100, "sort": "post_count"}
+                 for ch in chars])
+            for ch, data in zip(chars, results):
+                if data is None:
+                    return
+                wanted = {n.lower(): n for n in by_char[ch]}
+                for t in data.get("tags") or []:
+                    low = str(t.get("name", "")).lower()
+                    if low in wanted:
+                        orig = wanted.pop(low)
+                        self.tag_cache[orig] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
+
+            # wave 2: leftovers outside the top-100 prefix pages get exact lookups
+            leftovers = [n for n in remaining if n not in self.tag_cache]
+            if leftovers and not self.stop_event.is_set():
+                results = await self._throttled_get(
+                    [{"tag_string": n, "limit": 50} for n in leftovers])
+                for name, data in zip(leftovers, results):
+                    if data is None:
+                        return
+                    match = next(
+                        (t for t in data.get("tags") or []
+                         if str(t.get("name", "")).lower() == name.lower()),
+                        None)
+                    self.tag_cache[name] = (
+                        TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                        if match is not None else "tag"
+                    )
+        finally:
+            save_tag_cache(self.tag_cache, "gsbooru")
+
+    def _categorize_tags(self, tag_names):
+        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
+        for t in tag_names:
+            cat = self.tag_cache.get(t, "tag")
+            if cat == "artist": artists.append(t)
+            elif cat == "character": characters.append(t)
+            elif cat == "copyright": copyrights.append(t)
+            elif cat == "metadata": metadata_tags.append(t)
+            else: general.append(t)
+        return general, artists, characters, copyrights, metadata_tags
 
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         # gsbooru fetches files via curl too; skip the aiohttp HEAD request.
@@ -389,23 +466,33 @@ class GsbooruWorker(BaseWorker):
                     filename
                 )
 
+                # cheap dupe check first — don't pay tag lookups for posts
+                # we won't enqueue anyway (enqueue re-checks below)
+                if (filename in self.dl_history
+                        or filename in self.queued_items
+                        or os.path.exists(filepath)):
+                    continue
+
                 # ponytail: the API returns one flat tag_string —
-                # no artist/character split, everything lands as general
-                tags_list = [
+                # categories come from the cached /api/tags lookups
+                tag_names = [
                     t
                     for t in str(post.get("tag_string", "")).split()
                     if t
                 ]
+                await self._fetch_tag_types(tag_names)
+                (tags_list, artists, characters,
+                 copyrights, metadata_tags) = self._categorize_tags(tag_names)
 
                 if await self.enqueue_download(
                     file_url,
                     filepath,
                     filename,
                     tags_list,
-                    artists=[],
-                    characters=[],
-                    copyrights=[],
-                    metadata_tags=[]
+                    artists,
+                    characters,
+                    copyrights,
+                    metadata_tags
                 ):
                     page_enqueued += 1
 
