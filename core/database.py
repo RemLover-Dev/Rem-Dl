@@ -316,6 +316,13 @@ class SettingsManager:
                 new_lines.append(f"{key}={val}\n")
         self._write_env_lines(new_lines)
 
+    def _remove_env_keys(self, keys):
+        lines = [
+            line for line in self._read_env_lines()
+            if line.split("=", 1)[0].strip() not in keys
+        ]
+        self._write_env_lines(lines)
+
     def save_config(self):
         env_keys = {
             "USE_PROXY": str(self.config['use_proxy']).lower(),
@@ -331,27 +338,35 @@ class SettingsManager:
         os.environ["DEDUP_ENABLED"] = env_keys["DEDUP_ENABLED"]
 
     def save_api_settings(self, data):
-        keys_to_save = {
-            "RULE34_API_KEY": data.get("rule34_api_key", ""),
+        # Non-identifying fields persist in .env; secrets (keys, passwords,
+        # cookies, tokens) stay process-memory only: writing them to .env is
+        # the cleartext-storage sink flagged by CodeQL (clear-text-storage).
+        non_sensitive_keys = {
             "RULE34_USER_ID": data.get("rule34_user_id", ""),
-            "GELBOORU_API_KEY": data.get("gelbooru_api_key", ""),
             "GELBOORU_USER_ID": data.get("gelbooru_user_id", ""),
             "KONACHAN_USERNAME": data.get("konachan_login", ""),
-            "KONACHAN_PASSWORD": data.get("konachan_password", ""),
             "SANKA_LOGIN": data.get("sanka_login", ""),
-            "SANKA_PASSWORD": data.get("sanka_password", ""),
             "ZEROCHAN_LOGIN": data.get("zerochan_login", ""),
+            "PINTEREST_EMAIL": data.get("pinterest_email", ""),
+            "DANBOORU_LOGIN": data.get("danbooru_login", "")
+        }
+        sensitive_keys = {
+            "RULE34_API_KEY": data.get("rule34_api_key", ""),
+            "GELBOORU_API_KEY": data.get("gelbooru_api_key", ""),
+            "KONACHAN_PASSWORD": data.get("konachan_password", ""),
+            "SANKA_PASSWORD": data.get("sanka_password", ""),
             "ZEROCHAN_PASSWORD": data.get("zerochan_password", ""),
             "PINTEREST_COOKIES": data.get("pinterest_cookies", ""),
-            "PINTEREST_EMAIL": data.get("pinterest_email", ""),
             "PINTEREST_PASSWORD": data.get("pinterest_password", ""),
             "PIXIV_REFRESH_TOKEN": data.get("pixiv_refresh_token", ""),
             "PIXIV_COOKIE": data.get("pixiv_cookie", ""),
-            "DANBOORU_LOGIN": data.get("danbooru_login", ""),
             "DANBOORU_API_KEY": data.get("danbooru_api_key", "")
         }
-        self._upsert_env_keys(keys_to_save)
-        for k, v in keys_to_save.items():
+        self._upsert_env_keys(non_sensitive_keys)
+        # purge secrets from .env too: keeps legacy cleartext off disk and
+        # stops stale values resurrecting after restart via load_dotenv
+        self._remove_env_keys(sensitive_keys)
+        for k, v in {**non_sensitive_keys, **sensitive_keys}.items():
             os.environ[k] = v
 
     def load_api_settings(self):
@@ -363,24 +378,27 @@ class SettingsManager:
                     if "=" in line and not line.startswith("#"):
                         k, v = line.split("=", 1)
                         config[k.strip()] = v.strip()
+        # runtime env (set by save_api_settings / load_dotenv) wins over file
+        resolved = dict(config)
+        resolved.update(os.environ)
         return {
-            "rule34_api_key": config.get("RULE34_API_KEY", ""),
-            "rule34_user_id": config.get("RULE34_USER_ID", ""),
-            "gelbooru_api_key": config.get("GELBOORU_API_KEY", ""),
-            "gelbooru_user_id": config.get("GELBOORU_USER_ID", ""),
-            "konachan_login": config.get("KONACHAN_USERNAME", ""),
-            "konachan_password": config.get("KONACHAN_PASSWORD", ""),
-            "sanka_login": config.get("SANKA_LOGIN", ""),
-            "sanka_password": config.get("SANKA_PASSWORD", ""),
-            "zerochan_login": config.get("ZEROCHAN_LOGIN", config.get("ZEROCHAN_USERNAME", "")),
-            "zerochan_password": config.get("ZEROCHAN_PASSWORD", ""),
-            "pinterest_cookies": config.get("PINTEREST_COOKIES", ""),
-            "pinterest_email": config.get("PINTEREST_EMAIL", ""),
-            "pinterest_password": config.get("PINTEREST_PASSWORD", ""),
-            "pixiv_refresh_token": config.get("PIXIV_REFRESH_TOKEN", ""),
-            "pixiv_cookie": config.get("PIXIV_COOKIE", ""),
-            "danbooru_login": config.get("DANBOORU_LOGIN", ""),
-            "danbooru_api_key": config.get("DANBOORU_API_KEY", "")
+            "rule34_api_key": resolved.get("RULE34_API_KEY", ""),
+            "rule34_user_id": resolved.get("RULE34_USER_ID", ""),
+            "gelbooru_api_key": resolved.get("GELBOORU_API_KEY", ""),
+            "gelbooru_user_id": resolved.get("GELBOORU_USER_ID", ""),
+            "konachan_login": resolved.get("KONACHAN_USERNAME", ""),
+            "konachan_password": resolved.get("KONACHAN_PASSWORD", ""),
+            "sanka_login": resolved.get("SANKA_LOGIN", ""),
+            "sanka_password": resolved.get("SANKA_PASSWORD", ""),
+            "zerochan_login": resolved.get("ZEROCHAN_LOGIN", resolved.get("ZEROCHAN_USERNAME", "")),
+            "zerochan_password": resolved.get("ZEROCHAN_PASSWORD", ""),
+            "pinterest_cookies": resolved.get("PINTEREST_COOKIES", ""),
+            "pinterest_email": resolved.get("PINTEREST_EMAIL", ""),
+            "pinterest_password": resolved.get("PINTEREST_PASSWORD", ""),
+            "pixiv_refresh_token": resolved.get("PIXIV_REFRESH_TOKEN", ""),
+            "pixiv_cookie": resolved.get("PIXIV_COOKIE", ""),
+            "danbooru_login": resolved.get("DANBOORU_LOGIN", ""),
+            "danbooru_api_key": resolved.get("DANBOORU_API_KEY", "")
         }
 
 
