@@ -576,7 +576,8 @@ def set_clipboard():
             pass
         return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Clipboard error:", e)
+        return jsonify({"error": "internal clipboard error"}), 500
 
 @app.route("/api/api-settings", methods=["GET", "POST"])
 def api_settings_manager():
