@@ -379,7 +379,7 @@ def folder_manager():
     return jsonify({"folder": MASTER_FOLDER})
 
 def _safe_dialog_start_path(start: str) -> str:
-    """Canonicalize a picker start path: absolute, existing, under home, no flag-like segments."""
+    """Canonicalize a picker start path: absolute, existing, no flag-like segments."""
     home = os.path.realpath(os.path.expanduser("~"))
     raw = str(start or "").strip()
     candidate = os.path.normpath(raw) if raw else home
@@ -389,13 +389,10 @@ def _safe_dialog_start_path(start: str) -> str:
         if not os.path.isabs(candidate):
             return home
         candidate = os.path.realpath(candidate)
-        if not candidate.startswith(home + os.sep):
-            return home
         if not os.path.isdir(candidate):
             return home
         # Reject any path segment that could be parsed as a CLI flag.
-        rel = os.path.relpath(candidate, home)
-        if any(seg.startswith("-") for seg in rel.split(os.sep)):
+        if any(seg.startswith("-") for seg in candidate.split(os.sep)):
             return home
         return candidate
     except Exception:
@@ -424,18 +421,22 @@ def _pick_folder_desktop(start: str):
     Returns path str if selected, None if cancelled, or False if no picker available.
     """
     safe_start = _safe_subprocess_path_arg(start)
-    # 1. Try active pywebview window
-    try:
-        import webview
-        wins = list(webview.windows)
-        if wins:
-            result = wins[0].create_file_dialog(webview.FileDialog.FOLDER, directory=safe_start)
-            if not result:
-                return None
-            picked = result[0] if isinstance(result, (list, tuple)) else str(result)
-            return picked or None
-    except Exception:
-        pass
+    # 1. Try active pywebview window (skipped on KDE: its GTK chooser is not the
+    # native dialog there — the kdialog picker in step 2 runs instead)
+    kde_session = sys.platform.startswith("linux") and \
+        "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    if not kde_session:
+        try:
+            import webview
+            wins = list(webview.windows)
+            if wins:
+                result = wins[0].create_file_dialog(webview.FileDialog.FOLDER, directory=safe_start)
+                if not result:
+                    return None
+                picked = result[0] if isinstance(result, (list, tuple)) else str(result)
+                return picked or None
+        except Exception:
+            pass
 
     # 2. Platform-specific CLI dialogs
     import subprocess
