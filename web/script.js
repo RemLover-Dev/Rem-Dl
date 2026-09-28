@@ -598,7 +598,7 @@ function renderRule34Tags() {
         let cls = isNeg ? 'warning' : 'positive';
         let icon = isNeg ? '− ' : '✔ ';
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + text + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
     }).join('');
 }
 
