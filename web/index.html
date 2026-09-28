@@ -435,9 +435,35 @@
 
             <div id="History" class="tab-content" style="display: none;">
                 <div class="options-scroll">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
                         <h2>Tag Search History</h2>
                         <button class="action-btn stop-btn" onclick="clearHistory()">Clear All History</button>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px;">
+                        <div class="gallery-dropdown">
+                            <button class="gallery-dropdown-btn" onclick="toggleDropdown('histSourceDropdown')">All Sources ▾</button>
+                            <div id="histSourceDropdown" class="gallery-dropdown-menu">
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>
+                            </div>
+                        </div>
+                        <div class="gallery-dropdown">
+                            <button class="gallery-dropdown-btn" onclick="toggleDropdown('histSortDropdown')">Newest First ▾</button>
+                            <div id="histSortDropdown" class="gallery-dropdown-menu">
+                                <div class="dd-item" onclick="selectHistorySort(this, 'newest')"><span>Newest First</span></div>
+                                <div class="dd-item" onclick="selectHistorySort(this, 'oldest')"><span>Oldest First</span></div>
+                            </div>
+                        </div>
+                        <div class="gallery-dropdown">
+                            <button class="gallery-dropdown-btn" onclick="toggleDropdown('histRatingDropdown')">All Ratings ▾</button>
+                            <div id="histRatingDropdown" class="gallery-dropdown-menu">
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>Safe</span><input type="checkbox" value="safe"></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>Sensitive</span><input type="checkbox" value="sensitive"></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>Questionable</span><input type="checkbox" value="questionable"></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>NSFW</span><input type="checkbox" value="explicit"></div>
+                            </div>
+                        </div>
+                        <input type="text" id="historySearch" placeholder="Search tags, e.g. rem blue_hair" oninput="historyQuery = this.value; renderHistory()" style="background: var(--input-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 13px; color: var(--text-color); outline: none; width: 220px; min-width: 180px; max-width: 320px; flex: 1;">
                     </div>
                     <div id="historyListUI" style="display: flex; flex-direction: column; gap: 8px;"></div>
 

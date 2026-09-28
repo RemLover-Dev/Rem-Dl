@@ -38,10 +38,20 @@ class TestDatabaseManager:
         assert len(hist) == 1
         assert hist[0]["site"] == "zero"
         assert hist[0]["tag"] == "test_tag"
-        
+        assert hist[0]["searched_at"] > 0
+
+        # re-searching the same tag keeps one entry and refreshes it
+        DatabaseManager.add_tag_history("zero", "other_tag")
+        DatabaseManager.add_tag_history("zero", "test_tag")
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["tag"] == "test_tag"
+
         DatabaseManager.remove_tag_history("zero", "test_tag")
         hist2 = DatabaseManager.load_tag_history()
-        assert len(hist2) == 0
+        assert len(hist2) == 1
+        DatabaseManager.remove_tag_history("zero", "other_tag")
+        assert len(DatabaseManager.load_tag_history()) == 0
 
     def test_favorites_operations(self, db_env):
         # Add to favorites

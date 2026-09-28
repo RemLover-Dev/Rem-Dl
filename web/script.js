@@ -440,6 +440,14 @@ const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", 
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
 }
+function appendLogCard(cb, card) {
+    // follow the tail only if the user was already at the bottom — scrolling
+    // up to read shouldn't be yanked back down by the next log entry
+    const atBottom = cb.scrollTop + cb.clientHeight >= cb.scrollHeight - 30;
+    cb.appendChild(card);
+    capConsole(cb);
+    if (atBottom) cb.scrollTop = cb.scrollHeight;
+}
 function logToConsole(tabID, msg) {
     let boxMap = CONSOLE_BOX_MAP;
     let cb = document.getElementById(boxMap[tabID.toLowerCase()] || "consoleLog_main");
@@ -537,9 +545,7 @@ function logToConsole(tabID, msg) {
         </div>
         <div class="img-card-number">${countNum}</div>
         `;
-        cb.appendChild(card);
-        capConsole(cb);
-        cb.scrollTop = cb.scrollHeight;
+        appendLogCard(cb, card);
         return;
     }
 
@@ -558,9 +564,7 @@ function logToConsole(tabID, msg) {
         let card = document.createElement("div");
         card.className = "log-item system";
         card.innerHTML = `<span style="font-size:16px;display:inline-flex;"><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none"><path fill="currentColor" fill-rule="evenodd" d="M18.98 2.458c0.805 -0.423 2.358 -0.958 5.02 -0.958s4.215 0.535 5.022 0.958c0.612 0.32 0.97 0.83 1.174 1.256 0.29 0.605 0.925 1.97 1.48 3.449a18.483 18.483 0 0 1 3.063 1.771c1.56 -0.26 3.061 -0.39 3.731 -0.443 0.47 -0.036 1.09 0.02 1.675 0.39 0.77 0.486 2.01 1.563 3.34 3.869 1.332 2.306 1.644 3.918 1.681 4.828 0.029 0.69 -0.233 1.255 -0.5 1.645a44.816 44.816 0 0 1 -2.25 3.01 18.738 18.738 0 0 1 0 3.534 44.867 44.867 0 0 1 2.25 3.01c0.267 0.39 0.529 0.954 0.5 1.645 -0.037 0.91 -0.35 2.522 -1.68 4.828 -1.332 2.306 -2.572 3.383 -3.341 3.87 -0.584 0.37 -1.204 0.425 -1.675 0.389a44.829 44.829 0 0 1 -3.731 -0.443 18.478 18.478 0 0 1 -3.063 1.771 44.816 44.816 0 0 1 -1.48 3.449c-0.204 0.426 -0.562 0.935 -1.174 1.256 -0.807 0.422 -2.36 0.958 -5.022 0.958 -2.662 0 -4.215 -0.535 -5.022 -0.958 -0.612 -0.32 -0.97 -0.83 -1.174 -1.256 -0.29 -0.605 -0.925 -1.97 -1.48 -3.449a18.48 18.48 0 0 1 -3.063 -1.771c-1.56 0.26 -3.062 0.39 -3.732 0.443 -0.47 0.036 -1.09 -0.02 -1.674 -0.39 -0.77 -0.486 -2.01 -1.563 -3.34 -3.869 -1.332 -2.306 -1.645 -3.918 -1.682 -4.828 -0.028 -0.69 0.234 -1.255 0.5 -1.645a44.84 44.84 0 0 1 2.25 -3.01 18.727 18.727 0 0 1 0 -3.534 44.844 44.844 0 0 1 -2.25 -3.01c-0.266 -0.39 -0.528 -0.954 -0.5 -1.645 0.038 -0.91 0.35 -2.522 1.681 -4.828 1.331 -2.306 2.572 -3.383 3.341 -3.87 0.584 -0.37 1.204 -0.425 1.675 -0.389 0.67 0.052 2.17 0.184 3.73 0.443a18.48 18.48 0 0 1 3.064 -1.771 44.852 44.852 0 0 1 1.48 -3.449c0.204 -0.426 0.562 -0.935 1.174 -1.256ZM32 24a8 8 0 1 1 -16 0 8 8 0 0 1 16 0Z" clip-rule="evenodd"></path></svg></span> <span style="flex:1;">${clean}</span>`;
-        cb.appendChild(card);
-        capConsole(cb);
-        cb.scrollTop = cb.scrollHeight;
+        appendLogCard(cb, card);
     }
 }
 
@@ -2358,6 +2362,50 @@ async function saveDownloadSettings() {
 let historyTags = [];
 let favoriteTags = [];
 let imageHistory = [];
+let historyQuery = "";
+let historyExpanded = false;
+let historySort = "newest";
+
+// history ratings encode differently per site (yande "rating:s" == Safe,
+// danbooru "rating:s" == Sensitive) — canonicalize before filtering/labels
+const HISTORY_RATING_DAN = {'rating:g':'safe','rating:s':'sensitive','rating:q':'questionable','rating:e':'explicit','rating:general':'safe','rating:sensitive':'sensitive','rating:questionable':'questionable','rating:explicit':'explicit','safe':'safe','sensitive':'sensitive','questionable':'questionable','explicit':'explicit','general':'safe'};
+const HISTORY_RATING_YANDE = {'rating:s':'safe','rating:q':'questionable','rating:e':'explicit','safe':'safe','questionable':'questionable','explicit':'explicit'};
+function historyRatingCanon(site, rating) {
+    if (!rating) return "";
+    const m = ['yande', 'kona', 'sankaku'].includes(site) ? HISTORY_RATING_YANDE : HISTORY_RATING_DAN;
+    return m[String(rating).toLowerCase()] || "";
+}
+function historyRatingLabel(site, rating) {
+    const c = historyRatingCanon(site, rating);
+    return c === 'explicit' ? 'NSFW' : c ? c.charAt(0).toUpperCase() + c.slice(1) : "";
+}
+function selectHistorySort(el, value) {
+    historySort = value;
+    const btn = document.querySelector('[onclick="toggleDropdown(\'histSortDropdown\')"]');
+    if (btn) btn.textContent = el.textContent.trim() + " \u25be";
+    const menu = document.getElementById("histSortDropdown");
+    if (menu) menu.classList.remove("open");
+    renderHistory();
+}
+function populateHistSourceDropdown() {
+    const menu = document.getElementById("histSourceDropdown");
+    if (!menu) return;
+    const sites = [...new Set(historyTags.map(x => String(x.site || "").toLowerCase()).filter(Boolean))].sort();
+    const key = sites.join(",");
+    if (menu.dataset.sites === key) return;
+    menu.dataset.sites = key;
+    const prev = getMultiSelectValues("histSourceDropdown");
+    const prevSet = prev && prev !== "__none__" ? prev.split(",") : [];
+    menu.innerHTML = `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>` +
+        sites.map(s => `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>${s}</span><input type="checkbox" value="${s}"></div>`).join("");
+    if (prevSet.length) {
+        menu.querySelectorAll('input[type="checkbox"]').forEach(c => { if (prevSet.includes(c.value)) c.checked = true; });
+        const all = menu.querySelector('input[value=""]');
+        if (all) all.checked = false;
+    }
+}
+
+function toggleHistoryExpanded() { historyExpanded = !historyExpanded; renderHistory(); }
 
 async function loadTagsData() {
     try {
@@ -2382,19 +2430,49 @@ function renderHistory() {
     let ui = document.getElementById("historyListUI");
     if(!ui) return;
     let currentScroll = ui.parentElement.scrollTop;
+    populateHistSourceDropdown();
+    // gallery-style query: underscores == spaces, split on spaces/commas,
+    // every term must match (multi-tag AND across site/tag/rating)
+    const terms = historyQuery.trim().toLowerCase().replace(/,/g, " ").split(/\s+/).filter(Boolean).map(t => t.replace(/_/g, " "));
+    const srcSel = getMultiSelectValues("histSourceDropdown");
+    const ratSel = getMultiSelectValues("histRatingDropdown");
+    const srcSet = srcSel && srcSel !== "__none__" ? srcSel.split(",") : null;
+    const ratSet = ratSel && ratSel !== "__none__" ? ratSel.split(",") : null;
+    let filtered = historyTags.filter(it => {
+        if (srcSet && !srcSet.includes(String(it.site || "").toLowerCase())) return false;
+        if (ratSet && !ratSet.includes(historyRatingCanon(it.site, it.rating))) return false;
+        if (!terms.length) return true;
+        const hay = ((it.site || "") + " " + it.tag + " " + (it.rating || "")).toLowerCase().replace(/_/g, " ");
+        return terms.every(t => hay.includes(t));
+    });
+    if (historySort === "oldest") filtered.reverse();
+    const srcBtn = document.querySelector('[onclick="toggleDropdown(\'histSourceDropdown\')"]');
+    if (srcBtn) srcBtn.textContent = getMultiLabel("histSourceDropdown", "All Sources") + " \u25be";
+    const ratBtn = document.querySelector('[onclick="toggleDropdown(\'histRatingDropdown\')"]');
+    if (ratBtn) ratBtn.textContent = getMultiLabel("histRatingDropdown", "All Ratings") + " \u25be";
+    const list = historyExpanded ? filtered : filtered.slice(0, 10);
     let htmlStr = "";
     if (historyTags.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No search history yet.</p>";
     } else {
-        historyTags.forEach(item => {
+        if (filtered.length > 10) {
+            htmlStr += `<div style="position: sticky; top: 0; z-index: 5; background: var(--panel-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); padding: 6px 0; margin-bottom: 4px;"><button class="action-btn" style="padding: 4px 10px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); color: var(--title-color);" onclick="toggleHistoryExpanded()">${historyExpanded ? "Show Less" : `Show All (${filtered.length})`}</button></div>`;
+        }
+        if (list.length === 0) htmlStr += "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No matches.</p>";
+        list.forEach(item => {
             let isFav = isFavorite(item.site, item.tag);
             let heartBtn = heartIcon(isFav);
             let heartColor = isFav ? "#ff6b6b" : "var(--text-color)";
-            let heartBg = isFav ? "rgba(255, 107, 107, 0.2)" : "transparent";            const RATING_LABELS_DAN = {'rating:g':'Safe','rating:s':'Sensitive','rating:q':'Questionable','rating:e':'NSFW','rating:general':'Safe','rating:sensitive':'Sensitive','rating:questionable':'Questionable','rating:explicit':'NSFW','safe':'Safe','sensitive':'Sensitive','questionable':'Questionable','explicit':'NSFW','general':'Safe'};
-            const RATING_LABELS_YANDE = {'rating:s':'Safe','rating:q':'Questionable','rating:e':'NSFW','safe':'Safe','questionable':'Questionable','explicit':'NSFW'};
-            const _rl = ['yande', 'kona', 'sankaku'].includes(item.site) ? RATING_LABELS_YANDE : RATING_LABELS_DAN;
-            let ratingBadge = item.rating ? `<span style="color: #2dd4bf; font-size: 11px; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.4); padding: 2px 5px; border-radius: 4px; margin-left: 10px;">${_rl[item.rating] || item.rating}</span>` : "";
-            htmlStr += `<div style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')">&times;</button></div></div>`;
+            let heartBg = isFav ? "rgba(255, 107, 107, 0.2)" : "transparent";
+            const _lab = historyRatingLabel(item.site, item.rating);
+            let ratingBadge = _lab ? `<span style="color: #2dd4bf; font-size: 11px; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.4); padding: 2px 5px; border-radius: 4px; margin-left: 10px;">${_lab}</span>` : "";
+            let timeSpan = "";
+            if (item.searched_at) {
+                const d = new Date(item.searched_at * 1000);
+                const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+                timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
+            }
+            htmlStr += `<div style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')">&times;</button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;

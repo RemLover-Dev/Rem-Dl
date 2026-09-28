@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import time
 
 
 def _app_base_dir():
@@ -88,10 +89,14 @@ class DatabaseManager:
     @staticmethod
     def add_tag_history(site, tag, rating=""):
         hist = DatabaseManager.load_tag_history()
-        entry = {"site": site, "tag": tag, "rating": rating or ""}
-        if entry not in hist:
-            hist.insert(0, entry)
-            DatabaseManager.save_tag_history(hist)
+        rating = rating or ""
+        # re-searching the same tag refreshes it: move to top with a new stamp
+        hist = [x for x in hist
+                if not (x.get("site") == site and x.get("tag") == tag
+                        and (x.get("rating") or "") == rating)]
+        hist.insert(0, {"site": site, "tag": tag, "rating": rating,
+                        "searched_at": time.time()})
+        DatabaseManager.save_tag_history(hist)
 
     @staticmethod
     def remove_tag_history(site, tag, rating=None):
