@@ -1255,6 +1255,14 @@ def get_image_history():
         hist = [{**h, "favourite": h.get("filename") in favs} for h in hist]
     except Exception:
         pass
+    # old entries predate downloaded_at — approximate with the file's mtime
+    for h in hist:
+        if not h.get("downloaded_at"):
+            fp = h.get("filepath")
+            try:
+                h["downloaded_at"] = os.path.getmtime(os.path.join(MASTER_FOLDER, fp)) if fp else 0
+            except OSError:
+                h["downloaded_at"] = 0
     return jsonify(hist)
 
 @app.route("/api/image_history/clear", methods=["POST"])

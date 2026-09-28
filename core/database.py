@@ -139,7 +139,8 @@ class DatabaseManager:
             "site": worker_name,
             "filename": filename,
             "tags": dict(tags_dict),
-            "filepath": filepath
+            "filepath": filepath,
+            "downloaded_at": time.time()
         }
         hist.insert(0, entry)
         hist = hist[:100]

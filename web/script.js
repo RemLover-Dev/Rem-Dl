@@ -2468,6 +2468,51 @@ function populateHistSourceDropdown() {
 
 function toggleHistoryExpanded() { historyExpanded = !historyExpanded; renderHistory(); }
 
+const HISTORY_MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function historyDayRange(y, mo, d) {
+    const from = new Date(y, mo, d).getTime();
+    return { from, to: from + 86400000 - 1 };
+}
+// date/time tokens in the search box filter BOTH history sections:
+// a full date = that calendar day, an hour = past 24 hours
+function parseHistoryQuery(q) {
+    let s = " " + q.trim().toLowerCase().replace(/,/g, " ") + " ";
+    let range = null, m;
+    if ((m = s.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/))) {
+        if (+m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) { range = historyDayRange(+m[1], +m[2] - 1, +m[3]); s = s.replace(m[0], " "); }
+    }
+    if (!range && (m = s.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/))) {
+        const y = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : new Date().getFullYear();
+        if (+m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) { range = historyDayRange(y, +m[1] - 1, +m[2]); s = s.replace(m[0], " "); }
+    }
+    if (!range && (m = s.match(/\b([a-z]{3,9})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/))) {
+        const mo = HISTORY_MONTHS[m[1].slice(0, 3)];
+        if (mo !== undefined && +m[2] >= 1 && +m[2] <= 31) { range = historyDayRange(m[3] ? +m[3] : new Date().getFullYear(), mo, +m[2]); s = s.replace(m[0], " "); }
+    }
+    if (!range && (m = s.match(/\b(\d{1,2})\s+([a-z]{3,9})\.?(?:\s+(\d{4}))?\b/))) {
+        const mo = HISTORY_MONTHS[m[2].slice(0, 3)];
+        if (mo !== undefined && +m[1] >= 1 && +m[1] <= 31) { range = historyDayRange(m[3] ? +m[3] : new Date().getFullYear(), mo, +m[1]); s = s.replace(m[0], " "); }
+    }
+    // explicit time syntax is consumed even alongside a date; a lone
+    // hour-only query (e.g. "14") means the past 24 hours
+    if ((m = s.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/) || (m = s.match(/\b(\d{1,2})(am|pm)\b/)))) {
+        if (+m[1] <= 23) { if (!range) range = { from: Date.now() - 86400000, to: Date.now() }; s = s.replace(m[0], " "); }
+    }
+    let toks = s.trim().split(/\s+/).filter(t => t && t !== "am" && t !== "pm");
+    if (!range && toks.length === 1 && /^\d{1,2}$/.test(toks[0]) && +toks[0] <= 23) {
+        range = { from: Date.now() - 86400000, to: Date.now() };
+        toks = [];
+    }
+    const terms = toks.map(t => t.replace(/_/g, " "));
+    return { terms, range };
+}
+function historySearchInput(v) {
+    historyQuery = v;
+    imageHistoryVisible = 30;
+    renderHistory();
+    renderImageHistory();
+}
+
 async function loadTagsData() {
     try {
         // ponytail: independent reads — never serialize round trips
@@ -2493,8 +2538,9 @@ function renderHistory() {
     let currentScroll = ui.parentElement.scrollTop;
     populateHistSourceDropdown();
     // gallery-style query: underscores == spaces, split on spaces/commas,
-    // every term must match (multi-tag AND across site/tag/rating)
-    const terms = historyQuery.trim().toLowerCase().replace(/,/g, " ").split(/\s+/).filter(Boolean).map(t => t.replace(/_/g, " "));
+    // every term must match (multi-tag AND across site/tag/rating);
+    // date/time tokens in the query filter by searched_at instead
+    const { terms, range } = parseHistoryQuery(historyQuery);
     const srcSel = getMultiSelectValues("histSourceDropdown");
     const ratSel = getMultiSelectValues("histRatingDropdown");
     const srcSet = srcSel && srcSel !== "__none__" ? srcSel.split(",") : null;
@@ -2502,6 +2548,10 @@ function renderHistory() {
     let filtered = historyTags.filter(it => {
         if (srcSet && !srcSet.includes(String(it.site || "").toLowerCase())) return false;
         if (ratSet && !ratSet.includes(historyRatingCanon(it.site, it.rating))) return false;
+        if (range) {
+            const t = it.searched_at ? it.searched_at * 1000 : 0;
+            if (t < range.from || t > range.to) return false;
+        }
         if (!terms.length) return true;
         const hay = ((it.site || "") + " " + it.tag + " " + (it.rating || "")).toLowerCase().replace(/_/g, " ");
         return terms.every(t => hay.includes(t));
@@ -2512,13 +2562,14 @@ function renderHistory() {
     const ratBtn = document.querySelector('[onclick="toggleDropdown(\'histRatingDropdown\')"]');
     if (ratBtn) ratBtn.textContent = getMultiLabel("histRatingDropdown", "All Ratings") + " \u25be";
     const list = historyExpanded ? filtered : filtered.slice(0, 10);
+    const wrap = document.getElementById("historyExpandWrap");
+    if (wrap) wrap.innerHTML = filtered.length > 10
+        ? `<button class="action-btn" style="padding: 4px 10px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); color: var(--title-color);" onclick="toggleHistoryExpanded()">${historyExpanded ? "Show Less" : `Show All (${filtered.length})`}</button>`
+        : "";
     let htmlStr = "";
     if (historyTags.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No search history yet.</p>";
     } else {
-        if (filtered.length > 10) {
-            htmlStr += `<div style="position: sticky; top: 0; z-index: 5; background: var(--panel-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); padding: 6px 0; margin-bottom: 4px;"><button class="action-btn" style="padding: 4px 10px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); color: var(--title-color);" onclick="toggleHistoryExpanded()">${historyExpanded ? "Show Less" : `Show All (${filtered.length})`}</button></div>`;
-        }
         if (list.length === 0) htmlStr += "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No matches.</p>";
         list.forEach(item => {
             let isFav = isFavorite(item.site, item.tag);
@@ -2636,6 +2687,22 @@ function getSafeThumbUrl(filepath, filename) {
 
 // تابع جدید هیستوری که دقیقاً کپی عکسی هست که دادی
 let imageHistoryVisible = 30;
+let imgHistFiltered = [];
+function filteredImageHistory() {
+    const { terms, range } = parseHistoryQuery(historyQuery);
+    return imageHistory.filter(img => {
+        if (range) {
+            const t = img.downloaded_at ? img.downloaded_at * 1000 : 0;
+            if (t < range.from || t > range.to) return false;
+        }
+        if (!terms.length) return true;
+        let allTags = [];
+        let tagsDict = normalizeTags(img.tags || {});
+        TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
+        const hay = ((img.site || "") + " " + (img.filepath || img.filename || "") + " " + allTags.join(" ")).toLowerCase().replace(/_/g, " ");
+        return terms.every(t => hay.includes(t));
+    });
+}
 function renderImageHistory() {
     let ui = document.getElementById("imageHistoryUI");
     if(!ui) return;
@@ -2644,7 +2711,7 @@ function renderImageHistory() {
     if (scroller && !scroller.dataset.histScroll) {
         scroller.dataset.histScroll = "1";
         scroller.addEventListener("scroll", () => {
-            if (imageHistoryVisible >= imageHistory.length) return;
+            if (imageHistoryVisible >= imgHistFiltered.length) return;
             if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) {
                 imageHistoryVisible += 30;
                 renderImageHistory();
@@ -2652,12 +2719,15 @@ function renderImageHistory() {
         });
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
+    imgHistFiltered = filteredImageHistory();
     let htmlStr = "";
     if (imageHistory.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No images downloaded yet.</p>";
+    } else if (imgHistFiltered.length === 0) {
+        htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No matches.</p>";
     } else {
         // ponytail: render in pages — full DOM + 100 thumb requests froze the tab
-        imageHistory.slice(0, imageHistoryVisible).forEach(img => {
+        imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => {
             let tagsStr = renderCategorizedTags(img.tags || {}, false);
 
             let ratingHtml = "";
@@ -2705,7 +2775,7 @@ function renderImageHistory() {
     ui.innerHTML = htmlStr;
     if (scroller) scroller.scrollTop = currentScroll;
     // if the rendered list still doesn't fill the view, keep loading
-    if (imageHistoryVisible < imageHistory.length && scroller && scroller.scrollHeight <= scroller.clientHeight + 400) {
+    if (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.scrollHeight <= scroller.clientHeight + 400) {
         imageHistoryVisible += 30;
         renderImageHistory();
     }

@@ -441,7 +441,7 @@
                 <div class="options-scroll">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
                         <h2>Tag Search History</h2>
-                        <button class="action-btn stop-btn" onclick="clearHistory()">Clear All History</button>
+                        <button class="action-btn stop-btn" onclick="clearHistory()">Clear</button>
                     </div>
                     <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px;">
                         <div class="gallery-dropdown">
@@ -467,13 +467,14 @@
                                 <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>NSFW</span><input type="checkbox" value="explicit"></div>
                             </div>
                         </div>
-                        <input type="text" id="historySearch" placeholder="Search tags, e.g. rem blue_hair" oninput="historyQuery = this.value; renderHistory()" style="background: var(--input-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 13px; color: var(--text-color); outline: none; width: 220px; min-width: 180px; max-width: 320px; flex: 1;">
+                        <input type="text" id="historySearch" placeholder="Search tags or date (e.g. rem, 09/29, 14:00)" oninput="historySearchInput(this.value)" style="background: var(--input-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 13px; color: var(--text-color); outline: none; width: 220px; min-width: 180px; max-width: 320px; flex: 1;">
+                        <span id="historyExpandWrap" style="display: flex; align-items: center;"></span>
                     </div>
                     <div id="historyListUI" style="display: flex; flex-direction: column; gap: 8px;"></div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px; margin-bottom: 15px;">
                         <h2 style="color: var(--accent-color);">Downloaded Images Archive</h2>
-                        <button class="action-btn stop-btn" onclick="clearImageHistory()">Clear Archive</button>
+                        <button class="action-btn stop-btn" onclick="clearImageHistory()">Clear</button>
                     </div>
                     <div id="imageHistoryUI" style="display: flex; flex-direction: column; gap: 15px;"></div>
                 </div>
