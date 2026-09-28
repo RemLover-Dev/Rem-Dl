@@ -360,14 +360,16 @@ def folder_manager():
         if not os.path.isabs(raw):
             return jsonify({"error": "invalid folder path"}), 400
         candidate = os.path.realpath(raw)
-        if not os.path.isdir(candidate):
-            return jsonify({"error": "folder does not exist"}), 400
+        # containment guard must run before any filesystem probe of
+        # `candidate` — isdir earlier was CodeQL alert #44
         safe_root = os.path.realpath(os.path.expanduser("~"))
         try:
             if os.path.normcase(os.path.commonpath([safe_root, candidate])) != os.path.normcase(safe_root):
                 return jsonify({"error": "folder outside allowed root"}), 400
         except ValueError:
             return jsonify({"error": "invalid folder path"}), 400
+        if not os.path.isdir(candidate):
+            return jsonify({"error": "folder does not exist"}), 400
         MASTER_FOLDER = candidate
         shared.MASTER_FOLDER = MASTER_FOLDER
         _invalidate_fp_cache()
