@@ -350,8 +350,8 @@
 
             <div id="Gelbooru" class="tab-content" style="display: none;">
                 <h2>Gelbooru Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 9px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="gelbooruTag" placeholder="e.g. 1girl blue_hair" onkeydown="if(event.key==='Enter') addGelbooruTag()">
@@ -359,7 +359,7 @@
                         </div>
                         <div id="gelbooruTagsContainer" class="tag-visualizer" style="margin-top: 0; height: 32px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; align-items: center; scrollbar-width: thin;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 9px;">Limit:</label>
                     <input type="number" id="gelbooruLimit" value="50" min="0" style="width: 80px;">
                     <div class="gallery-dropdown" style="margin-right: 6px;">
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('gelRatingDropdown')">All Ratings ▾</button>
