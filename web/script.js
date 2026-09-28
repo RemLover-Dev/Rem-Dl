@@ -2988,7 +2988,7 @@ function renderGallery() {
         const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
         const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
         const src = `/api/gallery/thumb/${encodeURI(fp)}`;
-        const imgTag = `<img src="${src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
+        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
 
@@ -3218,13 +3218,22 @@ document.addEventListener('keydown', function(e) {
 
 // gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
 // (the image viewer above keeps ←/→ for next/prev image while it is open)
+// While a key is held, pages render normally but with placeholder thumbs so the
+// traversal stays visible without fetching previews for every page passed over.
 let _galNavTimer = null;
+let galleryPagingFast = false;
 function galleryPageNav(page) {
-    if (_galNavTimer === null) loadGallery(page);       // single press: go right away
-    else currentGalleryPage = page;                      // key held: remember the target only
+    const first = _galNavTimer === null;   // single press = normal render with thumbs
     clearTimeout(_galNavTimer);
-    // one trailing fetch after the repeats stop — intermediate pages never fetch/render
-    _galNavTimer = setTimeout(() => { _galNavTimer = null; loadGallery(currentGalleryPage); }, 200);
+    if (!first) galleryPagingFast = true;  // key held: placeholder thumbs while traversing
+    _galNavTimer = setTimeout(() => {
+        _galNavTimer = null;
+        if (galleryPagingFast) {
+            galleryPagingFast = false;
+            loadGallery(currentGalleryPage);   // settled: real thumbnails for this page
+        }
+    }, 200);
+    loadGallery(page);
 }
 document.addEventListener('keydown', function(e) {
     const gal = document.getElementById('Gallery');
