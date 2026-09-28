@@ -3218,6 +3218,14 @@ document.addEventListener('keydown', function(e) {
 
 // gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
 // (the image viewer above keeps ←/→ for next/prev image while it is open)
+let _galNavTimer = null;
+function galleryPageNav(page) {
+    if (_galNavTimer === null) loadGallery(page);       // single press: go right away
+    else currentGalleryPage = page;                      // key held: remember the target only
+    clearTimeout(_galNavTimer);
+    // one trailing fetch after the repeats stop — intermediate pages never fetch/render
+    _galNavTimer = setTimeout(() => { _galNavTimer = null; loadGallery(currentGalleryPage); }, 200);
+}
 document.addEventListener('keydown', function(e) {
     const gal = document.getElementById('Gallery');
     if (!gal || gal.style.display === 'none') return;
@@ -3232,7 +3240,7 @@ document.addEventListener('keydown', function(e) {
     else if (e.key === 'ArrowLeft' || e.key === 'PageUp') page = currentGalleryPage - 1;
     if (page === null || page < 1 || page > (galleryState.total_pages || 1)) return;
     e.preventDefault();
-    loadGallery(page);
+    galleryPageNav(page);
 });
 
 // drag-paint: hold left button and sweep across cards to select/deselect
