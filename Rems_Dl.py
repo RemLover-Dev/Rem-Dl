@@ -1831,6 +1831,7 @@ def handle_connect():
         shutdown_timer.cancel()
         shutdown_timer = None
     print("Browser Tab Connected!")
+    _emit_queue_state()
 
 @socketio.on("disconnect")
 def handle_disconnect():
@@ -1846,17 +1847,55 @@ def handle_disconnect():
 
 # ==========================================
 
-@socketio.on("start_worker")
-def handle_start_worker(data):
+# ==========================================
+# === DOWNLOAD QUEUE — one tag at a time ===
+# ==========================================
+DOWNLOAD_QUEUE = []
+QUEUE_LOCK = threading.Lock()
+_active_job = None
+
+def _safe_int(value, default=0):
+    try:
+        return int(str(value).strip() or default)
+    except (ValueError, TypeError):
+        return default
+
+def _queue_entry(job):
+    return {"site": job.get("worker", "?"),
+            "tag": (job.get("tag") or job.get("category") or "").strip() or "?"}
+
+def _emit_queue_state():
+    with QUEUE_LOCK:
+        active = _queue_entry(_active_job) if _active_job else None
+        queued = [_queue_entry(j) for j in DOWNLOAD_QUEUE]
+    socketio.emit("dl_queue", {"active": active, "queue": queued})
+
+def _start_job_thread(job):
+    threading.Thread(target=_run_job, args=(job,), daemon=True).start()
+
+def _run_job(job):
+    global _active_job
+    try:
+        _dispatch_worker(job)
+    except Exception as e:
+        print(f"Worker error ({job.get('worker')}): {e}", flush=True)
+    finally:
+        nxt = None
+        with QUEUE_LOCK:
+            _active_job = None
+            if DOWNLOAD_QUEUE:
+                nxt = DOWNLOAD_QUEUE.pop(0)
+                _active_job = nxt
+        if nxt is not None:
+            entry = _queue_entry(nxt)
+            shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
+            _start_job_thread(nxt)
+        _emit_queue_state()
+
+def _dispatch_worker(data):
+    """Run one download job to completion (blocking — called inside its own thread)."""
     worker = data.get("worker")
     net_config = data.get("net_config", {})
-
-    def _safe_int(value, default=0):
-        try:
-            return int(str(value).strip() or default)
-        except (ValueError, TypeError):
-            return default
-
     tag = data.get("tag", data.get("category", "")).strip()
 
     if tag:
@@ -1872,39 +1911,58 @@ def handle_start_worker(data):
     if worker == "zero":
         net_config["zerochan_login"] = os.getenv("ZEROCHAN_LOGIN") or os.getenv("ZEROCHAN_USERNAME", "")
         net_config["zerochan_password"] = os.getenv("ZEROCHAN_PASSWORD", "")
-        threading.Thread(target=worker_zerochan, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config), daemon=True).start()
-    elif worker == "waifu": threading.Thread(target=worker_waifu, args=(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("nsfw", False), net_config), daemon=True).start()
-    elif worker == "neko": threading.Thread(target=worker_nekos_best, args=(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config), daemon=True).start()
-    elif worker == "safe": threading.Thread(target=worker_safebooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "rule34": threading.Thread(target=worker_rule34, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("method", "and"), data.get("sort_type", "id"), data.get("sort_order", "desc"), data.get("exclusions", []), net_config, data.get("exclude_ai", False)), daemon=True).start()
-    elif worker == "gelbooru": threading.Thread(target=worker_gelbooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "gsbooru": threading.Thread(target=worker_gsbooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "nekos_life": threading.Thread(target=worker_nekos_life, args=(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config, data.get("format", "both")), daemon=True).start()
-    elif worker == "yande": threading.Thread(target=worker_yande, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config), daemon=True).start()
-    elif worker == "kona": threading.Thread(target=worker_konachan, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "dan": threading.Thread(target=worker_danbooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "sankaku": threading.Thread(target=worker_sankaku, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "anime_dl": threading.Thread(target=worker_anime_dl, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config), daemon=True).start()
+        worker_zerochan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
+    elif worker == "waifu": worker_waifu(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("nsfw", False), net_config)
+    elif worker == "neko": worker_nekos_best(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config)
+    elif worker == "safe": worker_safebooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("exclusions", []), net_config)
+    elif worker == "rule34": worker_rule34(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("method", "and"), data.get("sort_type", "id"), data.get("sort_order", "desc"), data.get("exclusions", []), net_config, data.get("exclude_ai", False))
+    elif worker == "gelbooru": worker_gelbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "gsbooru": worker_gsbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "nekos_life": worker_nekos_life(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config, data.get("format", "both"))
+    elif worker == "yande": worker_yande(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config)
+    elif worker == "kona": worker_konachan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "dan": worker_danbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "sankaku": worker_sankaku(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "anime_dl": worker_anime_dl(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
     elif worker == "pinterest":
         net_config["pinterest_cookies"] = os.getenv("PINTEREST_COOKIES", "")
         net_config["pinterest_email"] = os.getenv("PINTEREST_EMAIL", "")
         net_config["pinterest_password"] = os.getenv("PINTEREST_PASSWORD", "")
-        threading.Thread(target=worker_pinterest, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("is_search", False), net_config, _safe_int(data.get("min_w", 0), 0), _safe_int(data.get("min_h", 0), 0)), daemon=True).start()
+        worker_pinterest(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("is_search", False), net_config, _safe_int(data.get("min_w", 0), 0), _safe_int(data.get("min_h", 0), 0))
     elif worker == "pixiv":
         net_config["pixiv_refresh_token"] = os.getenv("PIXIV_REFRESH_TOKEN", "")
-        threading.Thread(target=worker_pixiv, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False)), daemon=True).start()
+        worker_pixiv(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False))
     elif worker == "eshuushuu":
         from workers.eshuushuu import worker_eshuushuu
-        threading.Thread(target=worker_eshuushuu, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), [], data.get("user_id", ""), net_config), daemon=True).start()
+        worker_eshuushuu(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), [], data.get("user_id", ""), net_config)
     elif worker == "nekosapi":
         from workers.nekosapi import worker_nekosapi
-        threading.Thread(target=worker_nekosapi, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config), daemon=True).start()
+        worker_nekosapi(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config)
     elif worker == "nekosia":
         try:
             from workers.nekosia import worker_nekosia
-            threading.Thread(target=worker_nekosia, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config), daemon=True).start()
+            worker_nekosia(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config)
         except ImportError:
             pass # در صورتی که بعدا خواستی فایل nekosia.py رو بسازی ارور نده
+
+@socketio.on("get_queue")
+def handle_get_queue():
+    # ponytail: the connect-time emit can race the client's handler
+    # registration on page load — pull again once listeners exist
+    _emit_queue_state()
+
+@socketio.on("start_worker")
+def handle_start_worker(data):
+    global _active_job
+    with QUEUE_LOCK:
+        if _active_job is None:
+            _active_job = data
+            _start_job_thread(data)
+        else:
+            DOWNLOAD_QUEUE.append(data)
+            entry = _queue_entry(data)
+            shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(DOWNLOAD_QUEUE)} waiting) <<<")
+    _emit_queue_state()
 
 @socketio.on("stop_worker")
 def handle_stop_worker(data):
@@ -1913,6 +1971,14 @@ def handle_stop_worker(data):
     if name in shared.STOP_EVENTS:
         for evt in shared.STOP_EVENTS[name]:
             evt.set()
+    # ponytail: stop stays per-site — cancel this site's waiting entries only,
+    # other queued requests keep their turn
+    with QUEUE_LOCK:
+        before = len(DOWNLOAD_QUEUE)
+        DOWNLOAD_QUEUE[:] = [j for j in DOWNLOAD_QUEUE if j.get("worker") != name]
+        if len(DOWNLOAD_QUEUE) < before:
+            shared.log_msg(name, ">>> Notice: queued request cancelled <<<")
+    _emit_queue_state()
 
 def startup_rescan():
     gallery, count, _fixed = _scan_and_merge_gallery()

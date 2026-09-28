@@ -1928,7 +1928,68 @@ socket.on("dl_progress", function (data) {
     if (txt) txt.textContent = Math.round(data.pct) + "%";
 });
 
+function renderQueueChip(data) {
+    const chip = document.getElementById("queueChip");
+    const text = document.getElementById("queueChipText");
+    const list = document.getElementById("queueList");
+    if (!chip || !text || !list) return;
+    const queued = (data && data.queue) || [];
+    if (!queued.length) {
+        chip.style.display = "none";
+        list.style.display = "none";
+        return;
+    }
+    chip.style.display = "inline-flex";
+    text.textContent = `queued: ${queued.length} request${queued.length === 1 ? "" : "s"}`;
+    list.innerHTML = "";
+    const add = (label, cls) => {
+        const row = document.createElement("div");
+        row.className = "queue-item" + (cls ? " " + cls : "");
+        row.textContent = label;
+        list.appendChild(row);
+    };
+    if (data.active) add(`\u25B6 ${data.active.site} — ${data.active.tag}`, "running");
+    queued.forEach((j, i) => add(`${i + 1}. ${j.site} — ${j.tag}`));
+}
+
+function toggleQueueList(ev) {
+    if (ev) ev.stopPropagation();
+    const list = document.getElementById("queueList");
+    if (list) list.style.display = list.style.display === "none" ? "block" : "none";
+}
+document.addEventListener("click", function (e) {
+    const chip = document.getElementById("queueChip");
+    const list = document.getElementById("queueList");
+    if (chip && list && !chip.contains(e.target)) list.style.display = "none";
+});
+
+// server: one tag at a time — sync buttons/progress and the queue chip
+socket.on("dl_queue", function (data) {
+    if (!data) return;
+    const busy = new Set();
+    if (data.active) busy.add(data.active.site);
+    (data.queue || []).forEach(j => busy.add(j.site));
+    const activeSite = data.active ? data.active.site : null;
+    Object.keys(workerRunning).forEach(w => {
+        if (busy.has(w)) {
+            // ponytail: don't touch the active tab — a local STOP press must not
+            // be overridden while its worker is still winding down
+            if (w !== activeSite && !workerRunning[w]) { workerRunning[w] = true; renderRunBtn(w); }
+        } else if (workerRunning[w]) {
+            workerRunning[w] = false; renderRunBtn(w);
+        }
+    });
+    // jobs still waiting: hide their progress bar until the job actually starts
+    (data.queue || []).forEach(j => {
+        const key = WORKER_TO_TAB[j.site];
+        const c = document.getElementById("dualProgress_" + key);
+        if (c) c.style.display = "none";
+    });
+    renderQueueChip(data);
+});
+
 window.onload = async function () {
+    socket.emit("get_queue");
     try {
         let resp = await fetch("/api/config");
         let config = await resp.json();
