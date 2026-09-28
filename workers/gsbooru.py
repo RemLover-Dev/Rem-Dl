@@ -54,6 +54,7 @@ class GsbooruWorker(BaseWorker):
         self.exclusions = exclusions
         self.api_key = os.getenv("GSBOORU_API_KEY", "")
         self.tag_cache = load_tag_cache("gsbooru")
+        self._last_api_launch = 0.0
 
         # UI sends rating:g / rating:s / rating:q (space-separated when multi).
         # Site has General, Sensitive, and Questionable (rating=e is empty live).
@@ -126,9 +127,19 @@ class GsbooruWorker(BaseWorker):
             return None
         headers = {"Authorization": f"Bearer {self.api_key}"}
         last = "unknown error"
+        loop = asyncio.get_running_loop()
         for attempt in range(4):
             if self.stop_event.is_set():
                 return None
+            # global pacing for this worker: every launch (posts + tags, all
+            # concurrent tasks) ≥ 1.7 s after the previous one — keeps any
+            # rolling 5 s window at ≤ 3 queries, the documented limit
+            while True:
+                wait = self._last_api_launch + 1.7 - loop.time()
+                if wait <= 0:
+                    self._last_api_launch = loop.time()
+                    break
+                await asyncio.sleep(wait)
             try:
                 async with self.session.get(
                         url, params=params, headers=headers, timeout=30) as resp:
@@ -157,19 +168,15 @@ class GsbooruWorker(BaseWorker):
         return None
 
     async def _throttled_get(self, params_list):
-        """Run several GETs with launches 1.7 s apart (the API allows 3 queries
-        / 5 s per key) and up to 3 in flight (the server parallel-handles)."""
+        """Run several GETs with up to 3 in flight (the server parallel-handles);
+        launch pacing lives in _api_get so every call shares one gate."""
         sem = asyncio.Semaphore(3)
 
         async def one(p):
             async with sem:
                 return await self._api_get(p, url=TAGS_API)
 
-        tasks = []
-        for p in params_list:
-            tasks.append(asyncio.create_task(one(p)))
-            await asyncio.sleep(1.7)
-        return await asyncio.gather(*tasks)
+        return await asyncio.gather(*[one(p) for p in params_list])
 
     async def _fetch_tag_types(self, tag_names):
         """Categorize tags via batched prefix lookups on /api/tags (the server
