@@ -1,8 +1,5 @@
 import os
-import re
 import asyncio
-import subprocess
-import hashlib
 
 try:
     from workers import BaseWorker
@@ -12,13 +9,6 @@ except ImportError:
     from workers import BaseWorker
 
 from core.shared import (
-    save_history,
-    write_image_metadata,
-    add_to_gallery,
-    send_tags,
-    build_tagd,
-    check_duplicate,
-    MASTER_FOLDER,
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
@@ -32,16 +22,6 @@ TAGS_API = "https://gsbooru.org/api/tags"
 
 # API schema: rating is an integer {0: g, 1: s, 2: q, 3: e}
 RATING_WORD_BY_INT = {0: "general", 1: "sensitive", 2: "questionable", 3: "explicit"}
-
-
-def _gsbooru_curl(url, out_path=None, timeout=60):
-    """Fetch file bytes via curl. No Referer header: /files/* answers 403
-    when one is present (verified live — the old 'workaround' is now the block)."""
-    cmd = ["curl", "-s", "-L", "--max-time", str(timeout)]
-    if out_path:
-        cmd += ["-o", out_path]
-    cmd += [url]
-    return subprocess.run(cmd, capture_output=True, timeout=timeout + 30)
 
 
 class GsbooruWorker(BaseWorker):
@@ -188,24 +168,31 @@ class GsbooruWorker(BaseWorker):
         for t in remaining:
             by_char.setdefault(t[0].lower(), []).append(t)
         try:
-            # wave 1: one prefix page per first letter (top 100 by post_count)
+            # prefix pages: top 300 per first letter (3 rounds of parallel
+            # calls) — much cheaper than one exact query per leftover
             if self.stop_event.is_set():
                 return
-            chars = list(by_char)
-            results = await self._throttled_get(
-                [{"tag_string": f"{ch}*", "limit": 100, "sort": "post_count"}
-                 for ch in chars])
-            for ch, data in zip(chars, results):
-                if data is None:
-                    return
-                wanted = {n.lower(): n for n in by_char[ch]}
-                for t in data.get("tags") or []:
-                    low = str(t.get("name", "")).lower()
-                    if low in wanted:
-                        orig = wanted.pop(low)
-                        self.tag_cache[orig] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
+            for page in (1, 2, 3):
+                chars = [ch for ch in by_char
+                         if any(n not in self.tag_cache for n in by_char[ch])]
+                if not chars:
+                    break
+                results = await self._throttled_get(
+                    [{"tag_string": f"{ch}*", "limit": 100, "page": page,
+                      "sort": "post_count"}
+                     for ch in chars])
+                for ch, data in zip(chars, results):
+                    if data is None:
+                        return
+                    wanted = {n.lower(): n for n in by_char[ch]
+                              if n not in self.tag_cache}
+                    for t in data.get("tags") or []:
+                        low = str(t.get("name", "")).lower()
+                        if low in wanted:
+                            orig = wanted.pop(low)
+                            self.tag_cache[orig] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
 
-            # wave 2: leftovers outside the top-100 prefix pages get exact lookups
+            # final fallback: exact lookups for anything past rank 300
             leftovers = [n for n in remaining if n not in self.tag_cache]
             if leftovers and not self.stop_event.is_set():
                 results = await self._throttled_get(
@@ -234,103 +221,6 @@ class GsbooruWorker(BaseWorker):
             elif cat == "metadata": metadata_tags.append(t)
             else: general.append(t)
         return general, artists, characters, copyrights, metadata_tags
-
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
-        # gsbooru fetches files via curl too; skip the aiohttp HEAD request.
-        if artists is None:
-            artists = []
-        if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
-            return False
-        self.queued_items.add(filename)
-        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, 0, characters, copyrights, metadata_tags, outfits, groups, hair, eyes))
-        self.enqueued_count += 1
-        return True
-
-    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
-        if self.stop_event.is_set():
-            self.enqueued_count -= 1
-            return False
-
-        part_path = filepath + ".part"
-        for attempt in range(self.dl_retries):
-            try:
-                proc = await asyncio.to_thread(_gsbooru_curl, url, part_path, 300)
-                if proc.returncode != 0:
-                    raise Exception(
-                        f"curl exit {proc.returncode}: "
-                        f"{(proc.stderr or b'')[:200].decode('utf-8', 'replace')}"
-                    )
-                if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
-                    raise Exception("empty download")
-
-                # booru filenames embed their md5 (-<32hex>.ext); verify content
-                # so a stale/recompressed variant is rejected, not saved as good
-                m = re.search(r'-([0-9a-f]{32})\.[^.]+$', filename, re.I)
-                if m:
-                    h = hashlib.md5()
-                    with open(part_path, 'rb') as f:
-                        for chunk in iter(lambda: f.read(1 << 20), b''):
-                            h.update(chunk)
-                    if h.hexdigest() != m.group(1).lower():
-                        os.remove(part_path)
-                        raise Exception("md5 mismatch: server sent a different/degraded file")
-
-                # publish under the real name only after full verification
-                os.replace(part_path, filepath)
-
-                # persistent perceptual-hash dedup (see core/shared.py)
-                dup = check_duplicate(filepath, self.name)
-                if dup is not None and dup.is_duplicate:
-                    try:
-                        os.remove(filepath)
-                    except OSError:
-                        pass
-                    self.enqueued_count -= 1
-                    self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
-                    return False
-
-                self.downloaded_count += 1
-                self.downloaded_bytes += os.path.getsize(filepath)
-                self.dl_history.add(filename)
-                save_history(self.site_root, self.dl_history)
-
-                if self.is_scanning and self.amount > 0:
-                    target_total = max(self.amount, self.enqueued_count)
-                else:
-                    target_total = max(self.enqueued_count, self.downloaded_count)
-
-                pct = int((self.downloaded_count / target_total) * 100) if target_total > 0 else 0
-
-                rel_path = os.path.relpath(filepath, MASTER_FOLDER)
-                top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
-                tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
-
-                write_image_metadata(filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                add_to_gallery(self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                self.log(
-                    f"[SUCCESS] Downloaded {filename} "
-                    f"({self.downloaded_count}/{target_total}) [{pct}%] "
-                    f"|PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}"
-                )
-                send_tags(self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                return True
-
-            except Exception as e:
-                if os.path.exists(part_path):
-                    os.remove(part_path)
-                if self.stop_event.is_set():
-                    self.enqueued_count -= 1
-                    break
-                if attempt < self.dl_retries - 1:
-                    await asyncio.sleep(2)
-                else:
-                    self.enqueued_count -= 1
-                    err_msg = str(e).strip() or "HTTP 404 / File Deleted from Server"
-                    self.log(f"[FAILED] {filename}: {err_msg}")
-                    self.failed_count += 1
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-        return False
 
     async def scraper_task(self):
 

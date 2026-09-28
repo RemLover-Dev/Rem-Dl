@@ -75,3 +75,20 @@ def test_categorize_tags_uses_cache(master):
     assert characters == ["zani_(wuthering_waves)"]
     assert copyrights == ["wuthering_waves"]
     assert metadata_tags == ["highres"]
+
+
+def test_progress_pct_counts_inflight(master, monkeypatch):
+    # live bar: completed images + fractional in-flight files over the target
+    w = GsbooruWorker("rem", 10, "", [], NET_CONFIG)
+    w.is_scanning = True
+    w.enqueued_count = 4
+    w.downloaded_count = 1
+    w._inflight = {"a.jpg": 0.5, "b.jpg": 0.25}
+
+    assert w._progress_pct() == 17.5
+
+    events = []
+    monkeypatch.setattr("core.shared.socketio_emit",
+                        lambda ev, data: events.append((ev, data)))
+    w._emit_progress()
+    assert events == [("dl_progress", {"worker": "gsbooru", "pct": 17.5})]
