@@ -401,12 +401,29 @@ def _safe_dialog_start_path(start: str) -> str:
     except Exception:
         return home
 
+
+def _safe_subprocess_path_arg(path_value: str) -> str:
+    """Return a safe absolute directory path for subprocess args, else home fallback."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    try:
+        candidate = _safe_dialog_start_path(path_value)
+        if not candidate:
+            return home
+        # Disallow control characters/newlines and characters that may confuse CLI parsers.
+        if any(ch in candidate for ch in ("\x00", "\r", "\n")):
+            return home
+        if any(ch in candidate for ch in ('"', "'", "`")):
+            return home
+        return candidate
+    except Exception:
+        return home
+
+
 def _pick_folder_desktop(start: str):
     """User's desktop folder dialog (pywebview window -> OS native dialog -> tkinter).
     Returns path str if selected, None if cancelled, or False if no picker available.
     """
-    safe_start = _safe_dialog_start_path(start)
-
+    safe_start = _safe_subprocess_path_arg(start)
     # 1. Try active pywebview window
     try:
         import webview
