@@ -3216,6 +3216,25 @@ document.addEventListener('keydown', function(e) {
     exitSelectMode();
 }, true);
 
+// gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
+// (the image viewer above keeps ←/→ for next/prev image while it is open)
+document.addEventListener('keydown', function(e) {
+    const gal = document.getElementById('Gallery');
+    if (!gal || gal.style.display === 'none') return;
+    const viewer = document.getElementById('galleryViewer');
+    if (viewer && viewer.style.display === 'flex') return;
+    if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
+    if (gallerySelectMode) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    let page = null;
+    if (e.key === 'ArrowRight' || e.key === 'PageDown') page = currentGalleryPage + 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') page = currentGalleryPage - 1;
+    if (page === null || page < 1 || page > (galleryState.total_pages || 1)) return;
+    e.preventDefault();
+    loadGallery(page);
+});
+
 // drag-paint: hold left button and sweep across cards to select/deselect
 document.addEventListener('mousedown', function(e) {
     if (e.button !== 0) { _paintPending = false; return; }
