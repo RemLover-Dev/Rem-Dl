@@ -2991,7 +2991,7 @@ function renderGallery() {
         const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
         const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
         const src = `/api/gallery/thumb/${encodeURI(fp)}`;
-        const imgTag = `<img src="${src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
+        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
 
@@ -3218,6 +3218,43 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     exitSelectMode();
 }, true);
+
+// gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
+// (the image viewer above keeps ←/→ for next/prev image while it is open)
+// While a key is held, pages render normally but with placeholder thumbs so the
+// traversal stays visible without fetching previews for every page passed over.
+let _galNavTimer = null;
+let galleryPagingFast = false;
+function galleryPageNav(page) {
+    const first = _galNavTimer === null;   // single press = normal render with thumbs
+    clearTimeout(_galNavTimer);
+    if (!first) galleryPagingFast = true;  // key held: placeholder thumbs while traversing
+    _galNavTimer = setTimeout(() => {
+        _galNavTimer = null;
+        if (galleryPagingFast) {
+            galleryPagingFast = false;
+            loadGallery(currentGalleryPage);   // settled: real thumbnails for this page
+        }
+    }, 200);
+    loadGallery(page);
+}
+document.addEventListener('keydown', function(e) {
+    const gal = document.getElementById('Gallery');
+    if (!gal || gal.style.display === 'none') return;
+    const viewer = document.getElementById('galleryViewer');
+    if (viewer && viewer.style.display === 'flex') return;
+    if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
+    if (gallerySelectMode) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    let page = null;
+    const k = e.key.toLowerCase();
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || k === 'd') page = currentGalleryPage + 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || k === 'a') page = currentGalleryPage - 1;
+    if (page === null || page < 1 || page > (galleryState.total_pages || 1)) return;
+    e.preventDefault();
+    galleryPageNav(page);
+});
 
 // drag-paint: hold left button and sweep across cards to select/deselect
 document.addEventListener('mousedown', function(e) {
