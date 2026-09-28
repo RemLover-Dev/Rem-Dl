@@ -3245,8 +3245,9 @@ document.addEventListener('keydown', function(e) {
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     let page = null;
-    if (e.key === 'ArrowRight' || e.key === 'PageDown') page = currentGalleryPage + 1;
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') page = currentGalleryPage - 1;
+    const k = e.key.toLowerCase();
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || k === 'd') page = currentGalleryPage + 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || k === 'a') page = currentGalleryPage - 1;
     if (page === null || page < 1 || page > (galleryState.total_pages || 1)) return;
     e.preventDefault();
     galleryPageNav(page);
