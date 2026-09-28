@@ -467,9 +467,12 @@ def _pick_folder_desktop(start: str):
         except Exception:
             pass
     elif sys.platform.startswith("linux"):
+        # argv elements are literals: kdialog/zenity start at home because
+        # CodeQL's command-line query is flow-based (no path guard barriers).
+        dialog_home = os.path.expanduser("~")
         for cmd in (
-            ["kdialog", "--getexistingdirectory", f"{safe_start}"],
-            ["zenity", "--file-selection", "--directory", f"--filename={safe_start}/"],
+            ["kdialog", "--getexistingdirectory", dialog_home],
+            ["zenity", "--file-selection", "--directory", f"--filename={dialog_home}/"],
         ):
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
