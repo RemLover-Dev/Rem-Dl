@@ -6,6 +6,14 @@ let currentActiveTheme = 'dark';
 // localStorage throws when blocked (private mode / file://) — a crash here kills the whole script
 function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
 
 const TAG_CATEGORIES =["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "mangaka", "game", "theme", "source", "meta", "vtuber", "series", "studio", "tag"];
 const RATING_INPUT_BY_WORKER = {dan:'danRating', gelbooru:'gelbooruRating', gsbooru:'gsbooruRating', kona:'konaRating', yande:'yandeRating', sankaku:'sankakuRating', nekosapi:'nekosapiRating', nekosia:'nekosiaRating', pixiv:'pixivRating'};
@@ -2931,10 +2939,12 @@ function renderGallery() {
             detail = "No downloaded images found in the gallery folder. Download some images or click Rescan.";
         }
 
+        const safeHint = escapeHtml(hint);
+        const safeDetail = escapeHtml(detail);
         grid.innerHTML = `<div class="gallery-empty-state" style="grid-column: 1 / -1; width: 100%; padding: 60px 20px; text-align: center; color: var(--text-color); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
             <div style="font-size: 36px; opacity: 0.6;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg></div>
-            <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${hint}</div>
-            <div style="font-size: 13px; opacity: 0.65; max-width: 480px; line-height: 1.5;">${detail}</div>
+            <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${safeHint}</div>
+            <div style="font-size: 13px; opacity: 0.65; max-width: 480px; line-height: 1.5;">${safeDetail}</div>
             <button class="action-btn" onclick="resetGalleryFilters()" style="margin-top: 8px; padding: 6px 18px; font-size: 13px; cursor: pointer;">Reset All Filters</button>
         </div>`;
         pagination.innerHTML = '';
