@@ -30,7 +30,8 @@ class TestSettingsManager:
         api_data = {
             "rule34_api_key": "test_r34_key",
             "gelbooru_api_key": "test_gel_key",
-            "pixiv_refresh_token": "test_pixiv_token"
+            "pixiv_refresh_token": "test_pixiv_token",
+            "gsbooru_api_key": "test_gs_key"
         }
         
         # Save settings
@@ -41,6 +42,7 @@ class TestSettingsManager:
         assert loaded.get("rule34_api_key") == "test_r34_key"
         assert loaded.get("gelbooru_api_key") == "test_gel_key"
         assert loaded.get("pixiv_refresh_token") == "test_pixiv_token"
+        assert loaded.get("gsbooru_api_key") == "test_gs_key"
 
     def test_secrets_stay_out_of_env_file_and_env_wins(self, settings_env):
         # legacy cleartext secret in .env must be purged on save
