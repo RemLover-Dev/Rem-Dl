@@ -1,3 +1,4 @@
+import os
 import pytest
 from core.database import SettingsManager
 import tempfile
@@ -40,3 +41,21 @@ class TestSettingsManager:
         assert loaded.get("rule34_api_key") == "test_r34_key"
         assert loaded.get("gelbooru_api_key") == "test_gel_key"
         assert loaded.get("pixiv_refresh_token") == "test_pixiv_token"
+
+    def test_secrets_stay_out_of_env_file_and_env_wins(self, settings_env):
+        # legacy cleartext secret in .env must be purged on save
+        settings_env._upsert_env_keys({"PIXIV_COOKIE": "legacy-cookie",
+                                       "KONACHAN_USERNAME": "olduser"})
+        settings_env.save_api_settings({"rule34_api_key": "sekrit",
+                                        "konachan_login": "alice"})
+        with open(settings_env._env_path(), encoding="utf-8") as f:
+            content = f.read()
+        assert "PIXIV_COOKIE" not in content
+        assert "sekrit" not in content
+        assert "KONACHAN_USERNAME=alice" in content
+        # runtime env wins over file values
+        os.environ["KONACHAN_USERNAME"] = "envuser"
+        try:
+            assert settings_env.load_api_settings()["konachan_login"] == "envuser"
+        finally:
+            del os.environ["KONACHAN_USERNAME"]
