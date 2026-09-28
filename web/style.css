@@ -1054,6 +1054,7 @@ select option:hover, select option:checked { background: var(--title-color); col
 @keyframes gPulse { 0% {opacity: 0.4;} 50% {opacity: 1;} 100% {opacity: 0.4;} }
 
 /* ===== FOCUS MODE (CLEAN VIEW) ===== */
+.gallery-viewer.focus { background: #0f1420; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .gallery-viewer.focus .gallery-viewer-top-btn:not(.focus-mode),
 .gallery-viewer.focus .gallery-viewer-nav,
 .gallery-viewer.focus .gallery-viewer-meta,
