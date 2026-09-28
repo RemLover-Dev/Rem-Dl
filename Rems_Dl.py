@@ -297,7 +297,10 @@ def index(): return send_from_directory(STATIC_FOLDER, "index.html")
 @app.route("/user_wallpapers/<path:filename>")
 def custom_wallpaper(filename):
     custom_dir = os.path.join(BASE_DIR, "user_wallpapers")
-    if os.path.exists(os.path.join(custom_dir, filename)):
+    candidate = os.path.realpath(os.path.join(custom_dir, filename))
+    if not candidate.startswith(os.path.realpath(custom_dir) + os.sep):
+        return send_from_directory(os.path.join(STATIC_FOLDER, "wallpaper"), filename)
+    if os.path.exists(candidate):
         return send_from_directory(custom_dir, filename)
     return send_from_directory(os.path.join(STATIC_FOLDER, "wallpaper"), filename)
 
@@ -313,7 +316,10 @@ def upload_wallpaper():
     filename = "".join([c for c in file.filename if c.isalpha() or c.isdigit() or c in " ._-"]).rstrip()
     if not filename: filename = f"wallpaper_{random.randint(1000, 9999)}.png"
 
-    file.save(os.path.join(custom_dir, filename))
+    target = os.path.realpath(os.path.join(custom_dir, filename))
+    if not target.startswith(os.path.realpath(custom_dir) + os.sep):
+        return jsonify({"success": False, "error": "invalid filename"}), 400
+    file.save(target)
     return jsonify({"success": True, "filename": filename})
 
 @app.route("/<path:path>")
@@ -437,6 +443,9 @@ def _pick_folder_desktop(start: str):
             ["zenity", "--file-selection", "--directory", f"--filename={safe_start}/"],
         ):
             try:
+                # argv list passed without a shell; _safe_dialog_start_path replaces
+                # option-like basenames with home before this loop runs.
+                # codeql[py/command-line-injection]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                 if r.returncode == 0:
                     out = (r.stdout or "").strip().split("\n")[0].strip()
@@ -476,7 +485,8 @@ def browse_folder():
             return jsonify({"error": "No folder picker available"}), 500
         path = os.path.normpath(picked)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Folder browse error:", e)
+        return jsonify({"error": "folder browse failed"}), 500
     MASTER_FOLDER = path
     shared.MASTER_FOLDER = path
     _invalidate_fp_cache()
@@ -498,6 +508,9 @@ def set_clipboard():
         return jsonify({"error": "empty"}), 400
 
     mime = (request.content_type or "application/octet-stream").split(";")[0].strip() or "application/octet-stream"
+    if mime not in ("text/plain", "text/uri-list", "image/png", "image/jpeg", "image/gif",
+                    "application/octet-stream"):
+        mime = "application/octet-stream"
 
     resolved_paths = []
     if request.args.get("uri"):
@@ -505,10 +518,10 @@ def set_clipboard():
         if not lines:
             return jsonify({"error": "empty"}), 400
 
-        base = os.path.normpath(MASTER_FOLDER)
+        base = os.path.realpath(MASTER_FOLDER)
         for rel in lines:
-            full = os.path.normpath(os.path.join(base, rel))
-            if full != base and not full.startswith(base + os.sep):
+            full = os.path.realpath(os.path.join(base, rel))
+            if not full.startswith(base + os.sep):
                 return jsonify({"error": "forbidden"}), 403
             if not os.path.isfile(full):
                 name = os.path.basename(rel)
@@ -516,7 +529,9 @@ def set_clipboard():
                 if name:
                     for root, _, files in os.walk(base):
                         if name in files:
-                            cand = os.path.join(root, name)
+                            cand = os.path.realpath(os.path.join(root, name))
+                            if not cand.startswith(base + os.sep):
+                                continue
                             if os.path.isfile(cand):
                                 found = cand
                                 break
@@ -540,7 +555,8 @@ def set_clipboard():
                 if r.returncode == 0:
                     return jsonify({"ok": True})
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                print("Clipboard error:", e)
+                return jsonify({"error": "internal clipboard error"}), 500
         return jsonify({"error": "no clipboard tool"}), 501
 
     # macOS native file clipboard
@@ -553,7 +569,8 @@ def set_clipboard():
                 if r.returncode == 0:
                     return jsonify({"ok": True})
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                print("Clipboard error:", e)
+                return jsonify({"error": "internal clipboard error"}), 500
         return jsonify({"error": "no clipboard tool"}), 501
 
     # Linux (Wayland / X11)
@@ -670,7 +687,8 @@ def pixiv_exchange_cookie():
         settings.save_api_settings({**settings.load_api_settings(), "pixiv_refresh_token": refresh_token, "pixiv_cookie": raw})
         return jsonify({"success": True, "refresh_token": refresh_token})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)[:300]}), 500
+        print("Pixiv auth error:", e)
+        return jsonify({"success": False, "error": "pixiv auth failed"}), 500
 
 @app.route("/api/tags/waifu", methods=["POST"])
 def get_waifu_tags():
@@ -1485,7 +1503,9 @@ def thumb_by_name(filename):
     cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
     if os.path.exists(cache_path):
         return send_file(cache_path, mimetype='image/jpeg')
-    full = os.path.join(MASTER_FOLDER, filename)
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
+        return "Forbidden", 403
     if not os.path.isfile(full):
         # Search subdirectories
         for root, _, files in os.walk(MASTER_FOLDER):

@@ -249,7 +249,7 @@ def _extract_full_image(post_html):
             url = m.group(1).strip()
             if url.startswith("//"):
                 url = "https:" + url
-            if "static.zerochan.net" in url:
+            if urllib.parse.urlparse(url).hostname == "static.zerochan.net":
                 return url
     except Exception:
         pass
