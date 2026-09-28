@@ -1942,7 +1942,23 @@ if __name__ == "__main__":
     else:
         time.sleep(0.5)
 
-    def _shutdown_now():
+    _teardown_done = False
+
+    def _teardown():
+        # stop workers + flush only — must stay safe to run inside the GTK
+        # 'closed' callback (no os._exit there: WebKit still has to terminate
+        # its WebProcess, and killing the UI process mid-teardown makes it
+        # die with a fatal error KDE then reports as an app crash)
+        global _teardown_done, shutdown_timer
+        if _teardown_done:
+            return
+        _teardown_done = True
+        if shutdown_timer:
+            try:
+                shutdown_timer.cancel()
+            except Exception:
+                pass
+            shutdown_timer = None
         try:
             for events in list(shared.STOP_EVENTS.values()):
                 for ev in events:
@@ -1956,6 +1972,9 @@ if __name__ == "__main__":
             shared.flush_gallery()
         except Exception:
             pass
+
+    def _shutdown_now():
+        _teardown()
         os._exit(0)
 
     try:
@@ -1992,7 +2011,7 @@ if __name__ == "__main__":
             height=900
         )
         try:
-            _win.events.closed += _shutdown_now
+            _win.events.closed += _teardown
         except Exception:
             pass
 
@@ -2008,7 +2027,14 @@ if __name__ == "__main__":
                 user_agent="RemsDlDesktopApp/1.0",
                 gui="gtk" if sys.platform == "linux" else "edgechromium"
             )
-        _shutdown_now()
+        # start() returns once the Gtk window is destroyed; WebKit terminates
+        # its WebProcess asynchronously — exiting immediately (as before) kills
+        # the UI process mid-teardown and KDE reports the orphaned
+        # WebKitWebProcess as an application crash. Teardown (workers, flush)
+        # already buys time; the short pause covers the rest.
+        _teardown()
+        time.sleep(0.3)
+        os._exit(0)
     except Exception as e:
         print(f"Desktop window could not be opened ({e}). Falling back to browser...")
         webbrowser.open(url)
