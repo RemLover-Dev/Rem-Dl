@@ -439,13 +439,10 @@ def _pick_folder_desktop(start: str):
             pass
     elif sys.platform.startswith("linux"):
         for cmd in (
-            ["kdialog", "--getexistingdirectory", safe_start],
+            ["kdialog", "--getexistingdirectory", f"{safe_start}"],
             ["zenity", "--file-selection", "--directory", f"--filename={safe_start}/"],
         ):
             try:
-                # argv list passed without a shell; _safe_dialog_start_path replaces
-                # option-like basenames with home before this loop runs.
-                # codeql[py/command-line-injection]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                 if r.returncode == 0:
                     out = (r.stdout or "").strip().split("\n")[0].strip()
@@ -507,10 +504,16 @@ def set_clipboard():
     if not data:
         return jsonify({"error": "empty"}), 400
 
-    mime = (request.content_type or "application/octet-stream").split(";")[0].strip() or "application/octet-stream"
-    if mime not in ("text/plain", "text/uri-list", "image/png", "image/jpeg", "image/gif",
-                    "application/octet-stream"):
-        mime = "application/octet-stream"
+    raw_mime = (request.content_type or "").split(";", 1)[0].strip().lower()
+    allowed_mime_map = {
+        "text/plain": "text/plain",
+        "text/uri-list": "text/uri-list",
+        "image/png": "image/png",
+        "image/jpeg": "image/jpeg",
+        "image/gif": "image/gif",
+        "application/octet-stream": "application/octet-stream",
+    }
+    mime = allowed_mime_map.get(raw_mime, "application/octet-stream")
 
     resolved_paths = []
     if request.args.get("uri"):
