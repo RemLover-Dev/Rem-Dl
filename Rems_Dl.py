@@ -1708,6 +1708,27 @@ def _scan_and_merge_gallery():
     gallery["images"] = unique
     return gallery, count_added, count_fixed
 
+def _hash_missing_dedup(gallery):
+    """Backfill dedup records for gallery images that were never hashed
+    (files dropped into the folder manually). Safe to call after every scan."""
+    try:
+        from core.dedup_store import get_store
+        entries = []
+        for img in gallery["images"]:
+            rel = img.get("filepath") or ""
+            if not rel or os.path.splitext(rel)[1].lower() not in EXTENSIONS_IMAGE:
+                continue
+            full = os.path.join(MASTER_FOLDER, rel)
+            if os.path.isfile(full):
+                entries.append((full, img.get("site")))
+        n = get_store().add_missing(entries)
+        if n:
+            print(f"Backfilled {n} dedup records for unhashed images")
+        return n
+    except Exception as e:
+        print("Dedup backfill error:", e)
+        return 0
+
 @app.route("/api/gallery/rescan", methods=["POST"])
 def rescan_gallery():
     gallery, count_added, count_fixed = _scan_and_merge_gallery()
@@ -1718,10 +1739,12 @@ def rescan_gallery():
     except Exception as e:
         print("Dedup sweep error:", e)
         count_removed_records = 0
+    hashed = _hash_missing_dedup(gallery)
     shared.save_gallery(gallery)
     return jsonify({"success": True, "added": count_added, "fixed": count_fixed,
                     "removed_entries": 0,
-                    "removed_records": count_removed_records})
+                    "removed_records": count_removed_records,
+                    "hashed": hashed})
 
 @app.route("/api/gallery/import", methods=["POST"])
 def import_gallery_from_history():
@@ -1880,6 +1903,8 @@ def startup_rescan():
             print(f"Pruned {swept} stale dedup records")
     except Exception as e:
         print(f"Dedup sweep error: {e}")
+
+    _hash_missing_dedup(gallery)
 
 if __name__ == "__main__":
     def _pick_loopback_port():

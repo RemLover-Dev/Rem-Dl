@@ -491,6 +491,30 @@ class DedupStore:
         self.add(filepath, sig, site=site, post_id=post_id)
         return DedupResult(is_duplicate=False, filepath=filepath)
 
+    def add_missing(self, entries) -> int:
+        """Hash image files that have no record yet (e.g. added manually).
+
+        `entries` is an iterable of (absolute filepath, site). Files already
+        recorded by filepath are skipped; one bad file never stops the run.
+        Returns the number of records added.
+        """
+        with self._lock:
+            existing = {r["filepath"] for r in self._conn.execute("SELECT filepath FROM image_hashes")}
+        added = 0
+        for filepath, site in entries:
+            fp = str(filepath)
+            if fp in existing:
+                continue
+            try:
+                sig = compute_signature(fp)
+                self.add(fp, sig, site=site)
+            except Exception as e:
+                print(f"[DEDUP] backfill failed for {fp}: {e}")
+                continue
+            existing.add(fp)
+            added += 1
+        return added
+
     def remove_by_filepath(self, filepath: str):
         with self._lock:
             try:
