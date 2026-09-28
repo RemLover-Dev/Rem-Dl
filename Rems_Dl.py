@@ -1385,6 +1385,38 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
         images = [i for i in images if matches_any_rating(i)]
     return images
 
+def _heal_gallery_categories(images):
+    """Lift tags whose site tag-cache has since confirmed a real category out
+    of the general bucket — old entries were stored before categorization
+    existed (or before a poisoned cache entry healed)."""
+    site_map = {"gelbooru": "gelbooru", "kona": "konachan", "konachan": "konachan",
+                "safe": "safebooru", "safebooru": "safebooru", "yande": "yande",
+                "gsbooru": "gsbooru"}
+    caches = {}
+    dirty = False
+    for img in images:
+        cname = site_map.get(str(img.get("site", "")).lower())
+        if cname is None:
+            continue
+        if cname not in caches:
+            caches[cname] = shared.load_tag_cache(cname)
+        cache = caches[cname]
+        tags = img.get("tags")
+        if not isinstance(tags, dict) or not isinstance(tags.get("tag"), list):
+            continue
+        for t in tags["tag"][:]:
+            want_raw = cache.get(t)
+            if not isinstance(want_raw, (str, int)) or want_raw in ("tag", 0):
+                continue
+            want = shared.TAG_TYPE_MAP.get(want_raw, "tag") if isinstance(want_raw, int) else want_raw
+            tags["tag"].remove(t)
+            bucket = tags.setdefault(want, [])
+            if t not in bucket:
+                bucket.append(t)
+            dirty = True
+    return dirty
+
+
 @app.route("/api/gallery", methods=["GET"])
 def get_gallery():
     search = request.args.get("search", "").lower().strip()
@@ -1402,7 +1434,7 @@ def get_gallery():
     gallery = shared.load_gallery()
     images = gallery.get("images", [])
     fp_cache = _build_filepath_cache()
-    dirty = False
+    dirty = _heal_gallery_categories(images)
     for img in images:
         cached = fp_cache.get(img.get("filename", ""))
         if cached:

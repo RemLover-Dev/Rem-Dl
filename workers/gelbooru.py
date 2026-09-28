@@ -1,4 +1,4 @@
-import html, os, re
+import html, os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 from core.shared import load_tag_cache, save_tag_cache, TAG_TYPE_MAP
@@ -50,7 +50,10 @@ class GelbooruWorker(BaseWorker):
     async def _fetch_tag_types(self, tag_names):
         api_key = os.getenv("GELBOORU_API_KEY", "")
         user_id = os.getenv("GELBOORU_USER_ID", "")
-        uncached = [t for t in tag_names if t not in self.tag_cache]
+        # ponytail: cap per run — v1 cache migration drops thousands of
+        # unverified "tag" entries; heal a few hundred at a time instead of
+        # stalling the first run for minutes
+        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
         if not uncached:
             return
         sem = asyncio.Semaphore(4)
@@ -64,19 +67,16 @@ class GelbooruWorker(BaseWorker):
                     resp = await self.session.get("https://gelbooru.com/index.php", params=params)
                     if resp.status == 200:
                         data = await resp.json()
-                        tags = data.get("tag", [])
+                        tags = data.get("tag") or []
                         # ponytail: only trust the exact tag, never a near miss
                         # gelbooru entity-encodes response names (kal&#039;tsit_...)
                         match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
-                        if match:
-                            t = match
-                            self.tag_cache[tag_name] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
-                        else:
-                            self.tag_cache[tag_name] = "tag"
-                    else:
-                        self.tag_cache[tag_name] = "tag"
+                        if match is not None:
+                            self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
                 except Exception:
-                    self.tag_cache[tag_name] = "tag"
+                    pass
+                # ponytail: failures/no-matches stay uncached — caching them once
+                # would mislabel the tag forever; it retries next run instead
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
         save_tag_cache(self.tag_cache, "gelbooru")

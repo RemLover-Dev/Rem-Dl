@@ -209,13 +209,21 @@ TAG_TYPE_MAP = {0: "tag", 1: "artist", 3: "copyright", 4: "character", 5: "metad
 def load_tag_cache(site="gelbooru"):
     os.makedirs(TAG_CACHE_DIR, exist_ok=True)
     path = os.path.join(TAG_CACHE_DIR, f"{site}_tags.json")
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if data.pop("_v", 1) < 2:
+        # v1 caches wrote query failures/no-matches as general ("tag"/0) —
+        # indistinguishable from real general tags, so drop and re-verify
+        data = {k: v for k, v in data.items() if v not in ("tag", 0)}
+    data["_v"] = 2
+    return data
 
 def save_tag_cache(data, site="gelbooru"):
     os.makedirs(TAG_CACHE_DIR, exist_ok=True)

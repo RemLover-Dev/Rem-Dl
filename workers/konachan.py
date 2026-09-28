@@ -1,4 +1,4 @@
-import os, re, hashlib
+import os, hashlib
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 from core.shared import load_tag_cache, save_tag_cache, TAG_TYPE_MAP
@@ -33,7 +33,9 @@ class KonachanWorker(BaseWorker):
         await self.scraper_task()
 
     async def _fetch_tag_types(self, tag_names):
-        uncached = [t for t in tag_names if t not in self.tag_cache]
+        # ponytail: cap per run — v1 cache migration drops unverified "tag"
+        # entries; heal incrementally instead of stalling the first run
+        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
         if not uncached:
             return
         sem = asyncio.Semaphore(4)
@@ -45,17 +47,14 @@ class KonachanWorker(BaseWorker):
                         params={"name": tag_name, "order": "count", "limit": 50}
                     )
                     if resp.status == 200:
-                        tags = await resp.json()
+                        tags = await resp.json() or []
                         # ponytail: scan every row for the exact tag
                         match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
-                        if match:
+                        if match is not None:
                             self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                        else:
-                            self.tag_cache[tag_name] = "tag"
-                    else:
-                        self.tag_cache[tag_name] = "tag"
                 except Exception:
-                    self.tag_cache[tag_name] = "tag"
+                    pass
+                # ponytail: failures/no-matches stay uncached (retried next run)
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
         save_tag_cache(self.tag_cache, "konachan")

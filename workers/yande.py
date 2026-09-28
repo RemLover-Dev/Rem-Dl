@@ -1,4 +1,4 @@
-import os, re
+import os
 import asyncio
 import xml.etree.ElementTree as ET
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
@@ -35,7 +35,9 @@ class YandeWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         cache = self.tag_cache
-        uncached = [t for t in tag_names if t not in cache]
+        # ponytail: cap per run — v1 cache migration drops unverified entries;
+        # heal incrementally instead of stalling the first run
+        uncached = [t for t in tag_names if t not in cache][:150]
         if uncached:
             self.log(f"Fetching types for {len(uncached)} tags...")
             # ponytail: concurrent like gelbooru/safebooru — sequential
@@ -47,20 +49,18 @@ class YandeWorker(BaseWorker):
                         resp = await self.session.get("https://yande.re/tag.xml", params={
                             "name": tag_name, "limit": 50
                         })
-                        if resp.status != 200:
-                            cache[tag_name] = 0
-                        else:
+                        if resp.status == 200:
                             text = await resp.text()
                             root = ET.fromstring(text)
                             # ponytail: name= matches substrings and the exact
                             # row can bury below row 1, so scan every row
-                            cache[tag_name] = 0
                             for tag_el in root.findall("tag"):
                                 if tag_el.get("name", "").lower() == tag_name.lower():
                                     cache[tag_name] = int(tag_el.get("type", 0))
                                     break
                     except Exception:
-                        cache[tag_name] = 0
+                        pass
+                    # ponytail: failures/no-matches stay uncached (retried next run)
                     await asyncio.sleep(0.2)
             await asyncio.gather(*[query_one(t) for t in uncached])
             shared.save_tag_cache(cache, "yande")

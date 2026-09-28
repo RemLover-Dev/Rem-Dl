@@ -204,10 +204,9 @@ class GsbooruWorker(BaseWorker):
                         (t for t in data.get("tags") or []
                          if str(t.get("name", "")).lower() == name.lower()),
                         None)
-                    self.tag_cache[name] = (
-                        TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                        if match is not None else "tag"
-                    )
+                    # ponytail: failures/no-matches stay uncached (retried next run)
+                    if match is not None:
+                        self.tag_cache[name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
         finally:
             save_tag_cache(self.tag_cache, "gsbooru")
 
