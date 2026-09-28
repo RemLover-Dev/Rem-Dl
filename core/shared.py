@@ -449,6 +449,26 @@ class BaseDownloader:
         self.enqueued_count = 0
         self.queued_items = set()
         self._history_dirty = 0
+        # live progress: filepath -> fraction of the current file downloaded
+        self._inflight = {}
+        self._last_progress_emit = 0.0
+
+    def _progress_pct(self):
+        # same target math as the [SUCCESS] log line, plus fractional units
+        # for files still streaming — the bar moves while bytes arrive
+        if self.is_scanning and self.amount > 0:
+            target = max(self.amount, self.enqueued_count)
+        else:
+            target = max(self.enqueued_count, self.downloaded_count)
+        if target <= 0:
+            return 0.0
+        inflight = sum(self._inflight.values())
+        return min(100.0, (self.downloaded_count + inflight) / target * 100)
+
+    def _emit_progress(self):
+        pct = self._progress_pct()
+        if pct > 0:
+            socketio_emit("dl_progress", {"worker": self.name, "pct": round(pct, 1)})
 
     def check_amount_warning(self, total_found):
         """Helper to warn the user if they requested more images than were retrieved."""
@@ -554,6 +574,12 @@ class BaseDownloader:
                             if h is not None:
                                 h.update(chunk)
                             downloaded += len(chunk)
+                            # live bar updates ~5/s while bytes stream in
+                            now = time.monotonic()
+                            if content_length and now - self._last_progress_emit >= 0.2:
+                                self._last_progress_emit = now
+                                self._inflight[filepath] = downloaded / content_length
+                                self._emit_progress()
 
                     # ponytail: proxies can drop the tail silently; verify against
                     # Content-Length, or against the enqueue-time HEAD size when the
@@ -646,7 +672,9 @@ class BaseDownloader:
                 continue
             item = await self.download_queue.get()
             try: await self._async_download_file(*item)
-            finally: self.download_queue.task_done()
+            finally:
+                self._inflight.pop(item[1], None)
+                self.download_queue.task_done()
 
     async def run_async_loop(self, scraper_coroutine):
         try:

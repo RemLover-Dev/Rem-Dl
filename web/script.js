@@ -1906,6 +1906,18 @@ socket.on("pinterest_progress", function (data) {
     if (txt) txt.textContent = pct + "%";
 });
 
+// live byte-level progress while files stream (throttled server-side ~5/s)
+socket.on("dl_progress", function (data) {
+    let key = WORKER_TO_TAB[data.worker];
+    if (!key) return;
+    let fill = document.getElementById("dlBar_" + key);
+    let txt = document.getElementById("dlText_" + key);
+    let container = document.getElementById("dualProgress_" + key);
+    if (container) container.style.display = "flex";
+    if (fill) fill.style.width = data.pct + "%";
+    if (txt) txt.textContent = Math.round(data.pct) + "%";
+});
+
 window.onload = async function () {
     try {
         let resp = await fetch("/api/config");
