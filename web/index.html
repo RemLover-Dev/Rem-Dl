@@ -113,8 +113,8 @@
             <!-- E-Shuushuu Tab -->
             <div id="EShuushuu" class="tab-content" style="display: none;">
                 <h2>E-Shuushuu Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input type="text" id="eshuushuuTag" placeholder="e.g. rem" autocomplete="off" style="flex:1;" onkeydown="if(event.key==='Enter') addEshuushuuTag()">
@@ -122,9 +122,9 @@
                         </div>
                         <div id="eshuushuuTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>User ID:</label>
+                    <label style="padding-top: 8px;">User ID:</label>
                     <input type="text" id="eshuushuuUser" placeholder="Optional" style="width: 100px;">
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="eshuushuuLimit" value="50" min="0" style="width: 80px;">
                     <button id="runBtn_eshuushuu" class="action-btn" onclick="toggleWorker('eshuushuu')">START</button>
                 </div>
@@ -173,8 +173,8 @@
             <!-- Nekosia Tab (UI Ready) -->
             <div id="Nekosia" class="tab-content" style="display: none;">
                 <h2>Nekosia Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input type="text" id="nekosiaTag" placeholder="e.g. maid" autocomplete="off" style="flex:1;" onkeydown="if(event.key==='Enter') addNekosiaTag()">
@@ -182,7 +182,7 @@
                         </div>
                         <div id="nekosiaTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="nekosiaLimit" value="50" min="0" style="width: 80px;">
                     <select id="nekosiaRating" style="width: 130px;">
                         <option value="safe">Safe</option>
@@ -396,8 +396,8 @@
 
             <div id="Gsbooru" class="tab-content" style="display: none;">
                 <h2>Gsbooru Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="gsbooruTag" placeholder="e.g. 1girl blue_hair" onkeydown="if(event.key==='Enter') addGsbooruTag()">
@@ -405,7 +405,7 @@
                         </div>
                         <div id="gsbooruTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="gsbooruLimit" value="50" min="0" style="width: 80px;">
                     <select id="gsbooruRating" style="width: 130px;">
                         <option value="">All Ratings</option>
@@ -443,8 +443,8 @@
 
             <div id="Kona" class="tab-content" style="display: none;">
                 <h2>Konachan Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="konaTag" placeholder="e.g. rem blue_hair" onkeydown="if(event.key==='Enter') addKonaTag()">
@@ -452,7 +452,7 @@
                         </div>
                         <div id="konaTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="konaLimit" value="50" min="0" style="width: 80px;">
                     <select id="konaRating" style="width: 130px;">
                         <option value="">All Ratings</option>
@@ -784,8 +784,8 @@
 
             <div id="Safe" class="tab-content" style="display: none;">
                 <h2>Safebooru Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="safeTag" placeholder="e.g. 1girl blue_hair" onkeydown="if(event.key==='Enter') addSafeTag()">
@@ -793,7 +793,7 @@
                         </div>
                         <div id="safeTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="safeLimit" value="50" min="0" style="width: 80px;">
                     <button id="runBtn_safe" class="action-btn" onclick="toggleWorker('safe')">START</button>
                 </div>
@@ -810,8 +810,8 @@
 
             <div id="Sankaku" class="tab-content" style="display: none;">
                 <h2>Sankaku Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="sankakuTag" placeholder="e.g. rem blue_hair" onkeydown="if(event.key==='Enter') addSankakuTag()">
@@ -819,7 +819,7 @@
                         </div>
                         <div id="sankakuTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="sankakuLimit" value="50" min="0" style="width: 80px;">
                     <select id="sankakuRating" style="width: 130px;">
                         <option value="">All Ratings</option>
@@ -827,7 +827,7 @@
                         <option value="rating:q">Questionable</option>
                         <option value="rating:e">NSFW</option>
                     </select>
-                    <input type="checkbox" id="sankakuHideBooks"> <label for="sankakuHideBooks">Hide Books/Pools</label>
+                    <input type="checkbox" id="sankakuHideBooks" style="margin-top: 8px;"> <label for="sankakuHideBooks" style="padding-top: 8px;">Hide Books/Pools</label>
                     <button id="runBtn_sankaku" class="action-btn" onclick="toggleWorker('sankaku')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_sankaku" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
@@ -864,8 +864,8 @@
 
             <div id="Yande" class="tab-content" style="display: none;">
                 <h2>Yande.re Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="yandeTag" placeholder="e.g. rem blue_hair" onkeydown="if(event.key==='Enter') addYandeTag()">
@@ -873,7 +873,7 @@
                         </div>
                         <div id="yandeTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="yandeLimit" value="50" min="0" style="width: 80px;">
                     <select id="yandeRating" style="width: 130px;">
                         <option value="">All Ratings</option>
