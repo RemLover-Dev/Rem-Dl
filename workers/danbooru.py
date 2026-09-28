@@ -11,11 +11,19 @@ class DanbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"g": "Safe", "s": "Sensitive", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:g": "g", "rating:s": "s", "rating:q": "q", "rating:e": "e",
+                   "rating:general": "g", "rating:sensitive": "s",
+                   "rating:questionable": "q", "rating:explicit": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        self.rating_allowed = set(codes)
+
+        # ponytail: danbooru natively ORs comma lists in the rating metatag (verified live)
+        if codes and len(codes) < len(self.rating_map):
+            self.api_tag = f"{self.original_tag} rating:{','.join(codes)}".strip()
+        else:
+            self.api_tag = self.original_tag
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
         self.dan_login = os.getenv("DANBOORU_LOGIN", "")
         self.dan_api_key = os.getenv("DANBOORU_API_KEY", "")
         self._auth = aiohttp.BasicAuth(self.dan_login, self.dan_api_key) if (self.dan_login and self.dan_api_key) else None
@@ -60,7 +68,7 @@ class DanbooruWorker(BaseWorker):
             self.log(f"Authenticated as {self.dan_login}")
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(':')[-1], '')})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
         if self._auth:
             await self._log_auth_status()
 
@@ -116,10 +124,8 @@ class DanbooruWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 url = post.get("file_url") or post.get("large_file_url")
                 if not url:

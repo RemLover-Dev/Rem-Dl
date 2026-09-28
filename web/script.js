@@ -2681,11 +2681,17 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'ratingDropdown') onRatingChange();
     else if (menu.id === 'typeDropdown') onTypeChange();
     else if (menu.id === 'gelRatingDropdown') onGelRatingChange();
+    else if (menu.id === 'danRatingDropdown') onDanRatingChange();
 }
 
-function onGelRatingChange() {
-    const menu = document.getElementById('gelRatingDropdown');
-    const hidden = document.getElementById('gelbooruRating');
+function updateMultiRatingBtn(menuId) {
+    const btn = document.querySelector('[onclick="toggleDropdown(\'' + menuId + '\')"]');
+    if (btn) btn.textContent = getMultiLabel(menuId, 'All Ratings') + ' ▾';
+}
+
+function onMultiRatingChange(menuId, hiddenId) {
+    const menu = document.getElementById(menuId);
+    const hidden = document.getElementById(hiddenId);
     if (!menu || !hidden) return;
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
     const checkedItems = itemChecks.filter(c => c.checked);
@@ -2693,24 +2699,27 @@ function onGelRatingChange() {
     // zero checked means the same as All — normalize so the value stays truthful
     if (checkedItems.length === 0 && allCheck) allCheck.checked = true;
     hidden.value = checkedItems.map(c => c.value).join(' ');
-    const btn = document.querySelector('[onclick="toggleDropdown(\'gelRatingDropdown\')"]');
-    if (btn) btn.textContent = getMultiLabel('gelRatingDropdown', 'All Ratings') + ' ▾';
+    updateMultiRatingBtn(menuId);
 }
+
+function onGelRatingChange() { onMultiRatingChange('gelRatingDropdown', 'gelbooruRating'); }
+function onDanRatingChange() { onMultiRatingChange('danRatingDropdown', 'danRating'); }
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    const hidden = document.getElementById('gelbooruRating');
-    if (!hidden) return;
-    hidden.addEventListener('change', function () {
-        const menu = document.getElementById('gelRatingDropdown');
-        if (!menu) return;
-        const vals = this.value.split(/\s+/).filter(Boolean);
-        menu.querySelectorAll('input[type="checkbox"]').forEach(c => {
-            c.checked = c.value === '' ? vals.length === 0 : vals.includes(c.value);
+    [['gelbooruRating', 'gelRatingDropdown'], ['danRating', 'danRatingDropdown']].forEach(function (pair) {
+        const hidden = document.getElementById(pair[0]);
+        if (!hidden) return;
+        hidden.addEventListener('change', function () {
+            const menu = document.getElementById(pair[1]);
+            if (!menu) return;
+            const vals = this.value.split(/\s+/).filter(Boolean);
+            menu.querySelectorAll('input[type="checkbox"]').forEach(c => {
+                c.checked = c.value === '' ? vals.length === 0 : vals.includes(c.value);
+            });
+            updateMultiRatingBtn(pair[1]);
         });
-        const btn = document.querySelector('[onclick="toggleDropdown(\'gelRatingDropdown\')"]');
-        if (btn) btn.textContent = getMultiLabel('gelRatingDropdown', 'All Ratings') + ' ▾';
     });
 });
 
