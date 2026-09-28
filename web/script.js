@@ -539,7 +539,7 @@ function logToConsole(tabID, msg) {
         <img src="${thumbSrc}" onclick="openFullImage('${pathUrlStr}', '${safeFn}')" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
         </div>
         <div class="img-card-right">
-        <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px 0;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
+        <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
         <div class="img-card-tags">${tagsHtml}</div>
         ${ratingHtml}
         </div>
