@@ -2682,6 +2682,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'typeDropdown') onTypeChange();
     else if (menu.id === 'gelRatingDropdown') onGelRatingChange();
     else if (menu.id === 'danRatingDropdown') onDanRatingChange();
+    else if (menu.id === 'gsRatingDropdown') onGsRatingChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -2704,11 +2705,12 @@ function onMultiRatingChange(menuId, hiddenId) {
 
 function onGelRatingChange() { onMultiRatingChange('gelRatingDropdown', 'gelbooruRating'); }
 function onDanRatingChange() { onMultiRatingChange('danRatingDropdown', 'danRating'); }
+function onGsRatingChange() { onMultiRatingChange('gsRatingDropdown', 'gsbooruRating'); }
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    [['gelbooruRating', 'gelRatingDropdown'], ['danRating', 'danRatingDropdown']].forEach(function (pair) {
+    [['gelbooruRating', 'gelRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown']].forEach(function (pair) {
         const hidden = document.getElementById(pair[0]);
         if (!hidden) return;
         hidden.addEventListener('change', function () {

@@ -411,12 +411,16 @@
                     </div>
                     <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="gsbooruLimit" value="50" min="0" style="width: 80px;">
-                    <select id="gsbooruRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:g">Safe</option>
-                        <option value="rating:s">Sensitive</option>
-                        <option value="rating:q">Questionable</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('gsRatingDropdown')">All Ratings ▾</button>
+                        <div id="gsRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:g"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                        </div>
+                        <input type="hidden" id="gsbooruRating" value="">
+                    </div>
                     <button id="runBtn_gsbooru" class="action-btn" onclick="toggleWorker('gsbooru')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_gsbooru" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
