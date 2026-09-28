@@ -3638,7 +3638,6 @@ function toggleViewerFav() {
                 filename = img.filename;
             }
             if (/\.(mp4|webm|mov|avi|mkv)$/i.test(filename || "") || (!viewerResource.blob && !viewerResource.loadPromise)) {
-                showToast("Copying...", { icon: COPY_ICON });
                 await copyToClipboard(url, filename);
                 return;
             }
@@ -3654,7 +3653,6 @@ function toggleViewerFav() {
                 }
             }
             if (generation !== viewerResource.generation) { showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON }); return; }
-            showToast("Copying...", { icon: COPY_ICON });
             await copyToClipboard(viewerResource.url || url, viewerResource.filename || filename);
         } catch (e) { showToast("Copy failed: " + (e && e.message || e), { warn: true, icon: WARN_ICON }); }
         finally { _copyBusy = false; }
