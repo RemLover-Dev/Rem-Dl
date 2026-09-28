@@ -360,7 +360,8 @@ class SettingsManager:
             "PINTEREST_PASSWORD": data.get("pinterest_password", ""),
             "PIXIV_REFRESH_TOKEN": data.get("pixiv_refresh_token", ""),
             "PIXIV_COOKIE": data.get("pixiv_cookie", ""),
-            "DANBOORU_API_KEY": data.get("danbooru_api_key", "")
+            "DANBOORU_API_KEY": data.get("danbooru_api_key", ""),
+            "GSBOORU_API_KEY": data.get("gsbooru_api_key", "")
         }
         self._upsert_env_keys(non_sensitive_keys)
         # purge secrets from .env too: keeps legacy cleartext off disk and
@@ -398,7 +399,8 @@ class SettingsManager:
             "pixiv_refresh_token": resolved.get("PIXIV_REFRESH_TOKEN", ""),
             "pixiv_cookie": resolved.get("PIXIV_COOKIE", ""),
             "danbooru_login": resolved.get("DANBOORU_LOGIN", ""),
-            "danbooru_api_key": resolved.get("DANBOORU_API_KEY", "")
+            "danbooru_api_key": resolved.get("DANBOORU_API_KEY", ""),
+            "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", "")
         }
 
 

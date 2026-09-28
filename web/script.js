@@ -2272,6 +2272,7 @@ async function loadApiSettings() {
     document.getElementById("danApiKey").value = settings.danbooru_api_key || "";
     document.getElementById("gelKey").value = settings.gelbooru_api_key || "";
     document.getElementById("gelUid").value = settings.gelbooru_user_id || "";
+    document.getElementById("gsApiKey").value = settings.gsbooru_api_key || "";
     document.getElementById("konaLogin").value = settings.konachan_login || "";
     document.getElementById("konaPassword").value = settings.konachan_password || "";
     document.getElementById("sankaLogin").value = settings.sanka_login || "";
@@ -2293,6 +2294,7 @@ async function saveApiSettings() {
         danbooru_api_key: document.getElementById("danApiKey").value.trim(),
         gelbooru_api_key: document.getElementById("gelKey").value.trim(),
         gelbooru_user_id: document.getElementById("gelUid").value.trim(),
+        gsbooru_api_key: document.getElementById("gsApiKey").value.trim(),
         konachan_login: document.getElementById("konaLogin").value.trim(),
         konachan_password: document.getElementById("konaPassword").value.trim(),
         sanka_login: document.getElementById("sankaLogin").value.trim(),
