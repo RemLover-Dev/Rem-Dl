@@ -117,22 +117,30 @@ class GsbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
 
-        # UI sends rating:g / rating:s / rating:q
-        # Site has General, Sensitive, and Questionable.
-        self.filter_code = self.rating.split(":")[-1] if self.rating else ""
-
-        self.filter_word = {
-            "g": "general",
-            "s": "sensitive",
-            "q": "questionable"
-        }.get(self.filter_code, "")
-
+        # UI sends rating:g / rating:s / rating:q (space-separated when multi).
+        # Site has General, Sensitive, and Questionable (rating=e is empty live).
         self.rating_label_map = {
             "general": "Safe",
             "sensitive": "Sensitive",
             "questionable": "Questionable",
             "explicit": "NSFW"
         }
+        code_of = {"rating:g": "g", "rating:s": "s", "rating:q": "q",
+                   "rating:general": "g", "rating:sensitive": "s",
+                   "rating:questionable": "q"}
+        code_word = {"g": "general", "s": "sensitive", "q": "questionable"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+
+        # ponytail: gsbooru ORs comma lists in its rating param (verified live:
+        # rating=g,s -> mixed page of g and s); all three = the site's entirety,
+        # same as All, so no param and no client-side filter
+        if codes and len(codes) < 3:
+            self.filter_code = ",".join(codes)
+            self.filter_words = {code_word[c] for c in codes}
+        else:
+            self.filter_code = ""
+            self.filter_words = set()
+        self.rating_display = ", ".join(self.rating_label_map[code_word[c]] for c in codes)
 
         self.api_tag = self.original_tag
 
@@ -285,7 +293,7 @@ class GsbooruWorker(BaseWorker):
 
         self.log(
             f"Initializing worker for tag: '{self.api_tag}'"
-            + (f" (rating: {self.rating_label_map.get(self.filter_word, '')})" if self.filter_word else "")
+            + (f" (rating: {self.rating_display})" if self.rating_display else "")
         )
 
         if self.stop_event.is_set():
@@ -459,8 +467,8 @@ class GsbooruWorker(BaseWorker):
                 ]
 
                 if (
-                    self.filter_word
-                    and rating_word != self.filter_word
+                    self.filter_words
+                    and rating_word not in self.filter_words
                 ):
 
                     continue
