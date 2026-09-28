@@ -1221,9 +1221,10 @@ def get_gsbooru_suggestions():
         session = get_session("gsbooru", data.get("net_config", {}))
         resp = session.get(
             "https://gsbooru.org/api/tags",
-            params={"tag_string": f"*{query}*", "limit": 10},
+            # prefix match, not substring: "*ram*" matches "frame"/"scaramouche"
+            params={"tag_string": f"{query}*", "limit": 10, "sort": "post_count"},
             headers={"Authorization": f"Bearer {os.getenv('GSBOORU_API_KEY', '')}"},
-            timeout=5)
+            timeout=8)
         if resp.status_code == 200:
             items = resp.json().get("tags", [])
             names = [t.get("name") for t in items
