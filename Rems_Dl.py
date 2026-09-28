@@ -353,7 +353,21 @@ def folder_manager():
         folder = (request.json or {}).get("folder", "")
         if not folder:
             return jsonify({"error": "empty"}), 400
-        MASTER_FOLDER = os.path.normpath(folder)
+        # Validate and constrain user-controlled folder path: must be an
+        # existing absolute directory and live under the user's home root
+        # (realpath defeats ".." traversal and symlink escapes).
+        raw = os.path.normpath(folder)
+        if not os.path.isabs(raw):
+            return jsonify({"error": "invalid folder path"}), 400
+        candidate = os.path.realpath(raw)
+        safe_root = os.path.realpath(os.path.expanduser("~"))
+        # startswith(home + sep) is the guard shape CodeQL's SafeAccessCheck
+        # barrier recognizes; commonpath did not (alerts #44/#45).
+        if not candidate.startswith(safe_root + os.sep):
+            return jsonify({"error": "folder outside allowed root"}), 400
+        if not os.path.isdir(candidate):
+            return jsonify({"error": "folder does not exist"}), 400
+        MASTER_FOLDER = candidate
         shared.MASTER_FOLDER = MASTER_FOLDER
         _invalidate_fp_cache()
     return jsonify({"folder": MASTER_FOLDER})
