@@ -1949,8 +1949,13 @@ window.onload = async function () {
     if (gGrid) gGrid.classList.toggle("blur-nsfw", galleryBlurNsfw);
     const gBlurBtn = document.getElementById("galleryBlurBtn");
     if (gBlurBtn) gBlurBtn.classList.toggle("active", galleryBlurNsfw);
-    loadGallery();
-    populateGallerySiteFilter();
+    // ponytail: Gallery is display:none at startup (default tab is MAIN), so clientWidth/clientHeight
+    // are 0 and per_page comes from a window-width guess — openTab refetches when Gallery is
+    // actually shown, so the startup fetch only wastes work; skip it unless the tab is visible.
+    if (document.getElementById("Gallery").style.display !== "none") {
+        loadGallery();
+        populateGallerySiteFilter();
+    }
 };
 
 const nekoImages = ["husbando", "kitsune", "neko", "waifu"];
@@ -3859,6 +3864,10 @@ function toggleViewerFav() {
                 } else {
                     closeGalleryViewer();
                 }
+                // refetch the current page so the next page's first image
+                // slides in to fill the vacated slot (viewerIndex still lands
+                // on the same image after the shifted refetch)
+                loadGallery();
             }
         } catch (e) {
             console.error("Delete error", e);
