@@ -379,15 +379,27 @@ def folder_manager():
     return jsonify({"folder": MASTER_FOLDER})
 
 def _safe_dialog_start_path(start: str) -> str:
-    """Sanitize a start path before it is passed to native folder picker subprocesses."""
+    """Canonicalize a picker start path: absolute, existing, under home, no flag-like segments."""
+    home = os.path.realpath(os.path.expanduser("~"))
     raw = str(start or "").strip()
-    candidate = os.path.normpath(raw) if raw else ""
+    candidate = os.path.normpath(raw) if raw else home
     if not candidate:
-        candidate = os.path.expanduser("~")
-    # Prevent option-like values from being interpreted as CLI flags.
-    if os.path.basename(candidate).startswith("-"):
-        candidate = os.path.expanduser("~")
-    return candidate
+        return home
+    try:
+        if not os.path.isabs(candidate):
+            return home
+        candidate = os.path.realpath(candidate)
+        if not candidate.startswith(home + os.sep):
+            return home
+        if not os.path.isdir(candidate):
+            return home
+        # Reject any path segment that could be parsed as a CLI flag.
+        rel = os.path.relpath(candidate, home)
+        if any(seg.startswith("-") for seg in rel.split(os.sep)):
+            return home
+        return candidate
+    except Exception:
+        return home
 
 def _pick_folder_desktop(start: str):
     """User's desktop folder dialog (pywebview window -> OS native dialog -> tkinter).
@@ -439,13 +451,10 @@ def _pick_folder_desktop(start: str):
             pass
     elif sys.platform.startswith("linux"):
         for cmd in (
-            ["kdialog", "--getexistingdirectory", safe_start],
+            ["kdialog", "--getexistingdirectory", f"{safe_start}"],
             ["zenity", "--file-selection", "--directory", f"--filename={safe_start}/"],
         ):
             try:
-                # argv list passed without a shell; _safe_dialog_start_path replaces
-                # option-like basenames with home before this loop runs.
-                # codeql[py/command-line-injection]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                 if r.returncode == 0:
                     out = (r.stdout or "").strip().split("\n")[0].strip()
@@ -464,7 +473,7 @@ def _pick_folder_desktop(start: str):
         root = tkinter.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        picked = filedialog.askdirectory(initialdir=start, title="Select download folder")
+        picked = filedialog.askdirectory(initialdir=safe_start, title="Select download folder")
         root.destroy()
         return picked or None
     except Exception:
@@ -507,10 +516,16 @@ def set_clipboard():
     if not data:
         return jsonify({"error": "empty"}), 400
 
-    mime = (request.content_type or "application/octet-stream").split(";")[0].strip() or "application/octet-stream"
-    if mime not in ("text/plain", "text/uri-list", "image/png", "image/jpeg", "image/gif",
-                    "application/octet-stream"):
-        mime = "application/octet-stream"
+    raw_mime = (request.content_type or "").split(";", 1)[0].strip().lower()
+    allowed_mime_map = {
+        "text/plain": "text/plain",
+        "text/uri-list": "text/uri-list",
+        "image/png": "image/png",
+        "image/jpeg": "image/jpeg",
+        "image/gif": "image/gif",
+        "application/octet-stream": "application/octet-stream",
+    }
+    mime = allowed_mime_map.get(raw_mime, "application/octet-stream")
 
     resolved_paths = []
     if request.args.get("uri"):
