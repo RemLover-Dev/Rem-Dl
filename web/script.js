@@ -3864,6 +3864,10 @@ function toggleViewerFav() {
                 } else {
                     closeGalleryViewer();
                 }
+                // refetch the current page so the next page's first image
+                // slides in to fill the vacated slot (viewerIndex still lands
+                // on the same image after the shifted refetch)
+                loadGallery();
             }
         } catch (e) {
             console.error("Delete error", e);
