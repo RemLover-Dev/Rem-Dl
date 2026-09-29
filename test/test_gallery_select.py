@@ -1,4 +1,3 @@
-import json
 import os
 from unittest.mock import patch, MagicMock
 
@@ -165,22 +164,3 @@ def test_gallery_rating_and_site_filters():
     assert len(site_res) == 1
     assert site_res[0]["id"] == "1"
 
-
-def test_gallery_tag_heal(tmp_path, monkeypatch):
-    monkeypatch.setattr(shared, "TAG_CACHE_DIR", str(tmp_path))
-    (tmp_path / "gelbooru_tags.json").write_text(
-        json.dumps({"the_dahlia_(honkai:_star_rail)": "character", "1girl": "tag"}),
-        encoding="utf-8")
-    (tmp_path / "yande_tags.json").write_text(json.dumps({"zero_3b": 4}), encoding="utf-8")
-    images = [
-        {"site": "gelbooru", "tags": {"tag": ["the_dahlia_(honkai:_star_rail)", "1girl"]}},
-        {"site": "yande", "tags": {"tag": ["zero_3b"]}},
-        {"site": "rule34", "tags": {"tag": ["keep"]}},
-    ]
-    assert Rems_Dl._heal_gallery_categories(images) is True
-    assert images[0]["tags"]["character"] == ["the_dahlia_(honkai:_star_rail)"]
-    assert images[0]["tags"]["tag"] == ["1girl"]
-    assert images[1]["tags"]["character"] == ["zero_3b"]
-    assert images[2]["tags"]["tag"] == ["keep"]
-    # nothing left to confirm on a second pass
-    assert Rems_Dl._heal_gallery_categories(images) is False

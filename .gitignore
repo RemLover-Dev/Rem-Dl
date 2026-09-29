@@ -86,6 +86,7 @@ database/user_learned_tags.json
 database/*_tag_names.json
 database/*_tags.json
 !database/waifu.im_tags.json
+database/tag_caches/
 database/thumb_cache/
 database/.gsbooru_tags_state.json
 database/*.sqlite3

@@ -15,7 +15,7 @@ class SafebooruWorker(BaseWorker):
         self.safe_tag = sanitize_path_component(clean_tag, fallback="safebooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
-        self.tag_cache = shared.load_tag_cache("safebooru")
+        self.tag_cache = {}
 
     def get_tags(self):
         return [self.original_tag]
@@ -28,8 +28,8 @@ class SafebooruWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         cache = self.tag_cache
-        # ponytail: cap per run — v1 cache migration drops unverified entries;
-        # heal incrementally instead of stalling the first run
+        # ponytail: cap per run — uncached tags page through on later calls
+        # instead of stalling the first run
         uncached = [t for t in tag_names if t not in cache][:150]
         if uncached:
             self.log(f"Fetching types for {len(uncached)} tags...")
@@ -57,7 +57,6 @@ class SafebooruWorker(BaseWorker):
                     # ponytail: failures/no-matches stay uncached (retried next run)
                     await asyncio.sleep(0.2)
             await asyncio.gather(*[query_one(t) for t in uncached])
-            shared.save_tag_cache(cache, "safebooru")
         return cache
 
     def _categorize_tags(self, tag_names, cache):

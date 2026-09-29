@@ -1,7 +1,7 @@
 import html, os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-from core.shared import load_tag_cache, save_tag_cache, TAG_TYPE_MAP
+from core.shared import TAG_TYPE_MAP
 
 
 class GelbooruWorker(BaseWorker):
@@ -36,7 +36,7 @@ class GelbooruWorker(BaseWorker):
         self.tag_dir = os.path.join(self.site_root, self.safe_tag_name)
         safe_ensure_dir(self.tag_dir)
 
-        self.tag_cache = load_tag_cache("gelbooru")
+        self.tag_cache = {}
 
     def get_tags(self):
         return [self.original_tag]
@@ -79,7 +79,6 @@ class GelbooruWorker(BaseWorker):
                 # would mislabel the tag forever; it retries next run instead
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
-        save_tag_cache(self.tag_cache, "gelbooru")
 
     def _categorize_tags(self, tag_names):
         artists, characters, copyrights, metadata_tags, general = [], [], [], [], []

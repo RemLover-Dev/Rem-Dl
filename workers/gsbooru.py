@@ -12,8 +12,6 @@ from core.shared import (
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
-    load_tag_cache,
-    save_tag_cache,
     TAG_TYPE_MAP,
 )
 
@@ -33,7 +31,7 @@ class GsbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
         self.api_key = os.getenv("GSBOORU_API_KEY", "")
-        self.tag_cache = load_tag_cache("gsbooru")
+        self.tag_cache = {}
         self._last_api_launch = 0.0
 
         # UI sends rating:g / rating:s / rating:q (space-separated when multi).
@@ -160,55 +158,52 @@ class GsbooruWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         """Categorize tags via batched prefix lookups on /api/tags (the server
-        takes ~3 s per exact query, so group by first letter), cached on disk."""
+        takes ~3 s per exact query, so group by first letter)."""
         remaining = {t for t in tag_names if t not in self.tag_cache}
         if not remaining:
             return
         by_char = {}
         for t in remaining:
             by_char.setdefault(t[0].lower(), []).append(t)
-        try:
-            # prefix pages: top 300 per first letter (3 rounds of parallel
-            # calls) — much cheaper than one exact query per leftover
-            if self.stop_event.is_set():
-                return
-            for page in (1, 2, 3):
-                chars = [ch for ch in by_char
-                         if any(n not in self.tag_cache for n in by_char[ch])]
-                if not chars:
-                    break
-                results = await self._throttled_get(
-                    [{"tag_string": f"{ch}*", "limit": 100, "page": page,
-                      "sort": "post_count"}
-                     for ch in chars])
-                for ch, data in zip(chars, results):
-                    if data is None:
-                        return
-                    wanted = {n.lower(): n for n in by_char[ch]
-                              if n not in self.tag_cache}
-                    for t in data.get("tags") or []:
-                        low = str(t.get("name", "")).lower()
-                        if low in wanted:
-                            orig = wanted.pop(low)
-                            self.tag_cache[orig] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
+        # prefix pages: top 300 per first letter (3 rounds of parallel
+        # calls) — much cheaper than one exact query per leftover
+        if self.stop_event.is_set():
+            return
+        for page in (1, 2, 3):
+            chars = [ch for ch in by_char
+                     if any(n not in self.tag_cache for n in by_char[ch])]
+            if not chars:
+                break
+            results = await self._throttled_get(
+                [{"tag_string": f"{ch}*", "limit": 100, "page": page,
+                  "sort": "post_count"}
+                 for ch in chars])
+            for ch, data in zip(chars, results):
+                if data is None:
+                    return
+                wanted = {n.lower(): n for n in by_char[ch]
+                          if n not in self.tag_cache}
+                for t in data.get("tags") or []:
+                    low = str(t.get("name", "")).lower()
+                    if low in wanted:
+                        orig = wanted.pop(low)
+                        self.tag_cache[orig] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
 
-            # final fallback: exact lookups for anything past rank 300
-            leftovers = [n for n in remaining if n not in self.tag_cache]
-            if leftovers and not self.stop_event.is_set():
-                results = await self._throttled_get(
-                    [{"tag_string": n, "limit": 50} for n in leftovers])
-                for name, data in zip(leftovers, results):
-                    if data is None:
-                        return
-                    match = next(
-                        (t for t in data.get("tags") or []
-                         if str(t.get("name", "")).lower() == name.lower()),
-                        None)
-                    # ponytail: failures/no-matches stay uncached (retried next run)
-                    if match is not None:
-                        self.tag_cache[name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-        finally:
-            save_tag_cache(self.tag_cache, "gsbooru")
+        # final fallback: exact lookups for anything past rank 300
+        leftovers = [n for n in remaining if n not in self.tag_cache]
+        if leftovers and not self.stop_event.is_set():
+            results = await self._throttled_get(
+                [{"tag_string": n, "limit": 50} for n in leftovers])
+            for name, data in zip(leftovers, results):
+                if data is None:
+                    return
+                match = next(
+                    (t for t in data.get("tags") or []
+                     if str(t.get("name", "")).lower() == name.lower()),
+                    None)
+                # ponytail: failures/no-matches stay uncached (retried next run)
+                if match is not None:
+                    self.tag_cache[name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
 
     def _categorize_tags(self, tag_names):
         artists, characters, copyrights, metadata_tags, general = [], [], [], [], []

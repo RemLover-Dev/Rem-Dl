@@ -1,7 +1,7 @@
 import os, hashlib
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-from core.shared import load_tag_cache, save_tag_cache, TAG_TYPE_MAP
+from core.shared import TAG_TYPE_MAP
 
 
 class KonachanWorker(BaseWorker):
@@ -10,7 +10,7 @@ class KonachanWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
         self.exclusions = exclusions
-        self.tag_cache = load_tag_cache("konachan")
+        self.tag_cache = {}
 
         self.api_tag = self.original_tag
         if self.rating:
@@ -57,7 +57,6 @@ class KonachanWorker(BaseWorker):
                 # ponytail: failures/no-matches stay uncached (retried next run)
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
-        save_tag_cache(self.tag_cache, "konachan")
 
     def _categorize_tags(self, tag_names):
         artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
