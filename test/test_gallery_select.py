@@ -135,6 +135,27 @@ def test_favourite_single_toggle(client, monkeypatch):
     assert r.get_json()["favourite"] is False
 
 
+def test_favourite_batch_toggles_all_in_one_save(client, monkeypatch):
+    gal = {"images": [
+        {"id": "a", "filename": "1.png", "filepath": "1.png", "favourite": False},
+        {"id": "b", "filename": "2.png", "filepath": "2.png", "favourite": True},
+        {"id": "c", "filename": "3.png", "filepath": "3.png", "favourite": False},
+    ]}
+    saves = []
+    monkeypatch.setattr(shared, "load_gallery", lambda: gal)
+    monkeypatch.setattr(shared, "save_gallery", saves.append)
+
+    r = client.post("/api/gallery/favourite_batch", json={"ids": ["a", "b"]}, headers=H)
+    assert r.get_json() == {"success": True, "flipped": 2}
+    assert [i["favourite"] for i in gal["images"]] == [True, False, False]
+    assert len(saves) == 1  # whole batch = one gallery.json write
+
+    # unknown ids are a no-op — no rewrite
+    r = client.post("/api/gallery/favourite_batch", json={"ids": ["nope"]}, headers=H)
+    assert r.get_json() == {"success": True, "flipped": 0}
+    assert len(saves) == 1
+
+
 def test_gallery_rating_and_site_filters():
     mock_images = [
         {"id": "1", "filename": "safe1.png", "site": "zerochan", "filepath": "Zerochan/safe1.png", "tags": {"tag": ["1girl", "smile"]}},

@@ -3749,16 +3749,14 @@ function onGalleryFavBtn() {
     if (gallerySelectMode) favouriteSelected();
     else toggleFavFilter();
 }
-// edit mode: heart toggles the favourite flag on every selected image —
-// same as pressing each card's heart; the selection survives page changes
+// edit mode: heart toggles the favourite flag on every selected image in one
+// batch request — same as pressing each card's heart; selection survives pages
 async function favouriteSelected() {
     const ids = [...gallerySelected.keys()];
     if (!ids.length) return;
-    for (const id of ids) {
-        try {
-            await fetch("/api/gallery/favourite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-        } catch (e) {}
-    }
+    try {
+        await fetch("/api/gallery/favourite_batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    } catch (e) {}
     loadGallery();
 }
 async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) {} }

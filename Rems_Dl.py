@@ -1493,6 +1493,23 @@ def toggle_gallery_fav():
             return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
+@app.route("/api/gallery/favourite_batch", methods=["POST"])
+def toggle_gallery_fav_batch():
+    # one load+save for the whole selection — N single toggles do N full
+    # gallery.json rewrites and crawl with large selections
+    ids = set((request.json or {}).get("ids") or [])
+    if not ids:
+        return jsonify({"success": True, "flipped": 0})
+    gallery = shared.load_gallery()
+    flipped = 0
+    for img in gallery["images"]:
+        if img.get("id") in ids:
+            img["favourite"] = not img.get("favourite", False)
+            flipped += 1
+    if flipped:
+        shared.save_gallery(gallery)
+    return jsonify({"success": True, "flipped": flipped})
+
 @app.route("/api/gallery/favourite_by_name", methods=["POST"])
 def toggle_gallery_fav_by_name():
     fn = (request.json or {}).get("filename", "")
