@@ -6,6 +6,13 @@ let currentActiveTheme = 'dark';
 // localStorage throws when blocked (private mode / file://) — a crash here kills the whole script
 function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+// F11 fullscreen in the pywebview desktop shell — plain browsers have no
+// window.pywebview, so we bail out and let their native F11 handle it
+document.addEventListener("keydown", function (e) {
+    if (e.key !== "F11" || !window.pywebview || !window.pywebview.api) return;
+    e.preventDefault();
+    window.pywebview.api.toggle_fullscreen();
+});
 function escapeHtml(str) {
     return String(str)
         .replace(/&/g, "&amp;")

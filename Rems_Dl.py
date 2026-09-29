@@ -2180,11 +2180,17 @@ if __name__ == "__main__":
             ]
         icon_path = next((p for p in icon_candidates if os.path.isfile(p)), None)
 
+        class _DesktopApi:
+            def toggle_fullscreen(self):
+                for w in list(_pywebview.windows):
+                    w.toggle_fullscreen()
+
         _win = _pywebview.create_window(
             "Rems Dl",
             url,
             width=1400,
-            height=900
+            height=900,
+            js_api=_DesktopApi()
         )
         try:
             _win.events.closed += _teardown
