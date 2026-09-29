@@ -515,21 +515,27 @@ function logToConsole(tabID, msg) {
         let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn);
 
         let ratingHtml = "";
+        let logRating = "";
         let pLow = rawPath.toLowerCase().replace(/\\/g, '/');
         if (pLow.includes('/rule34/') || pLow.includes('\\rule34\\') || pLow.includes('rule34')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            logRating = "explicit";
         }
         else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            logRating = "explicit";
         }
         else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Rating: Sensitive</div>`;
+            logRating = "sensitive";
         }
         else if (pLow.includes('moderate') || pLow.includes('questionable')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Rating: Questionable</div>`;
+            logRating = "questionable";
         }
         else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Rating: Safe</div>`;
+            logRating = "safe";
         }
         // ponytail: badge only matters when the tab's rating filter doesn't pin it down
         const _ratingInputByWorker = RATING_INPUT_BY_WORKER;
@@ -550,6 +556,8 @@ function logToConsole(tabID, msg) {
 
         let card = document.createElement("div");
         card.className = "image-card-log";
+        if (logRating) card.dataset.rating = logRating;
+        if (ratingBlurred(logRating)) card.classList.add("is-nsfw");
         let thumbSrc = '/api/gallery/thumb/' + pathUrlStr;
         let safeFn = escJs(fn);
 
@@ -2230,8 +2238,6 @@ window.onload = async function () {
     } catch (e) {}
 
     await _startupTail;
-    const gGrid = document.getElementById("galleryGrid");
-    if (gGrid) gGrid.classList.toggle("blur-nsfw", galleryBlurNsfw);
     const gBlurBtn = document.getElementById("galleryBlurBtn");
     if (gBlurBtn) gBlurBtn.classList.toggle("active", galleryBlurNsfw);
     // ponytail: Gallery is display:none at startup (default tab is MAIN), so clientWidth/clientHeight
@@ -2362,8 +2368,6 @@ function openTab(tabName, btn) {
     btn.classList.add("active");
     updateBackground(tabName);
     if (tabName === "Gallery") {
-        const grid = document.getElementById("galleryGrid");
-        if (grid) grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
         const blurBtn = document.getElementById("galleryBlurBtn");
         if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
         clearTimeout(_resizeTimer);
@@ -3000,6 +3004,8 @@ function renderHistory() {
             let heartColor = isFav ? "#ff6b6b" : "var(--text-color)";
             let heartBg = isFav ? "rgba(255, 107, 107, 0.2)" : "transparent";
             const _lab = historyRatingLabel(item.site, item.rating);
+            const _c = historyRatingCanon(item.site, item.rating);
+            const _nsfw = ratingBlurred(_c) || (!_c && item.site === 'rule34' && ratingBlurred('explicit'));
             let ratingBadge = _lab ? `<span style="color: #2dd4bf; font-size: 11px; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.4); padding: 2px 5px; border-radius: 4px; margin-left: 10px;">${_lab}</span>` : "";
             let timeSpan = "";
             if (item.searched_at) {
@@ -3007,7 +3013,7 @@ function renderHistory() {
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
                 timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')">&times;</button></div></div>`;
+            htmlStr += `<div class="hist-item${_nsfw ? ' is-nsfw' : ''}" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')">&times;</button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -3172,6 +3178,7 @@ function renderImageHistory() {
             let tagsStr = renderCategorizedTags(img.tags || {}, false);
 
             let ratingHtml = "";
+            let histRating = "";
             let allTags = [];
             let tagsDict = normalizeTags(img.tags || {});
             TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
@@ -3179,14 +3186,19 @@ function renderImageHistory() {
             let siteLower = (img.site || "").toLowerCase();
             if (siteLower === "rule34") {
                 ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+                histRating = "explicit";
             } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
                 ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+                histRating = "explicit";
             } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
                 ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
+                histRating = "sensitive";
             } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
                 ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
+                histRating = "questionable";
             } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g')) {
                 ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
+                histRating = "safe";
             }
 
             let thumbUrl = getSafeThumbUrl(img.filepath, img.filename);
@@ -3198,7 +3210,7 @@ function renderImageHistory() {
             let artistHtml = artistName ? `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
 
             htmlStr += `
-            <div class="image-card-log" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+            <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
             <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
             <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
@@ -3247,14 +3259,31 @@ let _dragSelect = true;
 let _dragSuppressClick = false;
 let _paintPending = false, _paintCard = null, _paintPt = [0, 0];
 let galleryBlurNsfw = storeGet('gallery_blur_nsfw') !== 'false';
+if (document.body) document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
 function toggleGalleryBlur() {
     galleryBlurNsfw = !galleryBlurNsfw;
     storeSet('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
     const btn = document.getElementById("galleryBlurBtn");
     if (btn) btn.classList.toggle("active", galleryBlurNsfw);
-    const grid = document.getElementById("galleryGrid");
-    if (grid) grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
 }
+// which ratings get blurred — picked in Settings; default = old explicit+questionable behavior
+function getBlurRatings() {
+    const v = storeGet('blur_ratings');
+    return (v === null ? 'questionable explicit' : v).split(/\s+/).filter(Boolean);
+}
+function ratingBlurred(canon) {
+    return ['safe', 'sensitive', 'questionable', 'explicit'].includes(canon) && getBlurRatings().includes(canon);
+}
+function setBlurRatings() {
+    const on = [...document.querySelectorAll('.blur-rating-box:checked')].map(cb => cb.value);
+    storeSet('blur_ratings', on.join(' '));
+    document.querySelectorAll('.image-card-log[data-rating]').forEach(c => c.classList.toggle('is-nsfw', ratingBlurred(c.dataset.rating)));
+    renderGallery();
+    renderHistory();
+    renderImageHistory();
+}
+document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
 
 function getGalleryImageRating(img) {
     if (!img) return "safe";
@@ -3634,7 +3663,6 @@ function renderGallery() {
     const grid = document.getElementById("galleryGrid");
     const pagination = document.getElementById("galleryPagination");
     if (!grid) return;
-    grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
     const blurBtn = document.getElementById("galleryBlurBtn");
     if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
 
@@ -3699,8 +3727,8 @@ function renderGallery() {
         else if (isQuestionable) ratingBadge = '<span class="gallery-card-badge rating questionable">16+</span>';
 
         const siteBadge = ''; // User requested: do not show site name on cards
-        // blur covers explicit + questionable only — sensitive/safe stay visible
-        const isBlurTarget = isExplicit || isQuestionable;
+        // which ratings blur is user-chosen in Settings (default explicit + questionable)
+        const isBlurTarget = ratingBlurred(rating);
         const nsfwClass = isBlurTarget ? ' is-nsfw' : '';
         const favCls = img.favourite ? ' is-fav' : '';
         const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${img.id}', this.checked)">`;

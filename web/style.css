@@ -930,14 +930,27 @@ select option:hover, select option:checked { background: var(--title-color); col
     display: none !important;
 }
 
-/* NSFW Blur Filter */
-#galleryGrid.blur-nsfw .gallery-card.is-nsfw img {
+/* NSFW Blur Filter — one switch (blur-nsfw on <body>), same is-nsfw marker everywhere */
+body.blur-nsfw .gallery-card.is-nsfw img {
     filter: blur(22px);
     transform: scale(1.08);
 }
-#galleryGrid.blur-nsfw .gallery-card.is-nsfw:hover img {
+body.blur-nsfw .gallery-card.is-nsfw:hover img {
     filter: blur(0);
     transform: scale(1);
+}
+body.blur-nsfw .image-card-log.is-nsfw img {
+    filter: blur(22px);
+}
+body.blur-nsfw .image-card-log.is-nsfw:hover img {
+    filter: blur(0);
+}
+body.blur-nsfw .hist-item.is-nsfw .hist-tag {
+    display: inline-block;
+    filter: blur(7px);
+}
+body.blur-nsfw .hist-item.is-nsfw:hover .hist-tag {
+    filter: none;
 }
 
 .gallery-card-heart {
