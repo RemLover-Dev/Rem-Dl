@@ -2686,7 +2686,7 @@ function openHistoryPicker(btn) {
     const r = btn.getBoundingClientRect();
     el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
     el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
-    hp = { vy: now.getFullYear(), vm: now.getMonth(), sel: null, h: null, mm: 0, btn, el, onDoc: null, onKey: null };
+    hp = { vy: now.getFullYear(), vm: now.getMonth(), sel: null, hi: "", mi: "", btn, el, onDoc: null, onKey: null };
     hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
     hp.onKey = (e) => { if (e.key === "Escape") historyPickerClose(); };
     document.addEventListener("mousedown", hp.onDoc, true);
@@ -2706,8 +2706,9 @@ function renderHistoryPicker() {
         days += `<span onclick="hpPickDay(${d})" style="text-align:center; padding:4px 0; border-radius:4px; cursor:pointer; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}">${d}</span>`;
     }
     const pad = (n) => String(n).padStart(2, "0");
+    const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
     const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
-    const selStyle = "flex: 1; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 4px; font-size: 12px;";
+    const selStyle = "min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px; width: 44px; text-align: center; flex: none;";
     s.el.innerHTML = `
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
             <button onclick="hpNavYear(-1)" style="${navBtn}">&laquo;</button>
@@ -2723,7 +2724,9 @@ function renderHistoryPicker() {
         <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
         <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
             <span style="opacity: .7;">Time</span>
-            <input type="time" value="${s.h == null ? "" : pad(s.h) + ":" + pad(s.mm)}" onchange="hpSetTime(this.value)" style="${selStyle}">
+            <input type="text" value="${esc(s.hi)}" placeholder="HH" onchange="hpSetHour(this.value)" style="${selStyle}">
+            <span style="opacity: .7;">:</span>
+            <input type="text" value="${esc(s.mi)}" placeholder="MM" onchange="hpSetMin(this.value)" style="${selStyle}">
         </div>
         <div style=" display: flex; justify-content: flex-end; margin-top: 10px;">
             <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
@@ -2744,17 +2747,25 @@ function hpPickDay(d) {
     hp.sel = { y: hp.vy, mo: hp.vm, d };
     renderHistoryPicker();
 }
-function hpSetTime(v) {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(v || "");
-    if (m && +m[1] <= 23 && +m[2] <= 59) { hp.h = +m[1]; hp.mm = +m[2]; }
-    else if (v === "") hp.h = null;
+function hpSetHour(v) {
+    hp.hi = v;
+}
+function hpSetMin(v) {
+    hp.mi = v;
 }
 function hpApply() {
     const s = hp;
     if (!s || !s.sel) return;
     const pad = (n) => String(n).padStart(2, "0");
     const date = `${s.sel.y}-${pad(s.sel.mo + 1)}-${pad(s.sel.d)}`;
-    const q = s.h == null ? date : `${date} ${pad(s.h)}:${pad(s.mm)}`;
+    const hi = (s.hi || "").trim(), mi = (s.mi || "").trim();
+    let time = "";
+    if (/^\d{1,2}$/.test(hi) && +hi <= 23) {
+        // anything but plain digits in the minute box = filter by hour only
+        const mm = /^\d{1,2}$/.test(mi) && +mi <= 59 ? +mi : 0;
+        time = ` ${pad(+hi)}:${pad(mm)}`;
+    }
+    const q = date + time;
     const box = document.getElementById("historySearch");
     if (box) box.value = q;
     historySearchInput(q);
