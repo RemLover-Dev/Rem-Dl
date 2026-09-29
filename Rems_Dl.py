@@ -1952,15 +1952,41 @@ def handle_get_queue():
 @socketio.on("start_worker")
 def handle_start_worker(data):
     site = data.get("worker")
+    has_payload = any(data.get(k) for k in ("tag", "category", "user_id"))
     with QUEUE_LOCK:
         if ACTIVE_JOBS.get(site) is None:
-            ACTIVE_JOBS[site] = data
-            _start_job_thread(data)
-        else:
+            q = DOWNLOAD_QUEUES.get(site)
+            if q:
+                # START with jobs already waiting runs the head of the queue;
+                # a fresh form payload joins the back instead of jumping the line
+                if has_payload:
+                    q.append(data)
+                    entry = _queue_entry(data)
+                    shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+                job = q.pop(0)
+                ACTIVE_JOBS[site] = job
+                _start_job_thread(job)
+            elif has_payload:
+                ACTIVE_JOBS[site] = data
+                _start_job_thread(data)
+        elif has_payload:
             q = DOWNLOAD_QUEUES.setdefault(site, [])
             q.append(data)
             entry = _queue_entry(data)
             shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+    _emit_queue_state()
+
+
+@socketio.on("queue_add")
+def handle_queue_add(data):
+    site = (data or {}).get("worker")
+    if not site or not any(data.get(k) for k in ("tag", "category", "user_id")):
+        return
+    with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.setdefault(site, [])
+        q.append(data)
+        entry = _queue_entry(data)
+        shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
     _emit_queue_state()
 
 @socketio.on("stop_worker")

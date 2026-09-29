@@ -1,5 +1,6 @@
 let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": false, "dedup_enabled": true };
 var workerRunning = {};
+let queuedCounts = {}; // site -> waiting entries, tracked so START can kick off the queue
 let uiConfig = {};
 let currentActiveTheme = 'dark';
 
@@ -74,8 +75,6 @@ function normalizeTags(tagsInput) {
 
 function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()); }
 function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
-// tag labels display with underscores as spaces; hover titles keep the raw tag
-function cleanTagLabel(t) { const s = String(t || "").replace(/_/g, " ").trim(); return s.charAt(0).toUpperCase() + s.slice(1); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -1956,6 +1955,7 @@ function renderQueueChip(data) {
     // one pill per worker — a pill's list never mixes in another worker's jobs
     const bySite = {};
     queued.forEach(j => (bySite[j.site] = bySite[j.site] || []).push(j));
+    queuedCounts = Object.fromEntries(Object.keys(bySite).map(s => [s, bySite[s].length]));
     const actBySite = {};
     actives.forEach(a => (actBySite[a.site] = actBySite[a.site] || []).push(a));
     if (openQueueSite && !bySite[openQueueSite]) openQueueSite = null;
@@ -1998,7 +1998,7 @@ function renderQueueChip(data) {
         chip.onclick = toggleQueueList;
         const text = document.createElement("span");
         if (acts.length) {
-            text.textContent = `▶ ${siteLabel(site)}: ${cleanTagLabel(acts[0].tag)}`;
+            text.textContent = `▶ ${siteLabel(site)}: ${cleanTagDisplay(acts[0].tag)}`;
             text.title = `${acts[0].site} — ${acts[0].tag}`;
         } else {
             text.textContent = `${siteLabel(site)}: ${items.length} queued`;
@@ -2043,7 +2043,7 @@ function renderQueueChip(data) {
 
             const label = document.createElement("span");
             label.className = "queue-label";
-            label.textContent = cleanTagLabel(j.tag);
+            label.textContent = cleanTagDisplay(j.tag);
             label.title = `${j.site} — ${j.tag}`;
 
             const x = document.createElement("button");
@@ -2141,9 +2141,9 @@ socket.on("dl_queue", function (data) {
     queued.forEach(j => busy.add(j.site));
     Object.keys(workerRunning).forEach(w => {
         if (busy.has(w)) {
-            // ponytail: don't touch actively running sites — a local STOP press
-            // must not be overridden while its worker is still winding down
-            if (!activeSites.has(w) && !workerRunning[w]) { workerRunning[w] = true; renderRunBtn(w); }
+            // queued-only sites must show START (it kicks off the queue) — but
+            // never override a local STOP press while its worker winds down
+            if (!activeSites.has(w) && workerRunning[w]) { workerRunning[w] = false; renderRunBtn(w); }
         } else if (workerRunning[w]) {
             workerRunning[w] = false; renderRunBtn(w);
         }
@@ -2159,6 +2159,8 @@ socket.on("dl_queue", function (data) {
 
 window.onload = async function () {
     socket.emit("get_queue");
+    // buttons must exist before any queue state arrives
+    Object.keys(WORKER_TO_TAB).forEach(renderRunBtn);
     try {
         let resp = await fetch("/api/config");
         let config = await resp.json();
@@ -2402,21 +2404,20 @@ function renderRunBtn(workerName) {
     if (!add) {
         add = document.createElement("button");
         add.id = "queueAdd_" + workerName;
-        add.className = "queue-add";
-        add.textContent = "add to queue";
-        add.title = "Queue another request for this worker using the current form values";
-        add.onclick = () => startWorker(workerName);
+        add.className = "action-btn";
+        add.textContent = "Add to queue";
+        add.title = "Add these form values to this worker's queue (press START to begin)";
+        add.onclick = () => addWorkerToQueue(workerName);
         const tab = btn.closest(".tab-content") || btn.parentElement;
         const limLabel = Array.from(tab.querySelectorAll("label")).find(l => /^(limit|amount):?$/i.test(l.textContent.trim()));
         (limLabel ? limLabel.parentElement : btn.parentElement).insertBefore(add, limLabel || btn);
     }
-    add.style.display = running ? "" : "none";
 }
 function toggleWorker(workerName) {
     if (workerRunning[workerName]) stopWorker(workerName);
     else startWorker(workerName);
 }
-function startWorker(workerName) {
+function buildWorkerPayload(workerName) {
     let payload = { worker: workerName, net_config: { ...globalNetConfig } };
     payload.net_config.api_timeout = document.getElementById("apiTimeout").value;
     payload.net_config.retry_wait = document.getElementById("retryWait").value;
@@ -2444,7 +2445,7 @@ function startWorker(workerName) {
             payload.tag = 'ranking:' + ranking;
         } else {
             let val = document.getElementById('pixivTag').value.trim();
-            if (!val) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return; }
+            if (!val) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return null; }
             payload.tag = mode + ':' + val;
         }
 
@@ -2475,18 +2476,18 @@ function startWorker(workerName) {
     if (TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
         logToConsole(workerName, "Error: tag is empty — nothing to search");
-        workerRunning[workerName] = false; renderRunBtn(workerName);
-        return false;
+        return null;
     }
     if (workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
         showToast("Enter a tag or user ID first");
         logToConsole('eshuushuu', "Error: tag and user ID are both empty — nothing to search");
-        workerRunning[workerName] = false; renderRunBtn(workerName);
-        return false;
+        return null;
     }
 
-    socket.emit("start_worker", payload);
-    workerRunning[workerName] = true; renderRunBtn(workerName);
+    return payload;
+}
+
+function clearSubmittedTags(workerName) {
     // ponytail: submitted combo clears so the box is fresh for the next search
     if (workerName === 'zero') { currentZerochanTags = []; zerochanSubTags.clear(); renderZerochanTags(); document.getElementById('zeroTag').value = ''; }
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
@@ -2499,7 +2500,19 @@ function startWorker(workerName) {
     if (workerName === 'safe') { currentSafeTags = []; safeSubTags.clear(); renderSafeTags(); document.getElementById('safeTag').value = ''; }
     if (workerName === 'sankaku') { currentSankakuTags = []; sankakuSubTags.clear(); renderSankakuTags(); document.getElementById('sankakuTag').value = ''; }
     if (workerName === 'yande') { currentYandeTags = []; yandeSubTags.clear(); renderYandeTags(); document.getElementById('yandeTag').value = ''; }
+}
 
+function startWorker(workerName) {
+    if (queuedCounts[workerName]) {
+        // jobs are already waiting — START kicks off the head of the queue
+        socket.emit("start_worker", { worker: workerName });
+    } else {
+        const payload = buildWorkerPayload(workerName);
+        if (!payload) return false;
+        socket.emit("start_worker", payload);
+        clearSubmittedTags(workerName);
+    }
+    workerRunning[workerName] = true; renderRunBtn(workerName);
     let key = WORKER_TO_TAB[workerName];
     if (key) {
         let container = document.getElementById("dualProgress_" + key);
@@ -2513,6 +2526,14 @@ function startWorker(workerName) {
         }
     }
     setTimeout(loadTagsData, 1000);
+    return true;
+}
+
+function addWorkerToQueue(workerName) {
+    const payload = buildWorkerPayload(workerName);
+    if (!payload) return false;
+    socket.emit("queue_add", payload);
+    clearSubmittedTags(workerName);
     return true;
 }
 

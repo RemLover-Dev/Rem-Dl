@@ -241,19 +241,6 @@ input[type="number"].queue-pos {
     opacity: 0.7;
 }
 .queue-x:hover { color: #ff6b6b; opacity: 1; }
-.queue-add {
-    flex: none;
-    background: transparent;
-    border: 1px solid rgba(0, 210, 211, 0.4);
-    border-radius: 10px;
-    color: var(--title-color);
-    cursor: pointer;
-    font-size: 10px;
-    line-height: 1;
-    padding: 3px 7px;
-    opacity: 0.85;
-}
-.queue-add:hover { background: rgba(0, 210, 211, 0.22); opacity: 1; }
 
 .tab-btn {
     background: transparent;

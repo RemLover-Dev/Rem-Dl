@@ -214,3 +214,46 @@ def test_queue_bump_when_idle_promotes_directly(queue_env):
     assert _wait(lambda: started == ["solo"])
     gates["solo"].set()
     assert _wait(_drained)
+
+
+def test_queue_add_defers_until_start_worker(queue_env):
+    started, gates = queue_env
+    client = Rems_Dl.socketio.test_client(Rems_Dl.app)
+
+    # queue while idle: entries wait, nothing runs yet
+    for tag in ("q1", "q2"):
+        client.emit("queue_add", {"worker": "gelbooru", "tag": tag, "net_config": {}})
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("gelbooru", [])) == 2)
+    assert started == []
+
+    # START kicks off the head; a payload-less start never runs the payload
+    client.emit("start_worker", {"worker": "gelbooru"})
+    assert _wait(lambda: started == ["q1"])
+    with Rems_Dl.QUEUE_LOCK:
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["q2"]
+
+    gates["q1"].set()
+    assert _wait(lambda: started == ["q1", "q2"])
+    gates["q2"].set()
+    assert _wait(_drained)
+
+    # payload-less start with nothing queued is a no-op
+    client.emit("start_worker", {"worker": "gelbooru"})
+    assert started == ["q1", "q2"]
+
+
+def test_start_worker_with_queue_joins_back(queue_env):
+    started, gates = queue_env
+    client = Rems_Dl.socketio.test_client(Rems_Dl.app)
+
+    client.emit("queue_add", {"worker": "gelbooru", "tag": "head", "net_config": {}})
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "form", "net_config": {}})
+    # the queued head runs first; the fresh form payload joins the back
+    assert _wait(lambda: started == ["head"])
+    with Rems_Dl.QUEUE_LOCK:
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["form"]
+
+    gates["head"].set()
+    assert _wait(lambda: started == ["head", "form"])
+    gates["form"].set()
+    assert _wait(_drained)
