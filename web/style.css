@@ -172,6 +172,7 @@ h2 {
     z-index: 30;
 }
 .queue-chip:hover { background: rgba(0, 210, 211, 0.22); }
+.queue-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .queue-list {
     position: absolute;
     top: calc(100% + 6px);
