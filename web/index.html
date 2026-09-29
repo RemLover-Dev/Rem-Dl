@@ -150,13 +150,17 @@
                     </div>
                     <label>Limit:</label>
                     <input type="number" id="nekosapiLimit" value="50" min="0" style="width: 80px;">
-                    <select id="nekosapiRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="safe">Safe</option>
-                        <option value="suggestive">Suggestive</option>
-                        <option value="borderline">Questionable</option>
-                        <option value="explicit">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('nekosapiRatingDropdown')">All Ratings ▾</button>
+                        <div id="nekosapiRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="safe"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Suggestive</span><input type="checkbox" value="suggestive"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="borderline"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="explicit"></div>
+                        </div>
+                        <input type="hidden" id="nekosapiRating" value="">
+                    </div>
                     <button id="runBtn_nekosapi" class="action-btn" onclick="toggleWorker('nekosapi')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_nekosapi" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
