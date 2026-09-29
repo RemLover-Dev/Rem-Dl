@@ -3062,6 +3062,25 @@ function jumpToSite(site, tag, rating) {
     } else if (site === "anime_dl") {
         currentAnimeDlTags = String(tag || "").split("&&").map(t => t.trim()).filter(Boolean);
         renderAnimeDlTags();
+    } else if (site === "pixiv") {
+        // history stores "mode:value" — restore the mode dropdown instead of
+        // typing the prefix into the search box (search:artworks:123 ...)
+        const input = document.getElementById("pixivTag");
+        const modeSel = document.getElementById("pixivMode");
+        const m = String(tag || "").match(/^(search|artworks|bookmark|ranking):(.*)$/);
+        if (m && modeSel) {
+            modeSel.value = m[1];
+            if (m[1] === "ranking") {
+                const rm = document.getElementById("pixivRankingMode");
+                if (rm && m[2]) rm.value = m[2];
+                if (input) input.value = "";
+            } else if (input) {
+                input.value = m[2];
+            }
+            updatePixivMode();
+        } else if (input) {
+            input.value = tag || "";
+        }
     }
     let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
@@ -3069,7 +3088,7 @@ function jumpToSite(site, tag, rating) {
     // labels like "e-shuushuu" never contain the key "eshuushuu"
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
-    if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
+    if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
     if (rating) {
         const rsId = RATING_INPUT_BY_WORKER[site];
         if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) { rsEl.value = rating; rsEl.dispatchEvent(new Event('change')); } }
