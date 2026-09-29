@@ -110,10 +110,10 @@ class GsbooruWorker(BaseWorker):
             if self.stop_event.is_set():
                 return None
             # global pacing for this worker: every launch (posts + tags, all
-            # concurrent tasks) ≥ 1.7 s after the previous one — keeps any
-            # rolling 5 s window at ≤ 3 queries, the documented limit
+            # concurrent tasks) ≥ 1.1 s after the previous one — the limit is
+            # now 1 request/s, held just under it so jitter can't trip 429s
             while True:
-                wait = self._last_api_launch + 1.7 - loop.time()
+                wait = self._last_api_launch + 1.1 - loop.time()
                 if wait <= 0:
                     self._last_api_launch = loop.time()
                     break
