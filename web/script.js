@@ -2621,9 +2621,7 @@ async function saveApiSettings() {
     };
     let resp = await fetch("/api/api-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     let result = await resp.json();
-    let statusEl = document.getElementById("apiSaveStatus");
-    statusEl.textContent = result.success ? "Saved!" : "Error!";
-    setTimeout(()=> statusEl.textContent = "", 2000);
+    return result.success ? "Saved!" : "Error!";
 }
 
 async function exchangePixivCookie() {
@@ -2651,8 +2649,14 @@ async function saveDownloadSettings() {
     globalNetConfig.download_retries = document.getElementById("downloadRetries").value;
     if (document.getElementById("dedupEnabled")) globalNetConfig.dedup_enabled = document.getElementById("dedupEnabled").checked;
     await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
-    document.getElementById("dlSettingsStatus").textContent = "Saved!";
-    setTimeout(()=> document.getElementById("dlSettingsStatus").textContent = "", 2000);
+    return "Saved!";
+}
+
+async function saveAllSettings() {
+    const st = document.getElementById('settingsSaveStatus');
+    const results = [await saveApiSettings(), await saveDownloadSettings(), await saveBlurRatings()];
+    const bad = results.find(r => r !== "Saved!");
+    if (st) { st.textContent = bad || "Saved!"; setTimeout(() => st.textContent = "", 2000); }
 }
 
 let historyTags = [];
@@ -3292,8 +3296,7 @@ function saveBlurRatings() {
     renderGallery();
     renderHistory();
     renderImageHistory();
-    const st = document.getElementById('blurRatingsStatus');
-    if (st) { st.textContent = "Saved!"; setTimeout(() => st.textContent = "", 2000); }
+    return "Saved!";
 }
 // re-apply everything once the server config has loaded
 async function syncBlurSettings() {
