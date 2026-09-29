@@ -2724,9 +2724,9 @@ function renderHistoryPicker() {
         <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
         <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
             <span style="opacity: .7;">Time</span>
-            <input type="text" value="${esc(s.hi)}" placeholder="HH" onchange="hpSetHour(this.value)" style="${selStyle}">
+            <input type="text" value="${esc(s.hi)}" onchange="hpSetHour(this.value)" style="${selStyle}">
             <span style="opacity: .7;">:</span>
-            <input type="text" value="${esc(s.mi)}" placeholder="MM" onchange="hpSetMin(this.value)" style="${selStyle}">
+            <input type="text" value="${esc(s.mi)}" onchange="hpSetMin(this.value)" style="${selStyle}">
         </div>
         <div style=" display: flex; justify-content: flex-end; margin-top: 10px;">
             <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
