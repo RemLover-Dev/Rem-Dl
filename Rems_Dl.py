@@ -203,30 +203,38 @@ def socketio_emit(event, data):
 shared.emit_callback = socketio_emit
 
 def _merge_learned_and_online(site, query, online_tags, limit=50):
-    """Combine user's learned/favorite tags with live online suggestions."""
+    """Combine user's learned/favorite tags with live online suggestions.
+
+    Source APIs hand back results already sorted by popularity (order=count),
+    so a learned tag that also exists online keeps that position — only tags
+    the site doesn't know stay pinned ahead.
+    """
     learned = DatabaseManager.get_learned_suggestions(site, query, limit=limit)
-    merged = []
-    seen = set()
-    for t in learned:
-        tl = str(t).lower()
-        if tl not in seen:
-            seen.add(tl)
-            merged.append(t)
+    online = []
+    online_keys = set()
     for t in online_tags:
         if isinstance(t, str):
-            tl = t.lower()
-            if tl not in seen:
-                seen.add(tl)
-                merged.append(t)
+            key = t.lower()
         elif isinstance(t, dict):
             # For complex dicts (like e-shuushuu or anime-pictures)
             name = t.get("name") or t.get("title") or t.get("tag") or ""
-            if name:
-                tl = str(name).lower()
-                if tl not in seen:
-                    seen.add(tl)
-                    merged.append(t)
-    return merged[:limit]
+            if not name:
+                continue
+            key = str(name).lower()
+        else:
+            continue
+        if key and key not in online_keys:
+            online_keys.add(key)
+            online.append(t)
+
+    pinned = []
+    seen = set()
+    for t in learned:
+        tl = str(t).lower()
+        if tl and tl not in seen and tl not in online_keys:
+            seen.add(tl)
+            pinned.append(t)
+    return (pinned + online)[:limit]
 
 
 

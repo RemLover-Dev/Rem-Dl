@@ -1808,12 +1808,20 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
                 if (data && data.length > 0) {
                     activeIndex = -1;
                     dropdown.innerHTML = "";
+                    // ponytail: distinct site tags can render identically
+                    // (zani_(wuthering_waves) vs zani_(wuthering_waves)_) —
+                    // one row per label, first occurrence wins
+                    let seenLabels = new Set();
                     data.forEach((item) => {
+                        let label = displayFn ? displayFn(item) : String(item);
+                        let labelKey = label.trim().toLowerCase();
+                        if (seenLabels.has(labelKey)) return;
+                        seenLabels.add(labelKey);
                         let finalTag = isNegative ? '-' + item : item;
                         let div = document.createElement("div");
                         div.className = "autosuggest-item";
                         // ponytail: pretty display only — finalTag (underscores intact) is what gets sent
-                        div.textContent = (isNegative ? '-' : '') + (displayFn ? displayFn(item) : item);
+                        div.textContent = (isNegative ? '-' : '') + label;
                         div.onclick = function() {
                             if (displayFn) {
                                 // ponytail: pretty in the box, raw (underscores) stashed for the request
