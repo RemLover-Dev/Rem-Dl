@@ -3275,13 +3275,15 @@ function getBlurRatings() {
 function ratingBlurred(canon) {
     return ['safe', 'sensitive', 'questionable', 'explicit'].includes(canon) && getBlurRatings().includes(canon);
 }
-function setBlurRatings() {
+function saveBlurRatings() {
     const on = [...document.querySelectorAll('.blur-rating-box:checked')].map(cb => cb.value);
     storeSet('blur_ratings', on.join(' '));
     document.querySelectorAll('.image-card-log[data-rating]').forEach(c => c.classList.toggle('is-nsfw', ratingBlurred(c.dataset.rating)));
     renderGallery();
     renderHistory();
     renderImageHistory();
+    const st = document.getElementById('blurRatingsStatus');
+    if (st) { st.textContent = "Saved!"; setTimeout(() => st.textContent = "", 2000); }
 }
 document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
 

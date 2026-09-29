@@ -677,12 +677,16 @@
 
                         <div class="settings-card" style="grid-column: 1 / -1;">
                             <h3>Blur Ratings</h3>
-                            <div style="font-size: 13px; opacity: 0.85; margin-bottom: 10px;">Pick which ratings get blurred in Gallery, History and download logs. Hover an item to reveal it.</div>
+                            <div style="font-size: 13px; opacity: 0.85; margin-bottom: 10px;">Pick which ratings get blurred in Gallery, History and download logs, then Save. Hover an item to reveal it.</div>
                             <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px;">
-                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="safe" onchange="setBlurRatings()" style="width: 18px; height: 18px; cursor: pointer;"> Safe</label>
-                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="sensitive" onchange="setBlurRatings()" style="width: 18px; height: 18px; cursor: pointer;"> Sensitive</label>
-                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="questionable" onchange="setBlurRatings()" style="width: 18px; height: 18px; cursor: pointer;"> Questionable</label>
-                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="explicit" onchange="setBlurRatings()" style="width: 18px; height: 18px; cursor: pointer;"> Explicit (NSFW)</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="safe" style="width: 18px; height: 18px; cursor: pointer;"> Safe</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="sensitive" style="width: 18px; height: 18px; cursor: pointer;"> Sensitive</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="questionable" style="width: 18px; height: 18px; cursor: pointer;"> Questionable</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="explicit" style="width: 18px; height: 18px; cursor: pointer;"> Explicit (NSFW)</label>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
+                                <button class="action-btn" onclick="saveBlurRatings()">Save Blur Settings</button>
+                                <span id="blurRatingsStatus" style="font-size: 13px; color: var(--title-color);"></span>
                             </div>
                         </div>
 
