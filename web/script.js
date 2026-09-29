@@ -2561,6 +2561,7 @@ let favoriteTags = [];
 let imageHistory = [];
 let historyQuery = "";
 let historyDateFilter = null;  // calendar filter {y,mo,d,h,mm}, kept out of the search box
+let galleryDateFilter = null;  // same shape, for the Gallery tab
 let historyExpanded = false;
 let historySort = "newest";
 
@@ -2661,17 +2662,26 @@ function parseHistoryQuery(q) {
     const terms = toks.map(t => t.replace(/_/g, " "));
     return { terms, range };
 }
-// box text terms + calendar filter; a calendar date wins over a typed date
-function historyQueryParts() {
-    const box = parseHistoryQuery(historyQuery || "");
-    if (!historyDateFilter) return { terms: box.terms, range: box.range };
-    const f = historyDateFilter;
+function dateFilterRange(f) {
     const from = new Date(f.y, f.mo, f.d, f.h || 0, f.mm || 0).getTime();
     let to;
     if (f.h == null) to = from + 86400000 - 1;       // no hour picked = whole day
     else if (f.mm == null) to = from + 3600000 - 1;  // hour only = that hour
     else to = from + 60000 - 1;                      // minute picked = that minute
-    return { terms: box.terms, range: { from, to } };
+    return { from, to };
+}
+// box text terms + calendar filter; a calendar date wins over a typed date
+function historyQueryParts() {
+    const box = parseHistoryQuery(historyQuery || "");
+    return { terms: box.terms, range: historyDateFilter ? dateFilterRange(historyDateFilter) : box.range };
+}
+function applyDateParams(params, f) {
+    if (f) {
+        const r = dateFilterRange(f);
+        params.set("from_ts", r.from / 1000);
+        params.set("to_ts", r.to / 1000);
+    }
+    return params;
 }
 function historySearchInput(v) {
     historyQuery = v;
@@ -2692,6 +2702,7 @@ function historyPickerClose() {
 }
 function openHistoryPicker(btn) {
     if (hp) { historyPickerClose(); return; }
+    const target = btn.dataset.target || "history";
     const now = new Date();
     const el = document.createElement("div");
     el.style.cssText = "position: fixed; z-index: 9999; width: 232px; padding: 10px; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); color: var(--text-color); font-size: 13px;";
@@ -2699,9 +2710,10 @@ function openHistoryPicker(btn) {
     const r = btn.getBoundingClientRect();
     el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
     el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
-    // reopen on the calendar's current filter (or today)
-    const f = historyDateFilter;
+    // reopen on this target's current filter (or today)
+    const f = target === "gallery" ? galleryDateFilter : historyDateFilter;
     hp = {
+        target,
         vy: f ? f.y : now.getFullYear(),
         vm: f ? f.mo : now.getMonth(),
         sel: f ? { y: f.y, mo: f.mo, d: f.d } : null,
@@ -2714,9 +2726,13 @@ function openHistoryPicker(btn) {
     document.addEventListener("mousedown", hp.onDoc, true);
     document.addEventListener("keydown", hp.onKey, true);
     renderHistoryPicker();
+    // measured height > the 320 assumed above — re-clamp with the real one so
+    // the time row and footer never get cut off at the viewport edge
+    el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - el.offsetHeight - 8)) + "px";
 }
 function renderHistoryPicker() {
     const s = hp;
+    const active = s.target === "gallery" ? galleryDateFilter : historyDateFilter;
     const first = new Date(s.vy, s.vm, 1).getDay();
     const n = new Date(s.vy, s.vm + 1, 0).getDate();
     const now = new Date();
@@ -2730,7 +2746,7 @@ function renderHistoryPicker() {
     const pad = (n) => String(n).padStart(2, "0");
     const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
     const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
-    const selStyle = "min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px; width: 44px; text-align: center; flex: none;";
+    const selStyle = "appearance: none; -webkit-appearance: none; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px; width: 44px; text-align: center; flex: none;";
     s.el.innerHTML = `
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
             <button onclick="hpNavYear(-1)" style="${navBtn}">&laquo;</button>
@@ -2751,7 +2767,7 @@ function renderHistoryPicker() {
             <input type="text" value="${esc(s.mi)}" onchange="hpSetMin(this.value)" style="${selStyle}">
         </div>
         <div style=" display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px;">
-            ${historyDateFilter ? `<button onclick="hpClear()" style="background: transparent; color: inherit; border: 1px solid var(--border-color); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer;">Clear</button>` : ""}
+            ${active ? `<button onclick="hpClear()" style="background: transparent; color: inherit; border: 1px solid var(--border-color); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer;">Clear</button>` : ""}
             <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
         </div>`;
 }
@@ -2786,24 +2802,37 @@ function hpApply() {
         // anything but plain digits in the minute box = filter by hour only
         if (/^\d{1,2}$/.test(mi) && +mi <= 59) f.mm = +mi;
     }
-    historyDateFilter = f;
-    historyDateBtnState();
-    imageHistoryVisible = 30;
-    renderHistory();
-    renderImageHistory();
+    if (s.target === "gallery") {
+        galleryDateFilter = f;
+        dateBtnState(s.btn, true);
+        loadGallery(1);
+    } else {
+        historyDateFilter = f;
+        dateBtnState(s.btn, true);
+        imageHistoryVisible = 30;
+        renderHistory();
+        renderImageHistory();
+    }
     historyPickerClose();
 }
 function hpClear() {
-    historyDateFilter = null;
-    historyDateBtnState();
-    imageHistoryVisible = 30;
-    renderHistory();
-    renderImageHistory();
+    const s = hp;
+    if (!s) return;
+    if (s.target === "gallery") {
+        galleryDateFilter = null;
+        dateBtnState(s.btn, false);
+        loadGallery(1);
+    } else {
+        historyDateFilter = null;
+        dateBtnState(s.btn, false);
+        imageHistoryVisible = 30;
+        renderHistory();
+        renderImageHistory();
+    }
     historyPickerClose();
 }
-function historyDateBtnState() {
-    const w = document.getElementById("historyDateWrap");
-    if (w) w.style.borderColor = historyDateFilter ? "var(--accent-color)" : "";
+function dateBtnState(btn, active) {
+    if (btn) btn.style.borderColor = active ? "var(--accent-color)" : "";
 }
 
 async function loadTagsData() {
@@ -2814,12 +2843,19 @@ async function loadTagsData() {
             fetch("/api/favorites").then(r => r.json()),
             fetch("/api/image_history").then(r => r.json())
         ]);
-        historyTags = hist;
-        favoriteTags = favs;
-        imageHistory = imgHist;
-        renderHistory();
-        renderFavorites();
-        renderImageHistory();
+        // refetch on tab open is only for staleness (favs toggled elsewhere) —
+        // rebuild only the sections whose data actually changed, or the archive
+        // replays its slide-in animation every time and looks like it reloaded
+        const h = JSON.stringify(hist) !== JSON.stringify(historyTags);
+        const f = JSON.stringify(favs) !== JSON.stringify(favoriteTags);
+        const i = JSON.stringify(imgHist) !== JSON.stringify(imageHistory);
+        if (!h && !f && !i) return;
+        if (h) historyTags = hist;
+        if (f) favoriteTags = favs;
+        if (i) imageHistory = imgHist;
+        if (h || f) renderHistory();
+        if (f) renderFavorites();
+        if (i) renderImageHistory();
     } catch(e) {}
 }
 
@@ -3410,6 +3446,7 @@ async function loadGallery(page, remeasured) {
     const rating = getMultiSelectValues('ratingDropdown');
     const params = new URLSearchParams({ search, site, sort, type, rating, page: currentGalleryPage, per_page: galleryPerPage() });
     if (galleryFavFilter) params.set("favourites", "true");
+    applyDateParams(params, galleryDateFilter);
     try {
         let resp = await fetch(`/api/gallery?${params}`);
         const data = await resp.json();
@@ -3436,6 +3473,7 @@ async function loadGalleryPage(page, callback) {
     const rating = getMultiSelectValues('ratingDropdown');
     const params = new URLSearchParams({ search, site, sort, type, rating, page, per_page: galleryPerPage() });
     if (galleryFavFilter) params.set("favourites", "true");
+    applyDateParams(params, galleryDateFilter);
     try {
         let resp = await fetch(`/api/gallery?${params}`);
         const data = await resp.json();
@@ -3450,6 +3488,8 @@ function resetGalleryFilters() {
     const s = document.getElementById("gallerySearch");
     if (s) s.value = "";
     galleryFavFilter = false;
+    galleryDateFilter = null;
+    dateBtnState(document.getElementById("galleryDateWrap"), false);
     const favBtn = document.getElementById("galleryFavBtn");
     if (favBtn) favBtn.classList.remove("active");
 
@@ -4397,6 +4437,7 @@ function toggleViewerFav() {
         container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
         const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') });
         if (galleryFavFilter) params.set("favourites", "true");
+        applyDateParams(params, galleryDateFilter);
         try {
             let resp = await fetch(`/api/gallery/sources?${params}`);
             const counts = await resp.json();

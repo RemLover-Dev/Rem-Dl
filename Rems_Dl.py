@@ -1302,7 +1302,22 @@ def _build_filepath_cache(force=False):
     _fp_cache["at"] = now
     return cache
 
-def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters):
+def _image_timestamp(img):
+    ts = img.get("downloaded_at", "")
+    if ts:
+        try:
+            return datetime.fromisoformat(ts).timestamp()
+        except Exception:
+            return 0
+    fp = img.get("filepath", "")
+    if fp:
+        full = os.path.join(MASTER_FOLDER, fp)
+        if os.path.exists(full):
+            return os.path.getmtime(full)
+    return 0
+
+
+def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=None):
     def _get_all_tags(img):
         tags = img.get("tags", {})
         if isinstance(tags, dict):
@@ -1391,7 +1406,25 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
                         return True
             return False
         images = [i for i in images if matches_any_rating(i)]
+    if ts_range is not None:
+        t_from, t_to = ts_range
+        images = [i for i in images if (t_from is None or _image_timestamp(i) >= t_from)
+                  and (t_to is None or _image_timestamp(i) <= t_to)]
     return images
+
+
+def _parse_ts_range():
+    try:
+        from_ts = float(request.args.get("from_ts", ""))
+    except (TypeError, ValueError):
+        from_ts = None
+    try:
+        to_ts = float(request.args.get("to_ts", ""))
+    except (TypeError, ValueError):
+        to_ts = None
+    if from_ts is None and to_ts is None:
+        return None
+    return (from_ts, to_ts)
 
 
 @app.route("/api/gallery", methods=["GET"])
@@ -1425,33 +1458,14 @@ def get_gallery():
         shared.save_gallery(gallery)
         images = gallery.get("images", [])
     images = [i for i in images if i.get("filepath")]
-    images = _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters)
-
-    def _sort_key(img):
-        ts = img.get("downloaded_at", "")
-        if ts:
-            try:
-                ts = datetime.fromisoformat(ts).timestamp()
-            except Exception:
-                ts = 0
-        else:
-            fp = img.get("filepath", "")
-            if fp:
-                full = os.path.join(MASTER_FOLDER, fp)
-                if os.path.exists(full):
-                    ts = os.path.getmtime(full)
-                else:
-                    ts = 0
-            else:
-                ts = 0
-        return ts
+    images = _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=_parse_ts_range())
 
     if sort_by == "newest":
-        images.sort(key=_sort_key, reverse=True)
+        images.sort(key=_image_timestamp, reverse=True)
     elif sort_by == "oldest":
-        images.sort(key=_sort_key)
+        images.sort(key=_image_timestamp)
     else:
-        images.sort(key=lambda x: (not x.get("favourite"), _sort_key(x)), reverse=False)
+        images.sort(key=lambda x: (not x.get("favourite"), _image_timestamp(x)), reverse=False)
 
     total = len(images)
     total_pages = max(1, (total + per_page - 1) // per_page)
@@ -1631,7 +1645,7 @@ def get_gallery_sources():
     rating_filter_raw = request.args.get("rating", "").lower().strip()
     rating_filters = [r.strip() for r in rating_filter_raw.split(",") if r.strip()] if rating_filter_raw else []
     images = shared.load_gallery().get("images", [])
-    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters)
+    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters, ts_range=_parse_ts_range())
     counts = {}
     for img in images:
         s = shared.normalize_site(img.get("site", "unknown"))

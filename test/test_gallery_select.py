@@ -176,3 +176,27 @@ def test_gallery_endpoint_lists_images(client):
     assert j["total"] >= len(j["images"])
     for img in j["images"]:
         assert img.get("filepath")
+
+
+def test_gallery_date_filter(client, monkeypatch):
+    # self-seeded: other suite tests may leave the real gallery empty, and the
+    # endpoint must never persist anything from this run
+    newer = {"filename": "__tsfilter_newer__.png", "site": "zerochan", "filepath": "Zerochan/__tsfilter_newer__.png", "tags": {},
+             "downloaded_at": "2026-01-02T03:04:05"}
+    older = {"filename": "__tsfilter_older__.png", "site": "zerochan", "filepath": "Zerochan/__tsfilter_older__.png", "tags": {},
+             "downloaded_at": "2026-01-02T01:00:00"}
+    monkeypatch.setattr(Rems_Dl.shared, "load_gallery", lambda: {"images": [newer, older]})
+    monkeypatch.setattr(Rems_Dl, "_build_filepath_cache", lambda: {
+        newer["filename"]: newer["filepath"],
+        older["filename"]: older["filepath"],
+    })
+    data = client.get("/api/gallery?page=1&per_page=400", headers=H).get_json()
+    newest = data["images"][0]
+    ts = Rems_Dl._image_timestamp(newest)
+    win = client.get(f"/api/gallery?page=1&per_page=400&from_ts={ts}&to_ts={ts + 1}", headers=H).get_json()
+    assert any(i["filename"] == newest["filename"] for i in win["images"])
+    assert win["total"] < data["total"]
+    assert all(ts <= Rems_Dl._image_timestamp(i) <= ts + 1 for i in win["images"])
+    # malformed timestamps are ignored instead of 500ing
+    bad = client.get("/api/gallery?page=1&per_page=400&from_ts=notanumber", headers=H).get_json()
+    assert bad["total"] == data["total"]
