@@ -13,11 +13,21 @@ class SankakuWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        # the dropdown collapses a full set to All — treat it the same defensively
+        if len(codes) == len(self.rating_map):
+            codes = []
+        self.rating_allowed = set(codes)
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
+        self.api_tag = self.original_tag
+        # ponytail: sankaku has no comma-OR in rating (verified live —
+        # 'rating:s,rating:e' is ignored, 'rating:s rating:e' = last wins) —
+        # a single rating goes server-side, multi is filtered locally
+        if len(codes) == 1:
+            self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         # Prohibited characters (colon, slashes, etc.) are safely stripped
@@ -84,7 +94,7 @@ class SankakuWorker(BaseWorker):
         await self.scraper_task()
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(":")[-1], "")})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         collected_count = 0
         page = 1
@@ -98,9 +108,8 @@ class SankakuWorker(BaseWorker):
                 params = {"limit": limit_val, "page": page}
                 if self.net_config.get("hide_pools", False):
                     params["hide_posts_in_books"] = "always"
-                if self.rating:
-                    rc = self.rating.split(":")[-1]
-                    tag_list.append(f"rating:{rc}")
+                if len(self.rating_allowed) == 1:
+                    tag_list.append(f"rating:{next(iter(self.rating_allowed))}")
 
                 if "-video" in self.exclusions and "-image" not in self.exclusions:
                     tag_list.append("file_type:image")
@@ -153,10 +162,8 @@ class SankakuWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 url = post.get("file_url")
                 if not url:
