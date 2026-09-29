@@ -2175,6 +2175,9 @@ function openTab(tabName, btn) {
         clearTimeout(_resizeTimer);
         _resizeTimer = setTimeout(() => loadGallery(), 60);
     }
+    // gallery keeps its hearts fresh by reloading on open; the history tab
+    // must refetch too, or favourites toggled in the gallery stay stale here
+    if (tabName === "History") loadTagsData();
 }
 
 function toggleMenu(groupId) {
