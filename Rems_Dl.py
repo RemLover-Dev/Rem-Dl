@@ -1411,6 +1411,7 @@ def get_gallery():
     gallery = shared.load_gallery()
     images = gallery.get("images", [])
     fp_cache = _build_filepath_cache()
+    dirty = False
     for img in images:
         cached = fp_cache.get(img.get("filename", ""))
         if cached:

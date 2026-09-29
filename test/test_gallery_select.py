@@ -164,3 +164,15 @@ def test_gallery_rating_and_site_filters():
     assert len(site_res) == 1
     assert site_res[0]["id"] == "1"
 
+
+
+def test_gallery_endpoint_lists_images(client):
+    # regression: get_gallery referenced `dirty` without initializing it —
+    # crashed with UnboundLocalError whenever no filepath repair was needed
+    r = client.get("/api/gallery?page=1&per_page=5", headers=H)
+    assert r.status_code == 200
+    j = r.get_json()
+    assert isinstance(j["images"], list)
+    assert j["total"] >= len(j["images"])
+    for img in j["images"]:
+        assert img.get("filepath")
