@@ -74,6 +74,8 @@ function normalizeTags(tagsInput) {
 
 function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()); }
 function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
+// tag labels display with underscores as spaces; hover titles keep the raw tag
+function cleanTagLabel(t) { return String(t || "").replace(/_/g, " ").trim(); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -1996,7 +1998,7 @@ function renderQueueChip(data) {
         chip.onclick = toggleQueueList;
         const text = document.createElement("span");
         if (acts.length) {
-            text.textContent = `▶ ${siteLabel(site)}: ${acts[0].tag}`;
+            text.textContent = `▶ ${siteLabel(site)}: ${cleanTagLabel(acts[0].tag)}`;
             text.title = `${acts[0].site} — ${acts[0].tag}`;
         } else {
             text.textContent = `${siteLabel(site)}: ${items.length} queued`;
@@ -2007,8 +2009,17 @@ function renderQueueChip(data) {
         // keep row clicks/dblclicks from toggling the pill open/closed
         list.onclick = e => e.stopPropagation();
         list.ondblclick = e => e.stopPropagation();
-        if (acts.length) chip.append(text, stopBtn(acts[0].site));
-        else chip.append(text);
+        if (acts.length) {
+            // while downloading: queue another request without touching STOP
+            const add = document.createElement("button");
+            add.className = "queue-add";
+            add.textContent = "add to queue";
+            add.title = "Queue another request for this worker using the current form values";
+            add.onclick = e => { e.stopPropagation(); startWorker(site); };
+            chip.append(text, add, stopBtn(acts[0].site));
+        } else {
+            chip.append(text);
+        }
         if (!items.length) {
             const empty = document.createElement("div");
             empty.className = "queue-item queue-empty";
@@ -2041,7 +2052,7 @@ function renderQueueChip(data) {
 
             const label = document.createElement("span");
             label.className = "queue-label";
-            label.textContent = j.tag;
+            label.textContent = cleanTagLabel(j.tag);
             label.title = `${j.site} — ${j.tag}`;
 
             const x = document.createElement("button");
