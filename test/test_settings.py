@@ -44,16 +44,15 @@ class TestSettingsManager:
         assert loaded.get("pixiv_refresh_token") == "test_pixiv_token"
         assert loaded.get("gsbooru_api_key") == "test_gs_key"
 
-    def test_secrets_stay_out_of_env_file_and_env_wins(self, settings_env):
-        # legacy cleartext secret in .env must be purged on save
-        settings_env._upsert_env_keys({"PIXIV_COOKIE": "legacy-cookie",
-                                       "KONACHAN_USERNAME": "olduser"})
+    def test_secrets_persist_in_env_file_and_env_wins(self, settings_env):
+        # keys must survive an app restart -> written to .env
         settings_env.save_api_settings({"rule34_api_key": "sekrit",
-                                        "konachan_login": "alice"})
+                                        "konachan_login": "alice",
+                                        "pixiv_cookie": "legacy-cookie"})
         with open(settings_env._env_path(), encoding="utf-8") as f:
             content = f.read()
-        assert "PIXIV_COOKIE" not in content
-        assert "sekrit" not in content
+        assert "RULE34_API_KEY=sekrit" in content
+        assert "PIXIV_COOKIE=legacy-cookie" in content
         assert "KONACHAN_USERNAME=alice" in content
         # runtime env wins over file values
         os.environ["KONACHAN_USERNAME"] = "envuser"

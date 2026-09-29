@@ -344,36 +344,31 @@ class SettingsManager:
         os.environ["DEDUP_ENABLED"] = env_keys["DEDUP_ENABLED"]
 
     def save_api_settings(self, data):
-        # Non-identifying fields persist in .env; secrets (keys, passwords,
-        # cookies, tokens) stay process-memory only: writing them to .env is
-        # the cleartext-storage sink flagged by CodeQL (clear-text-storage).
-        non_sensitive_keys = {
+        # Everything (keys, passwords, cookies included) goes back to .env so
+        # it survives an app restart via load_dotenv. .env is gitignored;
+        # cleartext on disk is the accepted trade-off for a local desktop app.
+        env_keys = {
+            "RULE34_API_KEY": data.get("rule34_api_key", ""),
             "RULE34_USER_ID": data.get("rule34_user_id", ""),
+            "GELBOORU_API_KEY": data.get("gelbooru_api_key", ""),
             "GELBOORU_USER_ID": data.get("gelbooru_user_id", ""),
             "KONACHAN_USERNAME": data.get("konachan_login", ""),
-            "SANKA_LOGIN": data.get("sanka_login", ""),
-            "ZEROCHAN_LOGIN": data.get("zerochan_login", ""),
-            "PINTEREST_EMAIL": data.get("pinterest_email", ""),
-            "DANBOORU_LOGIN": data.get("danbooru_login", "")
-        }
-        sensitive_keys = {
-            "RULE34_API_KEY": data.get("rule34_api_key", ""),
-            "GELBOORU_API_KEY": data.get("gelbooru_api_key", ""),
             "KONACHAN_PASSWORD": data.get("konachan_password", ""),
+            "SANKA_LOGIN": data.get("sanka_login", ""),
             "SANKA_PASSWORD": data.get("sanka_password", ""),
+            "ZEROCHAN_LOGIN": data.get("zerochan_login", ""),
             "ZEROCHAN_PASSWORD": data.get("zerochan_password", ""),
             "PINTEREST_COOKIES": data.get("pinterest_cookies", ""),
+            "PINTEREST_EMAIL": data.get("pinterest_email", ""),
             "PINTEREST_PASSWORD": data.get("pinterest_password", ""),
             "PIXIV_REFRESH_TOKEN": data.get("pixiv_refresh_token", ""),
             "PIXIV_COOKIE": data.get("pixiv_cookie", ""),
+            "DANBOORU_LOGIN": data.get("danbooru_login", ""),
             "DANBOORU_API_KEY": data.get("danbooru_api_key", ""),
             "GSBOORU_API_KEY": data.get("gsbooru_api_key", "")
         }
-        self._upsert_env_keys(non_sensitive_keys)
-        # purge secrets from .env too: keeps legacy cleartext off disk and
-        # stops stale values resurrecting after restart via load_dotenv
-        self._remove_env_keys(sensitive_keys)
-        for k, v in {**non_sensitive_keys, **sensitive_keys}.items():
+        self._upsert_env_keys(env_keys)
+        for k, v in env_keys.items():
             os.environ[k] = v
 
     def load_api_settings(self):
