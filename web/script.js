@@ -444,9 +444,21 @@ function appendLogCard(cb, card) {
     // follow the tail only if the user was already at the bottom — scrolling
     // up to read shouldn't be yanked back down by the next log entry
     const atBottom = cb.scrollTop + cb.clientHeight >= cb.scrollHeight - 30;
+    if (atBottom) {
+        cb.appendChild(card);
+        capConsole(cb);
+        cb.scrollTop = cb.scrollHeight;
+        return;
+    }
+    // capping trims the head while you read — pin the first visible card so
+    // a flood of new downloads can't drag what you're looking at upward
+    const viewTop = cb.getBoundingClientRect().top;
+    let ref = cb.firstElementChild;
+    while (ref && ref.getBoundingClientRect().bottom <= viewTop) ref = ref.nextElementSibling;
+    const before = ref ? ref.getBoundingClientRect().top : null;
     cb.appendChild(card);
     capConsole(cb);
-    if (atBottom) cb.scrollTop = cb.scrollHeight;
+    if (ref && ref.parentElement === cb && before !== null) cb.scrollTop += ref.getBoundingClientRect().top - before;
 }
 function logToConsole(tabID, msg) {
     let boxMap = CONSOLE_BOX_MAP;
