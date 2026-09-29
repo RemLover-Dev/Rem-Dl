@@ -2560,6 +2560,7 @@ let historyTags = [];
 let favoriteTags = [];
 let imageHistory = [];
 let historyQuery = "";
+let historyDateFilter = "";  // calendar-picked date/time, kept out of the search box
 let historyExpanded = false;
 let historySort = "newest";
 
@@ -2660,6 +2661,12 @@ function parseHistoryQuery(q) {
     const terms = toks.map(t => t.replace(/_/g, " "));
     return { terms, range };
 }
+// box text terms + calendar filter; a calendar date wins over a typed date
+function historyQueryParts() {
+    const box = parseHistoryQuery(historyQuery || "");
+    const cal = historyDateFilter ? parseHistoryQuery(historyDateFilter) : { terms: [], range: null };
+    return { terms: box.terms, range: cal.range || box.range };
+}
 function historySearchInput(v) {
     historyQuery = v;
     imageHistoryVisible = 30;
@@ -2686,7 +2693,16 @@ function openHistoryPicker(btn) {
     const r = btn.getBoundingClientRect();
     el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
     el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
-    hp = { vy: now.getFullYear(), vm: now.getMonth(), sel: null, hi: "", mi: "", btn, el, onDoc: null, onKey: null };
+    // reopen on the calendar's current filter (or today)
+    const fm = /^(\d{4})-(\d{1,2})-(\d{1,2})(?: (\d{1,2}):(\d{2}))?$/.exec(historyDateFilter);
+    hp = {
+        vy: fm ? +fm[1] : now.getFullYear(),
+        vm: fm ? +fm[2] - 1 : now.getMonth(),
+        sel: fm ? { y: +fm[1], mo: +fm[2] - 1, d: +fm[3] } : null,
+        hi: fm && fm[4] ? fm[4] : "",
+        mi: fm && fm[5] ? fm[5] : "",
+        btn, el, onDoc: null, onKey: null,
+    };
     hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
     hp.onKey = (e) => { if (e.key === "Escape") historyPickerClose(); };
     document.addEventListener("mousedown", hp.onDoc, true);
@@ -2728,7 +2744,8 @@ function renderHistoryPicker() {
             <span style="opacity: .7;">:</span>
             <input type="text" value="${esc(s.mi)}" onchange="hpSetMin(this.value)" style="${selStyle}">
         </div>
-        <div style=" display: flex; justify-content: flex-end; margin-top: 10px;">
+        <div style=" display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px;">
+            ${historyDateFilter ? `<button onclick="hpClear()" style="background: transparent; color: inherit; border: 1px solid var(--border-color); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer;">Clear</button>` : ""}
             <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
         </div>`;
 }
@@ -2766,10 +2783,24 @@ function hpApply() {
         time = ` ${pad(+hi)}:${pad(mm)}`;
     }
     const q = date + time;
-    const box = document.getElementById("historySearch");
-    if (box) box.value = q;
-    historySearchInput(q);
+    historyDateFilter = q;
+    historyDateBtnState();
+    imageHistoryVisible = 30;
+    renderHistory();
+    renderImageHistory();
     historyPickerClose();
+}
+function hpClear() {
+    historyDateFilter = "";
+    historyDateBtnState();
+    imageHistoryVisible = 30;
+    renderHistory();
+    renderImageHistory();
+    historyPickerClose();
+}
+function historyDateBtnState() {
+    const w = document.getElementById("historyDateWrap");
+    if (w) w.style.borderColor = historyDateFilter ? "var(--accent-color)" : "";
 }
 
 async function loadTagsData() {
@@ -2799,7 +2830,7 @@ function renderHistory() {
     // gallery-style query: underscores == spaces, split on spaces/commas,
     // every term must match (multi-tag AND across site/tag/rating);
     // date/time tokens in the query filter by searched_at instead
-    const { terms, range } = parseHistoryQuery(historyQuery);
+    const { terms, range } = historyQueryParts();
     const srcSel = getMultiSelectValues("histSourceDropdown");
     const ratSel = getMultiSelectValues("histRatingDropdown");
     const srcSet = srcSel && srcSel !== "__none__" ? srcSel.split(",") : null;
@@ -2948,7 +2979,7 @@ function getSafeThumbUrl(filepath, filename) {
 let imageHistoryVisible = 30;
 let imgHistFiltered = [];
 function filteredImageHistory() {
-    const { terms, range } = parseHistoryQuery(historyQuery);
+    const { terms, range } = historyQueryParts();
     return imageHistory.filter(img => {
         if (range) {
             const t = img.downloaded_at ? img.downloaded_at * 1000 : 0;
