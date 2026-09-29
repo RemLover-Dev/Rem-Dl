@@ -499,12 +499,16 @@
                     </div>
                     <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="konaLimit" value="50" min="0" style="width: 80px;">
-                    <select id="konaRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:s">Safe</option>
-                        <option value="rating:q">Questionable</option>
-                        <option value="rating:e">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('konaRatingDropdown')">All Ratings ▾</button>
+                        <div id="konaRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                        </div>
+                        <input type="hidden" id="konaRating" value="">
+                    </div>
                     <button id="runBtn_kona" class="action-btn" onclick="toggleWorker('kona')">START</button>
                 </div>
                 <div class="input-group" style="margin-top: 10px; font-size: 14px; position: relative; padding-right: 90px;">

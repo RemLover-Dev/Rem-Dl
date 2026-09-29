@@ -12,11 +12,20 @@ class KonachanWorker(BaseWorker):
         self.exclusions = exclusions
         self.tag_cache = {}
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        # the dropdown collapses a full set to All — treat it the same defensively
+        if len(codes) == len(self.rating_map):
+            codes = []
+        self.rating_allowed = set(codes)
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
+        self.api_tag = self.original_tag
+        # ponytail: moebooru has no comma-OR in the rating metatag — push the
+        # filter server-side only for a single rating, multi is filtered locally
+        if len(codes) == 1:
+            self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         self.safe_tag = sanitize_path_component(clean_tag, fallback="konachan")
@@ -70,7 +79,7 @@ class KonachanWorker(BaseWorker):
         return general, artists, characters, copyrights, metadata_tags
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(":")[-1], "")})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         auth = {}
         kona_user = os.getenv("KONACHAN_USERNAME", "")
@@ -100,7 +109,7 @@ class KonachanWorker(BaseWorker):
                 if not text_resp or text_resp == "[]" or text_resp == "null":
                     if page == 1:
                         self.log(f"ZERO images found for '{self.api_tag}'.")
-                        if self.rating and self.rating.split(":")[-1] in ("q", "e"):
+                        if self.rating_allowed & {"q", "e"}:
                             if auth:
                                 self.log("Authenticated, got 0 non-safe posts. Check 'Show explicit content' is enabled in your konachan.com profile settings.")
                             else:
@@ -150,10 +159,8 @@ class KonachanWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 url = post.get("file_url") or post.get("large_file_url")
                 if not url:
