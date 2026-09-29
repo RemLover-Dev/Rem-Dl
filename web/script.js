@@ -1942,8 +1942,6 @@ socket.on("dl_progress", function (data) {
 
 let openQueueSite = null; // worker whose pill list is open (survives re-renders)
 function renderQueueChip(data) {
-    const wrap = document.getElementById("queueChips");
-    if (!wrap) return;
     const actives = (data && data.active) || [];
     const queued = (data && data.queue) || [];
     // one pill per worker — a pill's list never mixes in another worker's jobs
@@ -1952,13 +1950,13 @@ function renderQueueChip(data) {
     const actBySite = {};
     actives.forEach(a => (actBySite[a.site] = actBySite[a.site] || []).push(a));
     if (openQueueSite && !bySite[openQueueSite]) openQueueSite = null;
-    wrap.innerHTML = "";
-    wrap.style.display = Object.keys(bySite).length ? "flex" : "none";
+    // the pill lives inside the worker's own tab — clear all, rebuild per worker
+    document.querySelectorAll(".queue-chip-row").forEach(r => r.remove());
     if (!Object.keys(bySite).length) return;
     let drag = null; // {site, from} while dragging
     const cleanDragMarkers = () => {
-        wrap.querySelectorAll(".queue-list").forEach(l => l.classList.remove("dragging"));
-        wrap.querySelectorAll(".queue-item").forEach(r => r.classList.remove("drop-above", "drop-below", "drop-bump"));
+        document.querySelectorAll(".queue-chip-row .queue-list").forEach(l => l.classList.remove("dragging"));
+        document.querySelectorAll(".queue-chip-row .queue-item").forEach(r => r.classList.remove("drop-above", "drop-below", "drop-bump"));
         drag = null;
     };
     const stopBtn = (site) => {
@@ -1970,6 +1968,12 @@ function renderQueueChip(data) {
         return x;
     };
     Object.keys(bySite).forEach(site => {
+        // find this worker's tab via its progress bar — the ids are the only
+        // worker→tab link that exists (tab ids are capitalized, worker ids aren't)
+        const key = WORKER_TO_TAB[site];
+        const bar = key && document.getElementById("dualProgress_" + key);
+        const tab = bar && bar.closest(".tab-content");
+        if (!tab) return;
         const items = bySite[site];
         const chip = document.createElement("div");
         chip.className = "queue-chip";
@@ -2086,7 +2090,12 @@ function renderQueueChip(data) {
             list.appendChild(row);
         });
         chip.append(text, list);
-        wrap.appendChild(chip);
+        const pillRow = document.createElement("div");
+        pillRow.className = "queue-chip-row";
+        pillRow.appendChild(chip);
+        const h2 = tab.querySelector("h2");
+        if (h2 && h2.parentNode === tab) tab.insertBefore(pillRow, h2.nextSibling);
+        else tab.prepend(pillRow);
     });
 }
 
@@ -2095,12 +2104,12 @@ function toggleQueueList(ev) {
     const chip = ev.currentTarget;
     const list = chip.querySelector(".queue-list");
     const opening = list.style.display === "none";
-    document.querySelectorAll("#queueChips .queue-list").forEach(l => l.style.display = "none");
+    document.querySelectorAll(".queue-chip-row .queue-list").forEach(l => l.style.display = "none");
     list.style.display = opening ? "block" : "none";
     openQueueSite = opening ? chip.dataset.site : null;
 }
 document.addEventListener("click", function () {
-    document.querySelectorAll("#queueChips .queue-list").forEach(l => l.style.display = "none");
+    document.querySelectorAll(".queue-chip-row .queue-list").forEach(l => l.style.display = "none");
     openQueueSite = null;
 });
 
