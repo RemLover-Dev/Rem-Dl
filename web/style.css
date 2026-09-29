@@ -1103,7 +1103,7 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-viewer-meta:hover .g-meta-tags { opacity: 1; }
 .g-meta-tags::-webkit-scrollbar { width: 4px; }
 .g-meta-tags::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 4px; }
-.g-tag-pill { background: rgba(255,255,255,0.08); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 20px; font-size: 11px; cursor: pointer; transition: 0.2s; white-space: nowrap; color: #ccc;}
+.g-tag-pill { background: rgba(255,255,255,0.08); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 20px; font-size: 11px; cursor: pointer; transition: 0.2s; white-space: nowrap; color: #ccc; text-shadow: none; letter-spacing: 0; -webkit-font-smoothing: antialiased;}
 .g-tag-pill:hover { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
 
 /* Tag category colors */
