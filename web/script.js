@@ -2705,24 +2705,25 @@ function renderHistoryPicker() {
         const today = d === now.getDate() && s.vm === now.getMonth() && s.vy === now.getFullYear();
         days += `<span onclick="hpPickDay(${d})" style="text-align:center; padding:4px 0; border-radius:4px; cursor:pointer; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}">${d}</span>`;
     }
-    let hrs = `<option value="">Any time</option>`;
-    for (let i = 0; i < 24; i++) hrs += `<option value="${i}"${s.h === i ? " selected" : ""}>${String(i).padStart(2, "0")}</option>`;
-    let mms = "";
-    for (let i = 0; i < 60; i++) mms += `<option value="${i}"${s.mm === i ? " selected" : ""}>${String(i).padStart(2, "0")}</option>`;
+    const pad = (n) => String(n).padStart(2, "0");
     const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
-    const selStyle = "flex: 1; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px;";
+    const selStyle = "flex: 1; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 4px; font-size: 12px;";
     s.el.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+            <button onclick="hpNavYear(-1)" style="${navBtn}">&laquo;</button>
+            <b style="font-weight: 600;">${s.vy}</b>
+            <button onclick="hpNavYear(1)" style="${navBtn}">&raquo;</button>
+        </div>
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
             <button onclick="hpNav(-1)" style="${navBtn}">&lsaquo;</button>
-            <b style="font-weight: 600;">${HP_MONTHS[s.vm]} ${s.vy}</b>
+            <span style="font-weight: 600;">${HP_MONTHS[s.vm]}</span>
             <button onclick="hpNav(1)" style="${navBtn}">&rsaquo;</button>
         </div>
         <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: 11px; opacity: .6; margin-bottom: 4px;">${HP_DAYS.map(x => `<span>${x}</span>`).join("")}</div>
         <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
         <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
             <span style="opacity: .7;">Time</span>
-            <select onchange="hpSetTime(this.value)" style="${selStyle}">${hrs}</select>
-            <select onchange="hpSetMin(this.value)" ${s.h == null ? "disabled" : ""} style="${selStyle}">${mms}</select>
+            <input type="time" value="${s.h == null ? "" : pad(s.h) + ":" + pad(s.mm)}" onchange="hpSetTime(this.value)" style="${selStyle}">
         </div>
         <div style=" display: flex; justify-content: flex-end; margin-top: 10px;">
             <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
@@ -2735,16 +2736,18 @@ function hpNav(dir) {
     if (s.vm > 11) { s.vm = 0; s.vy++; }
     renderHistoryPicker();
 }
+function hpNavYear(dir) {
+    hp.vy += dir;
+    renderHistoryPicker();
+}
 function hpPickDay(d) {
     hp.sel = { y: hp.vy, mo: hp.vm, d };
     renderHistoryPicker();
 }
 function hpSetTime(v) {
-    hp.h = v === "" ? null : +v;
-    renderHistoryPicker();
-}
-function hpSetMin(v) {
-    hp.mm = +v;
+    const m = /^(\d{1,2}):(\d{2})$/.exec(v || "");
+    if (m && +m[1] <= 23 && +m[2] <= 59) { hp.h = +m[1]; hp.mm = +m[2]; }
+    else if (v === "") hp.h = null;
 }
 function hpApply() {
     const s = hp;
