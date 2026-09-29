@@ -210,7 +210,7 @@ h2 {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.queue-pos {
+input[type="number"].queue-pos {
     width: 28px;
     flex: none;
     background: var(--input-bg);
@@ -222,6 +222,7 @@ h2 {
     padding: 1px 1px;
     text-align: center;
     outline: none;
+    box-shadow: none;
 }
 .queue-pos::-webkit-outer-spin-button,
 .queue-pos::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
