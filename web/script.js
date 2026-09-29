@@ -3746,18 +3746,17 @@ function pageJumpInput(btn) {
 }
 function toggleFavFilter() { galleryFavFilter = !galleryFavFilter; document.getElementById("galleryFavBtn").classList.toggle("active", galleryFavFilter); loadGallery(1); }
 function onGalleryFavBtn() {
-    if (gallerySelectMode) favouriteCurrentPage();
+    if (gallerySelectMode) favouriteSelected();
     else toggleFavFilter();
 }
-// edit mode: heart toggles the whole page — all favourited → unfavourite all, otherwise favourite the rest
-async function favouriteCurrentPage() {
-    const imgs = galleryState.images || [];
-    if (!imgs.length) return;
-    const allFav = imgs.every(i => i.favourite);
-    const targets = allFav ? imgs.filter(i => i.favourite) : imgs.filter(i => !i.favourite);
-    for (const img of targets) {
+// edit mode: heart toggles the favourite flag on every selected image —
+// same as pressing each card's heart; the selection survives page changes
+async function favouriteSelected() {
+    const ids = [...gallerySelected.keys()];
+    if (!ids.length) return;
+    for (const id of ids) {
         try {
-            await fetch("/api/gallery/favourite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: img.id }) });
+            await fetch("/api/gallery/favourite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
         } catch (e) {}
     }
     loadGallery();
@@ -3809,9 +3808,9 @@ function updateSelectBar() {
         const ids = galleryState.images.map(i => i.id);
         spBtn.textContent = (ids.length > 0 && ids.every(id => gallerySelected.has(id))) ? "Deselect Page" : "Select Page";
     }
-    // heart = favourite-only filter normally, bulk "favourite page" in edit mode
+    // heart = favourite-only filter normally, bulk "favourite selected" in edit mode
     const favBtn = document.getElementById("galleryFavBtn");
-    if (favBtn) favBtn.title = gallerySelectMode ? "Favorite all on this page" : "Favorites only";
+    if (favBtn) favBtn.title = gallerySelectMode ? "Favorite selected" : "Favorites only";
     const grid = document.getElementById("galleryGrid");
     if (grid) grid.classList.toggle("select-mode", gallerySelectMode);
     // top bar compacts while the select bar is out (height pinned at entry above)
