@@ -75,7 +75,7 @@ function normalizeTags(tagsInput) {
 function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()); }
 function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
 // tag labels display with underscores as spaces; hover titles keep the raw tag
-function cleanTagLabel(t) { return String(t || "").replace(/_/g, " ").trim(); }
+function cleanTagLabel(t) { const s = String(t || "").replace(/_/g, " ").trim(); return s.charAt(0).toUpperCase() + s.slice(1); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -2016,7 +2016,7 @@ function renderQueueChip(data) {
             add.textContent = "add to queue";
             add.title = "Queue another request for this worker using the current form values";
             add.onclick = e => { e.stopPropagation(); startWorker(site); };
-            chip.append(text, add, stopBtn(acts[0].site));
+            chip.append(text, stopBtn(acts[0].site), add);
         } else {
             chip.append(text);
         }
