@@ -536,7 +536,7 @@ function logToConsole(tabID, msg) {
         card.innerHTML = `
         <div class="img-card-left">
         <!-- استفاده از Date.now برای جلوگیری از باگ لود شدن -->
-        <img src="${thumbSrc}" onclick="openFullImage('${pathUrlStr}', '${safeFn}')" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
+        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
         </div>
         <div class="img-card-right">
         <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
@@ -3572,17 +3572,29 @@ document.addEventListener('keydown', function(e) {
     updateSelectBar();
 }, true);
 
-function openFullImage(filepath, filename) {
+function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once
     let clean = filepath || "";
     try { clean = decodeURIComponent(clean); } catch (e) {}
-    let url = clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
-    // always use the in-app viewer — new tabs don't exist in the desktop app
-    openViewerSingle(url, filename || "image");
+    return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
 }
-// single-image viewer mode (history/log previews): no gallery context,
-// so nav/fav/delete/copy stay hidden and their shortcuts are inert
+function openFullImage(filepath, filename, el) {
+    const url = fullImageUrl(filepath, filename);
+    // log images: hand the viewer their siblings so ←/→ can walk the log
+    let list = null, idx = -1;
+    const box = el && el.closest ? el.closest('.console-log') : null;
+    if (box && filepath) {
+        const imgs = [...box.querySelectorAll('img[data-ofi]')];
+        idx = imgs.indexOf(el);
+        if (idx >= 0) list = imgs.map(i => i.dataset.ofi);
+    }
+    // always use the in-app viewer — new tabs don't exist in the desktop app
+    openViewerSingle(url, filename || "image", list, idx);
+}
+
 let viewerSingle = false;
+let viewerSingleList = [];
+let viewerSingleIdx = -1;
 let viewerSingleUrl = "";
 let viewerSingleFilename = "";
 // Viewer resource: the loaded raster image is the single source of truth for
@@ -3638,14 +3650,17 @@ function loadViewerRaster(url, filename) {
     p.catch(() => {});
     return p;
 }
-function openViewerSingle(url, filename) {
+function openViewerSingle(url, filename, list, idx) {
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
     viewerSingle = true;
+    viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
+    viewerSingleIdx = viewerSingleList.length ? idx : -1;
     viewerSingleUrl = url;
     viewerSingleFilename = filename || "image";
     viewer.classList.add("single");
+    viewer.classList.toggle("has-list", viewerSingleList.length > 1);
     const ext = ((filename || "").split('.').pop() || "").toLowerCase();
     if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) {
         viewerImg.style.display = 'none';
@@ -3774,8 +3789,21 @@ function showViewerImage() {
 
     viewer.style.display = 'flex';
 }
-function closeGalleryViewer() { clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single"); viewerSingle = false; viewerSingleUrl = ""; viewerSingleFilename = ""; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
-function viewerNav(dir) { if (viewerSingle) return; const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
+function closeGalleryViewer() { clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function viewerNav(dir) {
+    if (viewerSingle) {
+        // log previews carry their sibling list — walk it like the gallery
+        if (!viewerSingleList.length) return;
+        const n = viewerSingleIdx + dir;
+        if (n < 0) return;
+        if (n >= viewerSingleList.length) { showToast("Last image"); return; }
+        const p = viewerSingleList[n];
+        let clean = p; try { clean = decodeURIComponent(p); } catch (e) {}
+        const fn = (clean.split('/').pop() || "image");
+        openViewerSingle(fullImageUrl(p), fn, viewerSingleList, n);
+        return;
+    }
+    const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
 function toggleViewerFav() {
     if (viewerSingle) {
         fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) })

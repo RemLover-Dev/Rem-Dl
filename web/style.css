@@ -987,6 +987,8 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-viewer-nav.next { right: 40px; }
 /* single-image mode (history/log previews): no list to walk, so only nav hides */
 .gallery-viewer.single .gallery-viewer-nav { display: none !important; }
+/* ...except log previews, which carry their siblings and navigate like the gallery */
+.gallery-viewer.single.has-list .gallery-viewer-nav { display: flex !important; }
 
 /* ===== CUSTOM CONFIRM MODAL (theme-aware) ===== */
 .custom-confirm-overlay {
