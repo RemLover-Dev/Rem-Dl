@@ -120,7 +120,7 @@ async function loadUIConfig() {
     try {
         let resp = await fetch("/api/ui_config");
         uiConfig = await resp.json();
-        syncBlurSettings();
+        await syncBlurSettings();
 
         let radio = document.querySelector(`input[name="themeMode"][value="${uiConfig.theme_mode}"]`);
         if (radio) radio.checked = true;
@@ -3296,7 +3296,7 @@ function saveBlurRatings() {
     if (st) { st.textContent = "Saved!"; setTimeout(() => st.textContent = "", 2000); }
 }
 // re-apply everything once the server config has loaded
-function syncBlurSettings() {
+async function syncBlurSettings() {
     const gv = uiConfig.gallery_blur_nsfw !== undefined ? uiConfig.gallery_blur_nsfw : storeGet('gallery_blur_nsfw');
     galleryBlurNsfw = gv !== 'false';
     document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
