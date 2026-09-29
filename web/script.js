@@ -1952,16 +1952,107 @@ function renderQueueChip(data) {
         return;
     }
     chip.style.display = "inline-flex";
-    text.textContent = `queued: ${queued.length} request${queued.length === 1 ? "" : "s"}`;
+    text.textContent = `Queued: ${queued.length} request${queued.length === 1 ? "" : "s"}`;
     list.innerHTML = "";
-    const add = (label, cls) => {
-        const row = document.createElement("div");
-        row.className = "queue-item" + (cls ? " " + cls : "");
-        row.textContent = label;
-        list.appendChild(row);
+    // keep row clicks/dblclicks from toggling the chip open/closed
+    if (!list.dataset.bound) {
+        list.dataset.bound = "1";
+        list.addEventListener("click", e => e.stopPropagation());
+        list.addEventListener("dblclick", e => e.stopPropagation());
+    }
+    const cleanDragMarkers = () => {
+        list.classList.remove("dragging");
+        list.querySelectorAll(".queue-item").forEach(r => r.classList.remove("drop-above", "drop-below"));
+        list.querySelectorAll(".queue-item").forEach(r => delete r.dataset.side);
     };
-    if (data.active) add(`\u25B6 ${data.active.site} — ${data.active.tag}`, "running");
-    queued.forEach((j, i) => add(`${i + 1}. ${j.site} — ${j.tag}`));
+    if (data.active) {
+        const row = document.createElement("div");
+        row.className = "queue-item running";
+        const label = document.createElement("span");
+        label.className = "queue-label";
+        label.textContent = `▶ ${siteLabel(data.active.site)} — ${data.active.tag}`;
+        const x = document.createElement("button");
+        x.className = "queue-x";
+        x.title = "Stop this download";
+        x.textContent = "✕";
+        x.onclick = e => { e.stopPropagation(); socket.emit("stop_worker", { worker: data.active.site }); };
+        row.append(label, x);
+        list.appendChild(row);
+    }
+    queued.forEach((j, i) => {
+        const row = document.createElement("div");
+        row.className = "queue-item";
+        row.draggable = true;
+        row.dataset.idx = i;
+
+        const pos = document.createElement("input");
+        pos.className = "queue-pos";
+        pos.type = "number";
+        pos.min = "1";
+        pos.max = String(queued.length);
+        pos.value = String(i + 1);
+        pos.title = "Priority position (press Enter to move)";
+        pos.onclick = e => e.stopPropagation();
+        pos.ondblclick = e => e.stopPropagation();
+        const commitPos = () => {
+            const v = parseInt(pos.value, 10);
+            if (v === i + 1) { pos.value = String(i + 1); return; }
+            if (Number.isNaN(v)) { pos.value = String(i + 1); return; }
+            socket.emit("queue_move", { from: i, to: Math.min(Math.max(v, 1), queued.length) - 1 });
+        };
+        pos.onchange = commitPos;
+        pos.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); commitPos(); pos.blur(); } };
+
+        const label = document.createElement("span");
+        label.className = "queue-label";
+        label.textContent = `${siteLabel(j.site)} — ${j.tag}`;
+        label.title = `${j.site} — ${j.tag}`;
+
+        const x = document.createElement("button");
+        x.className = "queue-x";
+        x.title = "Cancel this request";
+        x.textContent = "✕";
+        x.onclick = e => { e.stopPropagation(); socket.emit("queue_cancel", { index: i }); };
+
+        row.append(pos, label, x);
+
+        // double-click anywhere on the row (not on its controls) → hold the
+        // running job and start this one now
+        row.ondblclick = e => {
+            if (e.target.closest(".queue-pos, .queue-x")) return;
+            socket.emit("queue_bump", { index: i });
+        };
+
+        row.ondragstart = e => {
+            e.dataTransfer.setData("text/plain", String(i));
+            e.dataTransfer.effectAllowed = "move";
+            list.classList.add("dragging");
+        };
+        row.ondragover = e => {
+            e.preventDefault();
+            const r = row.getBoundingClientRect();
+            const above = e.clientY < r.top + r.height / 2;
+            row.classList.toggle("drop-above", above);
+            row.classList.toggle("drop-below", !above);
+            row.dataset.side = above ? "above" : "below";
+        };
+        row.ondragleave = () => { row.classList.remove("drop-above", "drop-below"); delete row.dataset.side; };
+        row.ondrop = e => {
+            e.preventDefault();
+            const from = parseInt(e.dataTransfer.getData("text/plain"), 10);
+            const t = i;
+            const below = row.dataset.side === "below";
+            cleanDragMarkers();
+            if (Number.isNaN(from) || from === t) return;
+            // convert original-list drop spot to final index after removal
+            let to = below ? (from < t ? t : t + 1) : (from < t ? t - 1 : t);
+            if (to < 0) to = 0;
+            socket.emit("queue_move", { from, to });
+        };
+        row.ondragend = cleanDragMarkers;
+
+        list.appendChild(row);
+    });
 }
 
 function toggleQueueList(ev) {

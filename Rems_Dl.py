@@ -1858,10 +1858,13 @@ def _run_job(job):
     finally:
         nxt = None
         with QUEUE_LOCK:
-            _active_job = None
-            if DOWNLOAD_QUEUE:
-                nxt = DOWNLOAD_QUEUE.pop(0)
-                _active_job = nxt
+            # only hand off if we're still the active job — a queue_bump may
+            # have superseded us (we're back on the queue, new job is running)
+            if _active_job is job:
+                _active_job = None
+                if DOWNLOAD_QUEUE:
+                    nxt = DOWNLOAD_QUEUE.pop(0)
+                    _active_job = nxt
         if nxt is not None:
             entry = _queue_entry(nxt)
             shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
@@ -1954,6 +1957,52 @@ def handle_stop_worker(data):
         DOWNLOAD_QUEUE[:] = [j for j in DOWNLOAD_QUEUE if j.get("worker") != name]
         if len(DOWNLOAD_QUEUE) < before:
             shared.log_msg(name, ">>> Notice: queued request cancelled <<<")
+    _emit_queue_state()
+
+@socketio.on("queue_move")
+def handle_queue_move(data):
+    # ponytail: index-based ops, single-client trust — no per-entry ids
+    with QUEUE_LOCK:
+        frm = _safe_int(data.get("from"), -1)
+        to = _safe_int(data.get("to"), -1)
+        if 0 <= frm < len(DOWNLOAD_QUEUE) and to >= 0:
+            job = DOWNLOAD_QUEUE.pop(frm)
+            DOWNLOAD_QUEUE.insert(min(to, len(DOWNLOAD_QUEUE)), job)
+    _emit_queue_state()
+
+@socketio.on("queue_cancel")
+def handle_queue_cancel(data):
+    with QUEUE_LOCK:
+        idx = _safe_int(data.get("index"), -1)
+        if 0 <= idx < len(DOWNLOAD_QUEUE):
+            job = DOWNLOAD_QUEUE.pop(idx)
+            entry = _queue_entry(job)
+            shared.log_msg(entry["site"], f">>> Notice: queued request cancelled ({entry['tag']}) <<<")
+    _emit_queue_state()
+
+@socketio.on("queue_bump")
+def handle_queue_bump(data):
+    # double-click: hold the running job (back to queue front), start the
+    # picked one immediately
+    global _active_job
+    promoted = None
+    with QUEUE_LOCK:
+        idx = _safe_int(data.get("index"), -1)
+        if 0 <= idx < len(DOWNLOAD_QUEUE):
+            target = DOWNLOAD_QUEUE.pop(idx)
+            held = _active_job
+            if held is not None:
+                for evt in shared.STOP_EVENTS.get(held.get("worker"), []):
+                    evt.set()
+                DOWNLOAD_QUEUE.insert(0, held)
+                held_entry = _queue_entry(held)
+                shared.log_msg(held_entry["site"], f">>> On hold: {held_entry['tag']} (resumes after next job) <<<")
+            _active_job = target
+            promoted = target
+    if promoted is not None:
+        entry = _queue_entry(promoted)
+        shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
+        _start_job_thread(promoted)
     _emit_queue_state()
 
 def startup_rescan():
