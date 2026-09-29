@@ -2897,7 +2897,7 @@ function renderImageHistory() {
             <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
             <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
-            <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}')" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
+            <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 25px;">
             <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;">${artistHtml} ${siteBadge} ${ratingHtml}</div>
@@ -3713,9 +3713,9 @@ function fullImageUrl(filepath, filename) {
 }
 function openFullImage(filepath, filename, el) {
     const url = fullImageUrl(filepath, filename);
-    // log images: hand the viewer their siblings so ←/→ can walk the log
+    // log images and history cards: hand the viewer their siblings so ←/→ walks them
     let list = null, idx = -1;
-    const box = el && el.closest ? el.closest('.console-log') : null;
+    const box = el && el.closest ? (el.closest('.console-log') || el.closest('#imageHistoryUI')) : null;
     if (box && filepath) {
         const imgs = [...box.querySelectorAll('img[data-ofi]')];
         idx = imgs.indexOf(el);
@@ -3933,7 +3933,7 @@ function viewerNav(dir) {
         const p = viewerSingleList[n];
         let clean = p; try { clean = decodeURIComponent(p); } catch (e) {}
         const fn = (clean.split('/').pop() || "image");
-        openViewerSingle(fullImageUrl(p), fn, viewerSingleList, n);
+        openViewerSingle(fullImageUrl(p, fn), fn, viewerSingleList, n);
         return;
     }
     const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
