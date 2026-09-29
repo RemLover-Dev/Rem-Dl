@@ -1757,6 +1757,21 @@ function enhanceSelect(select) {
     }
 }
 
+// ponytail: enhanced selects only refresh .cs-label on real menu clicks —
+// programmatic value sets must go through here or the visible label goes stale
+function setSelectValue(sel, value) {
+    if (!sel) return;
+    sel.value = value;
+    const wrap = sel.closest('.custom-select');
+    if (wrap) {
+        const label = wrap.querySelector('.cs-label');
+        const opt = sel.options[sel.selectedIndex];
+        if (label && opt) label.textContent = opt.textContent;
+        wrap.querySelectorAll('.cs-item').forEach((it, i) => it.classList.toggle('active', i === sel.selectedIndex));
+    }
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
     let input = document.getElementById(inputId);
     let dropdown = document.getElementById(dropdownId);
@@ -3069,15 +3084,14 @@ function jumpToSite(site, tag, rating) {
         const modeSel = document.getElementById("pixivMode");
         const m = String(tag || "").match(/^(search|artworks|bookmark|ranking):(.*)$/);
         if (m && modeSel) {
-            modeSel.value = m[1];
             if (m[1] === "ranking") {
-                const rm = document.getElementById("pixivRankingMode");
-                if (rm && m[2]) rm.value = m[2];
+                if (m[2]) setSelectValue(document.getElementById("pixivRankingMode"), m[2]);
                 if (input) input.value = "";
             } else if (input) {
                 input.value = m[2];
             }
-            updatePixivMode();
+            // dispatches change → updatePixivMode(), label stays truthful
+            setSelectValue(modeSel, m[1]);
         } else if (input) {
             input.value = tag || "";
         }
@@ -3091,7 +3105,7 @@ function jumpToSite(site, tag, rating) {
     if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
     if (rating) {
         const rsId = RATING_INPUT_BY_WORKER[site];
-        if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) { rsEl.value = rating; rsEl.dispatchEvent(new Event('change')); } }
+        if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) setSelectValue(rsEl, rating); }
     }
 }
 
