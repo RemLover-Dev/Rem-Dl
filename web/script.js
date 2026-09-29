@@ -120,6 +120,7 @@ async function loadUIConfig() {
     try {
         let resp = await fetch("/api/ui_config");
         uiConfig = await resp.json();
+        syncBlurSettings();
 
         let radio = document.querySelector(`input[name="themeMode"][value="${uiConfig.theme_mode}"]`);
         if (radio) radio.checked = true;
@@ -3258,32 +3259,51 @@ let _dragPaint = false;
 let _dragSelect = true;
 let _dragSuppressClick = false;
 let _paintPending = false, _paintCard = null, _paintPt = [0, 0];
+// blur settings persist server-side in ui_config.json — localStorage dies with the app session
 let galleryBlurNsfw = storeGet('gallery_blur_nsfw') !== 'false';
 if (document.body) document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
+function persistUiConfig() {
+    fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+}
 function toggleGalleryBlur() {
     galleryBlurNsfw = !galleryBlurNsfw;
-    storeSet('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
+    uiConfig.gallery_blur_nsfw = galleryBlurNsfw ? 'true' : 'false';
+    persistUiConfig();
     const btn = document.getElementById("galleryBlurBtn");
     if (btn) btn.classList.toggle("active", galleryBlurNsfw);
     document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
 }
 // which ratings get blurred — picked in Settings; default = old explicit+questionable behavior
 function getBlurRatings() {
-    const v = storeGet('blur_ratings');
-    return (v === null ? 'questionable explicit' : v).split(/\s+/).filter(Boolean);
+    const v = uiConfig.blur_ratings !== undefined ? uiConfig.blur_ratings : storeGet('blur_ratings');
+    return (v === null || v === undefined ? 'questionable explicit' : String(v)).split(/\s+/).filter(Boolean);
 }
 function ratingBlurred(canon) {
     return ['safe', 'sensitive', 'questionable', 'explicit'].includes(canon) && getBlurRatings().includes(canon);
 }
+function applyBlurMarks() {
+    document.querySelectorAll('.image-card-log[data-rating]').forEach(c => c.classList.toggle('is-nsfw', ratingBlurred(c.dataset.rating)));
+}
 function saveBlurRatings() {
     const on = [...document.querySelectorAll('.blur-rating-box:checked')].map(cb => cb.value);
-    storeSet('blur_ratings', on.join(' '));
-    document.querySelectorAll('.image-card-log[data-rating]').forEach(c => c.classList.toggle('is-nsfw', ratingBlurred(c.dataset.rating)));
+    uiConfig.blur_ratings = on.join(' ');
+    persistUiConfig();
+    applyBlurMarks();
     renderGallery();
     renderHistory();
     renderImageHistory();
     const st = document.getElementById('blurRatingsStatus');
     if (st) { st.textContent = "Saved!"; setTimeout(() => st.textContent = "", 2000); }
+}
+// re-apply everything once the server config has loaded
+function syncBlurSettings() {
+    const gv = uiConfig.gallery_blur_nsfw !== undefined ? uiConfig.gallery_blur_nsfw : storeGet('gallery_blur_nsfw');
+    galleryBlurNsfw = gv !== 'false';
+    document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    const btn = document.getElementById("galleryBlurBtn");
+    if (btn) btn.classList.toggle("active", galleryBlurNsfw);
+    document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
+    applyBlurMarks();
 }
 document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
 
