@@ -2560,7 +2560,7 @@ let historyTags = [];
 let favoriteTags = [];
 let imageHistory = [];
 let historyQuery = "";
-let historyDateFilter = "";  // calendar-picked date/time, kept out of the search box
+let historyDateFilter = null;  // calendar filter {y,mo,d,h,mm}, kept out of the search box
 let historyExpanded = false;
 let historySort = "newest";
 
@@ -2664,8 +2664,14 @@ function parseHistoryQuery(q) {
 // box text terms + calendar filter; a calendar date wins over a typed date
 function historyQueryParts() {
     const box = parseHistoryQuery(historyQuery || "");
-    const cal = historyDateFilter ? parseHistoryQuery(historyDateFilter) : { terms: [], range: null };
-    return { terms: box.terms, range: cal.range || box.range };
+    if (!historyDateFilter) return { terms: box.terms, range: box.range };
+    const f = historyDateFilter;
+    const from = new Date(f.y, f.mo, f.d, f.h || 0, f.mm || 0).getTime();
+    let to;
+    if (f.h == null) to = from + 86400000 - 1;       // no hour picked = whole day
+    else if (f.mm == null) to = from + 3600000 - 1;  // hour only = that hour
+    else to = from + 60000 - 1;                      // minute picked = that minute
+    return { terms: box.terms, range: { from, to } };
 }
 function historySearchInput(v) {
     historyQuery = v;
@@ -2694,13 +2700,13 @@ function openHistoryPicker(btn) {
     el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
     el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
     // reopen on the calendar's current filter (or today)
-    const fm = /^(\d{4})-(\d{1,2})-(\d{1,2})(?: (\d{1,2}):(\d{2}))?$/.exec(historyDateFilter);
+    const f = historyDateFilter;
     hp = {
-        vy: fm ? +fm[1] : now.getFullYear(),
-        vm: fm ? +fm[2] - 1 : now.getMonth(),
-        sel: fm ? { y: +fm[1], mo: +fm[2] - 1, d: +fm[3] } : null,
-        hi: fm && fm[4] ? fm[4] : "",
-        mi: fm && fm[5] ? fm[5] : "",
+        vy: f ? f.y : now.getFullYear(),
+        vm: f ? f.mo : now.getMonth(),
+        sel: f ? { y: f.y, mo: f.mo, d: f.d } : null,
+        hi: f && f.h != null ? String(f.h).padStart(2, "0") : "",
+        mi: f && f.mm != null ? String(f.mm).padStart(2, "0") : "",
         btn, el, onDoc: null, onKey: null,
     };
     hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
@@ -2773,17 +2779,14 @@ function hpSetMin(v) {
 function hpApply() {
     const s = hp;
     if (!s || !s.sel) return;
-    const pad = (n) => String(n).padStart(2, "0");
-    const date = `${s.sel.y}-${pad(s.sel.mo + 1)}-${pad(s.sel.d)}`;
     const hi = (s.hi || "").trim(), mi = (s.mi || "").trim();
-    let time = "";
+    const f = { y: s.sel.y, mo: s.sel.mo, d: s.sel.d, h: null, mm: null };
     if (/^\d{1,2}$/.test(hi) && +hi <= 23) {
+        f.h = +hi;
         // anything but plain digits in the minute box = filter by hour only
-        const mm = /^\d{1,2}$/.test(mi) && +mi <= 59 ? +mi : 0;
-        time = ` ${pad(+hi)}:${pad(mm)}`;
+        if (/^\d{1,2}$/.test(mi) && +mi <= 59) f.mm = +mi;
     }
-    const q = date + time;
-    historyDateFilter = q;
+    historyDateFilter = f;
     historyDateBtnState();
     imageHistoryVisible = 30;
     renderHistory();
@@ -2791,7 +2794,7 @@ function hpApply() {
     historyPickerClose();
 }
 function hpClear() {
-    historyDateFilter = "";
+    historyDateFilter = null;
     historyDateBtnState();
     imageHistoryVisible = 30;
     renderHistory();
