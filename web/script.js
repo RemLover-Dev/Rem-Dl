@@ -4149,6 +4149,11 @@ function toggleViewerFav() {
                 closeGalleryViewer();
             }
         }
+        else if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey
+                 && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
+            // f toggles focus mode (same as the 👁 button); skip when typing
+            viewer.classList.toggle("focus");
+        }
         else if (e.key === 'ArrowLeft') viewerNav(-1);
         else if (e.key === 'ArrowRight') viewerNav(1);
         else if (e.key === '+' || e.key === '=') zoomViewer(0.05, window.innerWidth/2, window.innerHeight/2);
