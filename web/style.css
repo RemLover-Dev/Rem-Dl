@@ -173,13 +173,8 @@ h2 {
 }
 .queue-chip:hover { background: rgba(0, 210, 211, 0.22); }
 .queue-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.queue-note {
-    cursor: default;
-    gap: 6px;
-    max-width: 260px;
-}
-.queue-note:hover { background: rgba(0, 210, 211, 0.12); }
-.queue-note.drop-bump { outline: 1px dashed var(--title-color); outline-offset: -1px; }
+.queue-chip.drop-bump { outline: 1px dashed var(--title-color); outline-offset: -1px; }
+.queue-empty { opacity: 0.55; }
 .queue-list {
     position: absolute;
     top: calc(100% + 6px);
