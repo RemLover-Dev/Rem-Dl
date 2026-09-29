@@ -2009,17 +2009,8 @@ function renderQueueChip(data) {
         // keep row clicks/dblclicks from toggling the pill open/closed
         list.onclick = e => e.stopPropagation();
         list.ondblclick = e => e.stopPropagation();
-        if (acts.length) {
-            // while downloading: queue another request without touching STOP
-            const add = document.createElement("button");
-            add.className = "queue-add";
-            add.textContent = "add to queue";
-            add.title = "Queue another request for this worker using the current form values";
-            add.onclick = e => { e.stopPropagation(); startWorker(site); };
-            chip.append(text, stopBtn(acts[0].site), add);
-        } else {
-            chip.append(text);
-        }
+        if (acts.length) chip.append(text, stopBtn(acts[0].site));
+        else chip.append(text);
         if (!items.length) {
             const empty = document.createElement("div");
             empty.className = "queue-item queue-empty";
@@ -2406,6 +2397,20 @@ function renderRunBtn(workerName) {
     const running = !!workerRunning[workerName];
     btn.textContent = running ? "STOP" : "START";
     btn.classList.toggle("stop-btn", running);
+    // busy: "add to queue" appears just before this worker's Limit/Amount box
+    let add = document.getElementById("queueAdd_" + workerName);
+    if (!add) {
+        add = document.createElement("button");
+        add.id = "queueAdd_" + workerName;
+        add.className = "queue-add";
+        add.textContent = "add to queue";
+        add.title = "Queue another request for this worker using the current form values";
+        add.onclick = () => startWorker(workerName);
+        const tab = btn.closest(".tab-content") || btn.parentElement;
+        const limLabel = Array.from(tab.querySelectorAll("label")).find(l => /^(limit|amount):?$/i.test(l.textContent.trim()));
+        (limLabel ? limLabel.parentElement : btn.parentElement).insertBefore(add, limLabel || btn);
+    }
+    add.style.display = running ? "" : "none";
 }
 function toggleWorker(workerName) {
     if (workerRunning[workerName]) stopWorker(workerName);
