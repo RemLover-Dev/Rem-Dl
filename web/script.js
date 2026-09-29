@@ -3341,6 +3341,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'gsRatingDropdown') onGsRatingChange();
     else if (menu.id === 'konaRatingDropdown') onKonaRatingChange();
     else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
+    else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -3366,11 +3367,12 @@ function onDanRatingChange() { onMultiRatingChange('danRatingDropdown', 'danRati
 function onGsRatingChange() { onMultiRatingChange('gsRatingDropdown', 'gsbooruRating'); }
 function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaRating'); }
 function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
+function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    [['gelbooruRating', 'gelRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown']].forEach(function (pair) {
+    [['gelbooruRating', 'gelRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown']].forEach(function (pair) {
         const hidden = document.getElementById(pair[0]);
         if (!hidden) return;
         hidden.addEventListener('change', function () {

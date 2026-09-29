@@ -11,11 +11,21 @@ class YandeWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        # the dropdown collapses a full set to All — treat it the same defensively
+        if len(codes) == len(self.rating_map):
+            codes = []
+        self.rating_allowed = set(codes)
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
+        self.api_tag = self.original_tag
+        # ponytail: moebooru has no comma-OR in the rating metatag (verified live —
+        # 'rating:s,rating:e' returns only the first) — a single rating goes
+        # server-side, multi is filtered locally
+        if len(codes) == 1:
+            self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         FORMAT_WORDS = {"video", "image"}
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-') and t not in FORMAT_WORDS)
@@ -74,7 +84,7 @@ class YandeWorker(BaseWorker):
         return result
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(":")[-1], "")})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         collected_count = 0
         page = 1
@@ -136,10 +146,8 @@ class YandeWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 url = post.get("file_url") or post.get("large_file_url")
                 if not url:
