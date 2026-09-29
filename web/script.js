@@ -2610,7 +2610,8 @@ function historyDayRange(y, mo, d) {
     return { from, to: from + 86400000 - 1 };
 }
 // date/time tokens in the search box filter BOTH history sections:
-// a full date = that calendar day, an hour = past 24 hours
+// a full date = that calendar day, date + time = that hour (00:00 keeps the
+// whole day), a lone hour = past 24 hours
 function parseHistoryQuery(q) {
     let s = " " + q.trim().toLowerCase().replace(/,/g, " ") + " ";
     let range = null, m;
@@ -2630,9 +2631,26 @@ function parseHistoryQuery(q) {
         if (mo !== undefined && +m[1] >= 1 && +m[1] <= 31) { range = historyDayRange(m[3] ? +m[3] : new Date().getFullYear(), mo, +m[1]); s = s.replace(m[0], " "); }
     }
     // explicit time syntax is consumed even alongside a date; a lone
-    // hour-only query (e.g. "14") means the past 24 hours
-    if ((m = s.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/) || (m = s.match(/\b(\d{1,2})(am|pm)\b/)))) {
-        if (+m[1] <= 23) { if (!range) range = { from: Date.now() - 86400000, to: Date.now() }; s = s.replace(m[0], " "); }
+    // hour-only query (e.g. "14") means the past 24 hours — with a date
+    // already picked, the time narrows that day to the selected hour
+    let tm = s.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/);
+    const tmHasColon = !!tm;
+    if (!tm) tm = s.match(/\b(\d{1,2})(am|pm)\b/);
+    if (tm) {
+        let th = +tm[1];
+        const ap = (tmHasColon ? (tm[3] || "") : (tm[2] || "")).toLowerCase();
+        if (ap === "pm" && th < 12) th += 12;
+        if (ap === "am" && th === 12) th = 0;
+        const tmin = tmHasColon ? +tm[2] : 0;
+        if (th <= 23) {
+            if (range && (th > 0 || tmin > 0)) {
+                const t0 = range.from + (th * 60 + tmin) * 60000;
+                range = { from: t0, to: t0 + 3599999 };
+            } else if (!range) {
+                range = { from: Date.now() - 86400000, to: Date.now() };
+            }
+            s = s.replace(tm[0], " ");
+        }
     }
     let toks = s.trim().split(/\s+/).filter(t => t && t !== "am" && t !== "pm");
     if (!range && toks.length === 1 && /^\d{1,2}$/.test(toks[0]) && +toks[0] <= 23) {
@@ -2647,6 +2665,15 @@ function historySearchInput(v) {
     imageHistoryVisible = 30;
     renderHistory();
     renderImageHistory();
+}
+function historyDatePicked(el) {
+    if (!el.value) return;
+    // "2026-09-22T12:04" → "2026-09-22 12:04" — parses as a date + time token
+    const q = el.value.replace("T", " ");
+    el.value = "";  // reset so picking the same value fires again
+    const box = document.getElementById("historySearch");
+    if (box) box.value = q;
+    historySearchInput(q);
 }
 
 async function loadTagsData() {
