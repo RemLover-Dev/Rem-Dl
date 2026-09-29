@@ -562,20 +562,36 @@ class BaseDownloader:
         for attempt in range(self.dl_retries):
             try:
                 referer = self.session.headers.get("Referer") or url
+                # a truncated attempt keeps its .part — the retry resumes it
+                # with a Range request instead of restarting a big file at 0
+                headers = {"Referer": referer}
+                base = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+                if base:
+                    headers["Range"] = f"bytes={base}-"
                 # ponytail: downloads need way more than the API's 30s total timeout
                 # sock_read kills stalled/trickling connections fast; a bare
                 # total timeout lets a dead stream hang for minutes looking
                 # like the worker "stopped"
-                async with self.session.get(url, headers={"Referer": referer}, timeout=aiohttp.ClientTimeout(total=300, connect=10, sock_read=30)) as resp:
+                async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=300, connect=10, sock_read=30)) as resp:
+                    resumed = bool(base) and getattr(resp, "status", None) == 206
                     resp.raise_for_status()
-                    content_length = int(resp.headers.get('Content-Length', 0)) or file_size
-                    if content_length and (content_length != file_size):
-                        self.total_bytes += (content_length - file_size)
+                    if resumed:
+                        downloaded = base
+                        total_expected = (base + int(resp.headers.get('Content-Length', 0))) or file_size
+                    else:
+                        downloaded = 0
+                        total_expected = int(resp.headers.get('Content-Length', 0)) or file_size
+                        if total_expected and (total_expected != file_size):
+                            self.total_bytes += (total_expected - file_size)
 
-                    downloaded = 0
                     if h is not None:
                         h = hashlib.md5()
-                    with open(part_path, 'wb') as f:
+                        if resumed:
+                            # seed the incremental hash with the bytes already on disk
+                            with open(part_path, 'rb') as pf:
+                                for blk in iter(lambda: pf.read(65536), b""):
+                                    h.update(blk)
+                    with open(part_path, 'ab' if resumed else 'wb') as f:
                         async for chunk in resp.content.iter_chunked(65536):
                             if self.stop_event.is_set(): break
                             f.write(chunk)
@@ -584,18 +600,17 @@ class BaseDownloader:
                             downloaded += len(chunk)
                             # live bar updates ~5/s while bytes stream in
                             now = time.monotonic()
-                            if content_length and now - self._last_progress_emit >= 0.2:
+                            if total_expected and now - self._last_progress_emit >= 0.2:
                                 self._last_progress_emit = now
-                                self._inflight[filepath] = downloaded / content_length
+                                self._inflight[filepath] = downloaded / total_expected
                                 self._emit_progress()
 
                     # ponytail: proxies can drop the tail silently; verify against
                     # Content-Length, or against the enqueue-time HEAD size when the
                     # response is content-encoded (CL then describes compressed bytes)
                     if not resp.headers.get('Content-Encoding') or file_size:
-                        expected = int(resp.headers.get('Content-Length', 0)) or file_size
-                        if expected and downloaded != expected:
-                            raise Exception(f"Incomplete download: got {downloaded} of {expected} bytes")
+                        if total_expected and downloaded != total_expected:
+                            raise Exception(f"Incomplete download: got {downloaded} of {total_expected} bytes")
 
                 if self.stop_event.is_set():
                     if os.path.exists(part_path): os.remove(part_path)
@@ -657,13 +672,18 @@ class BaseDownloader:
                 return True
 
             except Exception as e:
-                if os.path.exists(part_path): os.remove(part_path)
                 if self.stop_event.is_set():
+                    if os.path.exists(part_path): os.remove(part_path)
                     self.enqueued_count -= 1
                     break
+                # truncated streams keep the .part so the next attempt resumes;
+                # HTTP-status rejections and md5 mismatches start over
+                if isinstance(e, aiohttp.ClientResponseError) or "md5 mismatch" in str(e):
+                    if os.path.exists(part_path): os.remove(part_path)
                 if attempt < self.dl_retries - 1: 
                     await asyncio.sleep(2)
                 else: 
+                    if os.path.exists(part_path): os.remove(part_path)
                     self.enqueued_count -= 1
                     err_msg = str(e).strip()
                     if not err_msg: err_msg = "HTTP 404 / File Deleted from Server"
