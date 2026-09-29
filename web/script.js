@@ -1945,6 +1945,7 @@ function renderQueueChip(data) {
     const text = document.getElementById("queueChipText");
     const list = document.getElementById("queueList");
     if (!chip || !text || !list) return;
+    const actives = (data && data.active) || [];
     const queued = (data && data.queue) || [];
     if (!queued.length) {
         chip.style.display = "none";
@@ -1960,45 +1961,69 @@ function renderQueueChip(data) {
         list.addEventListener("click", e => e.stopPropagation());
         list.addEventListener("dblclick", e => e.stopPropagation());
     }
+    const totals = {};
+    queued.forEach(j => totals[j.site] = (totals[j.site] || 0) + 1);
+    const seen = {};
+    let drag = null; // {site, from} while dragging
     const cleanDragMarkers = () => {
         list.classList.remove("dragging");
-        list.querySelectorAll(".queue-item").forEach(r => r.classList.remove("drop-above", "drop-below"));
-        list.querySelectorAll(".queue-item").forEach(r => delete r.dataset.side);
+        list.querySelectorAll(".queue-item").forEach(r => r.classList.remove("drop-above", "drop-below", "drop-bump"));
+        drag = null;
     };
-    if (data.active) {
-        const row = document.createElement("div");
-        row.className = "queue-item running";
-        const label = document.createElement("span");
-        label.className = "queue-label";
-        label.textContent = `▶ ${siteLabel(data.active.site)} — ${data.active.tag}`;
+    const stopBtn = (site) => {
         const x = document.createElement("button");
         x.className = "queue-x";
         x.title = "Stop this download";
         x.textContent = "✕";
-        x.onclick = e => { e.stopPropagation(); socket.emit("stop_worker", { worker: data.active.site }); };
-        row.append(label, x);
+        x.onclick = e => { e.stopPropagation(); socket.emit("stop_worker", { worker: site }); };
+        return x;
+    };
+    actives.forEach(a => {
+        const row = document.createElement("div");
+        row.className = "queue-item running";
+        row.dataset.site = a.site;
+        row.dataset.running = "1";
+        const label = document.createElement("span");
+        label.className = "queue-label";
+        label.textContent = `▶ ${siteLabel(a.site)} — ${a.tag}`;
+        row.append(label, stopBtn(a.site));
+        // dropping a queued item on the running row of the same site = bump
+        row.ondragover = e => {
+            if (!drag || drag.site !== a.site) return;
+            e.preventDefault();
+            row.classList.add("drop-bump");
+        };
+        row.ondragleave = () => row.classList.remove("drop-bump");
+        row.ondrop = e => {
+            e.preventDefault();
+            const d = drag;
+            cleanDragMarkers();
+            if (d && d.site === a.site) socket.emit("queue_bump", { site: d.site, index: d.from });
+        };
         list.appendChild(row);
-    }
-    queued.forEach((j, i) => {
+    });
+    queued.forEach(j => {
+        const n = seen[j.site] || 0; // per-site index
+        seen[j.site] = n + 1;
         const row = document.createElement("div");
         row.className = "queue-item";
         row.draggable = true;
-        row.dataset.idx = i;
+        row.dataset.site = j.site;
+        row.dataset.siteIdx = n;
 
         const pos = document.createElement("input");
         pos.className = "queue-pos";
         pos.type = "number";
         pos.min = "1";
-        pos.max = String(queued.length);
-        pos.value = String(i + 1);
+        pos.max = String(totals[j.site]);
+        pos.value = String(n + 1);
         pos.title = "Priority position (press Enter to move)";
         pos.onclick = e => e.stopPropagation();
         pos.ondblclick = e => e.stopPropagation();
         const commitPos = () => {
             const v = parseInt(pos.value, 10);
-            if (v === i + 1) { pos.value = String(i + 1); return; }
-            if (Number.isNaN(v)) { pos.value = String(i + 1); return; }
-            socket.emit("queue_move", { from: i, to: Math.min(Math.max(v, 1), queued.length) - 1 });
+            if (Number.isNaN(v) || v === n + 1) { pos.value = String(n + 1); return; }
+            socket.emit("queue_move", { site: j.site, from: n, to: Math.min(Math.max(v, 1), totals[j.site]) - 1 });
         };
         pos.onchange = commitPos;
         pos.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); commitPos(); pos.blur(); } };
@@ -2012,23 +2037,27 @@ function renderQueueChip(data) {
         x.className = "queue-x";
         x.title = "Cancel this request";
         x.textContent = "✕";
-        x.onclick = e => { e.stopPropagation(); socket.emit("queue_cancel", { index: i }); };
+        x.onclick = e => { e.stopPropagation(); socket.emit("queue_cancel", { site: j.site, index: n }); };
 
         row.append(pos, label, x);
 
         // double-click anywhere on the row (not on its controls) → hold the
-        // running job and start this one now
+        // running job of this site and start this one now
         row.ondblclick = e => {
             if (e.target.closest(".queue-pos, .queue-x")) return;
-            socket.emit("queue_bump", { index: i });
+            socket.emit("queue_bump", { site: j.site, index: n });
         };
 
         row.ondragstart = e => {
-            e.dataTransfer.setData("text/plain", String(i));
+            drag = { site: j.site, from: n };
+            e.dataTransfer.setData("text/plain", String(n));
             e.dataTransfer.effectAllowed = "move";
             list.classList.add("dragging");
         };
         row.ondragover = e => {
+            if (!drag) return;
+            // only reorder within the same site's queue, never onto itself
+            if (drag.site !== j.site || n === drag.from) return;
             e.preventDefault();
             const r = row.getBoundingClientRect();
             const above = e.clientY < r.top + r.height / 2;
@@ -2039,15 +2068,14 @@ function renderQueueChip(data) {
         row.ondragleave = () => { row.classList.remove("drop-above", "drop-below"); delete row.dataset.side; };
         row.ondrop = e => {
             e.preventDefault();
-            const from = parseInt(e.dataTransfer.getData("text/plain"), 10);
-            const t = i;
+            const d = drag;
             const below = row.dataset.side === "below";
             cleanDragMarkers();
-            if (Number.isNaN(from) || from === t) return;
+            if (!d || d.site !== j.site || d.from === n) return;
             // convert original-list drop spot to final index after removal
-            let to = below ? (from < t ? t : t + 1) : (from < t ? t - 1 : t);
+            let to = below ? (d.from < n ? n : n + 1) : (d.from < n ? n - 1 : n);
             if (to < 0) to = 0;
-            socket.emit("queue_move", { from, to });
+            socket.emit("queue_move", { site: d.site, from: d.from, to });
         };
         row.ondragend = cleanDragMarkers;
 
@@ -2066,24 +2094,26 @@ document.addEventListener("click", function (e) {
     if (chip && list && !chip.contains(e.target)) list.style.display = "none";
 });
 
-// server: one tag at a time — sync buttons/progress and the queue chip
+// server: one tag at a time per worker — sync buttons/progress and the queue chip
 socket.on("dl_queue", function (data) {
     if (!data) return;
+    const actives = data.active || [];
+    const queued = data.queue || [];
     const busy = new Set();
-    if (data.active) busy.add(data.active.site);
-    (data.queue || []).forEach(j => busy.add(j.site));
-    const activeSite = data.active ? data.active.site : null;
+    const activeSites = new Set();
+    actives.forEach(a => { busy.add(a.site); activeSites.add(a.site); });
+    queued.forEach(j => busy.add(j.site));
     Object.keys(workerRunning).forEach(w => {
         if (busy.has(w)) {
-            // ponytail: don't touch the active tab — a local STOP press must not
-            // be overridden while its worker is still winding down
-            if (w !== activeSite && !workerRunning[w]) { workerRunning[w] = true; renderRunBtn(w); }
+            // ponytail: don't touch actively running sites — a local STOP press
+            // must not be overridden while its worker is still winding down
+            if (!activeSites.has(w) && !workerRunning[w]) { workerRunning[w] = true; renderRunBtn(w); }
         } else if (workerRunning[w]) {
             workerRunning[w] = false; renderRunBtn(w);
         }
     });
     // jobs still waiting: hide their progress bar until the job actually starts
-    (data.queue || []).forEach(j => {
+    queued.forEach(j => {
         const key = WORKER_TO_TAB[j.site];
         const c = document.getElementById("dualProgress_" + key);
         if (c) c.style.display = "none";

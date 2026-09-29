@@ -1824,11 +1824,13 @@ def handle_disconnect():
 # ==========================================
 
 # ==========================================
-# === DOWNLOAD QUEUE — one tag at a time ===
+# === DOWNLOAD QUEUE — one tag at a time per worker ===
 # ==========================================
-DOWNLOAD_QUEUE = []
+# each worker/site has its own queue and runs concurrently with other
+# sites; requests within one site stay strictly serialized
+ACTIVE_JOBS = {}      # site -> running job
+DOWNLOAD_QUEUES = {}  # site -> [waiting jobs]
 QUEUE_LOCK = threading.Lock()
-_active_job = None
 
 def _safe_int(value, default=0):
     try:
@@ -1842,15 +1844,15 @@ def _queue_entry(job):
 
 def _emit_queue_state():
     with QUEUE_LOCK:
-        active = _queue_entry(_active_job) if _active_job else None
-        queued = [_queue_entry(j) for j in DOWNLOAD_QUEUE]
+        active = [_queue_entry(j) for j in ACTIVE_JOBS.values()]
+        queued = [_queue_entry(j) for q in DOWNLOAD_QUEUES.values() for j in q]
     socketio.emit("dl_queue", {"active": active, "queue": queued})
 
 def _start_job_thread(job):
     threading.Thread(target=_run_job, args=(job,), daemon=True).start()
 
 def _run_job(job):
-    global _active_job
+    site = job.get("worker")
     try:
         _dispatch_worker(job)
     except Exception as e:
@@ -1858,13 +1860,15 @@ def _run_job(job):
     finally:
         nxt = None
         with QUEUE_LOCK:
-            # only hand off if we're still the active job — a queue_bump may
-            # have superseded us (we're back on the queue, new job is running)
-            if _active_job is job:
-                _active_job = None
-                if DOWNLOAD_QUEUE:
-                    nxt = DOWNLOAD_QUEUE.pop(0)
-                    _active_job = nxt
+            # only hand off if we're still that site's active job — a
+            # queue_bump may have superseded us (we're back on the queue)
+            if ACTIVE_JOBS.get(site) is job:
+                q = DOWNLOAD_QUEUES.get(site)
+                if q:
+                    nxt = q.pop(0)
+                    ACTIVE_JOBS[site] = nxt
+                else:
+                    ACTIVE_JOBS.pop(site, None)
         if nxt is not None:
             entry = _queue_entry(nxt)
             shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
@@ -1932,15 +1936,16 @@ def handle_get_queue():
 
 @socketio.on("start_worker")
 def handle_start_worker(data):
-    global _active_job
+    site = data.get("worker")
     with QUEUE_LOCK:
-        if _active_job is None:
-            _active_job = data
+        if ACTIVE_JOBS.get(site) is None:
+            ACTIVE_JOBS[site] = data
             _start_job_thread(data)
         else:
-            DOWNLOAD_QUEUE.append(data)
+            q = DOWNLOAD_QUEUES.setdefault(site, [])
+            q.append(data)
             entry = _queue_entry(data)
-            shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(DOWNLOAD_QUEUE)} waiting) <<<")
+            shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
     _emit_queue_state()
 
 @socketio.on("stop_worker")
@@ -1950,54 +1955,58 @@ def handle_stop_worker(data):
     if name in shared.STOP_EVENTS:
         for evt in shared.STOP_EVENTS[name]:
             evt.set()
-    # ponytail: stop stays per-site — cancel this site's waiting entries only,
-    # other queued requests keep their turn
+    # stop stays per-site — cancel this site's waiting entries only,
+    # other sites' queues keep their turn
     with QUEUE_LOCK:
-        before = len(DOWNLOAD_QUEUE)
-        DOWNLOAD_QUEUE[:] = [j for j in DOWNLOAD_QUEUE if j.get("worker") != name]
-        if len(DOWNLOAD_QUEUE) < before:
+        if DOWNLOAD_QUEUES.get(name):
+            DOWNLOAD_QUEUES[name] = []
             shared.log_msg(name, ">>> Notice: queued request cancelled <<<")
     _emit_queue_state()
 
 @socketio.on("queue_move")
 def handle_queue_move(data):
     # ponytail: index-based ops, single-client trust — no per-entry ids
+    site = data.get("site")
     with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site) or []
         frm = _safe_int(data.get("from"), -1)
         to = _safe_int(data.get("to"), -1)
-        if 0 <= frm < len(DOWNLOAD_QUEUE) and to >= 0:
-            job = DOWNLOAD_QUEUE.pop(frm)
-            DOWNLOAD_QUEUE.insert(min(to, len(DOWNLOAD_QUEUE)), job)
+        if 0 <= frm < len(q) and to >= 0:
+            job = q.pop(frm)
+            q.insert(min(to, len(q)), job)
     _emit_queue_state()
 
 @socketio.on("queue_cancel")
 def handle_queue_cancel(data):
+    site = data.get("site")
     with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site) or []
         idx = _safe_int(data.get("index"), -1)
-        if 0 <= idx < len(DOWNLOAD_QUEUE):
-            job = DOWNLOAD_QUEUE.pop(idx)
+        if 0 <= idx < len(q):
+            job = q.pop(idx)
             entry = _queue_entry(job)
             shared.log_msg(entry["site"], f">>> Notice: queued request cancelled ({entry['tag']}) <<<")
     _emit_queue_state()
 
 @socketio.on("queue_bump")
 def handle_queue_bump(data):
-    # double-click: hold the running job (back to queue front), start the
-    # picked one immediately
-    global _active_job
+    # double-click / drop-on-running: hold this site's running job (back to
+    # the front of its queue), start the picked one immediately
+    site = data.get("site")
     promoted = None
     with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site) or []
         idx = _safe_int(data.get("index"), -1)
-        if 0 <= idx < len(DOWNLOAD_QUEUE):
-            target = DOWNLOAD_QUEUE.pop(idx)
-            held = _active_job
+        if 0 <= idx < len(q):
+            target = q.pop(idx)
+            held = ACTIVE_JOBS.get(site)
             if held is not None:
-                for evt in shared.STOP_EVENTS.get(held.get("worker"), []):
+                for evt in shared.STOP_EVENTS.get(site, []):
                     evt.set()
-                DOWNLOAD_QUEUE.insert(0, held)
+                q.insert(0, held)
                 held_entry = _queue_entry(held)
                 shared.log_msg(held_entry["site"], f">>> On hold: {held_entry['tag']} (resumes after next job) <<<")
-            _active_job = target
+            ACTIVE_JOBS[site] = target
             promoted = target
     if promoted is not None:
         entry = _queue_entry(promoted)

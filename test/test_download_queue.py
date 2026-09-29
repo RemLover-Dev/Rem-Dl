@@ -31,6 +31,10 @@ def _wait(cond, timeout=5):
     return False
 
 
+def _drained():
+    return not any(Rems_Dl.ACTIVE_JOBS.values()) and not any(Rems_Dl.DOWNLOAD_QUEUES.values())
+
+
 @pytest.fixture
 def queue_env(monkeypatch):
     started, gates = [], {}
@@ -44,71 +48,87 @@ def queue_env(monkeypatch):
 
     monkeypatch.setattr(Rems_Dl, "_dispatch_worker", fake_dispatch)
     with Rems_Dl.QUEUE_LOCK:
-        Rems_Dl._active_job = None
-        Rems_Dl.DOWNLOAD_QUEUE.clear()
+        Rems_Dl.ACTIVE_JOBS.clear()
+        Rems_Dl.DOWNLOAD_QUEUES.clear()
     yield started, gates
     # a held job can restart (and install a fresh gate) during teardown —
-    # keep releasing every gate until the queue drains
+    # keep releasing every gate until all per-site queues drain
     deadline = time.time() + 5
-    while time.time() < deadline and not (Rems_Dl._active_job is None and not Rems_Dl.DOWNLOAD_QUEUE):
+    while time.time() < deadline and not _drained():
         for ev in list(gates.values()):
             ev.set()
         time.sleep(0.02)
     for ev in list(gates.values()):
         ev.set()
-    assert _wait(lambda: Rems_Dl._active_job is None and not Rems_Dl.DOWNLOAD_QUEUE)
+    assert _wait(_drained)
     with Rems_Dl.QUEUE_LOCK:
-        Rems_Dl._active_job = None
-        Rems_Dl.DOWNLOAD_QUEUE.clear()
+        Rems_Dl.ACTIVE_JOBS.clear()
+        Rems_Dl.DOWNLOAD_QUEUES.clear()
     # ponytail: never disconnect() — it arms the 3s os._exit shutdown timer
 
 
-def test_queue_serializes_one_at_a_time(queue_env):
+def test_queues_are_per_worker_and_serialized_within_site(queue_env):
     started, gates = queue_env
     client = Rems_Dl.socketio.test_client(Rems_Dl.app)
 
-    client.emit("start_worker", {"worker": "gelbooru", "tag": "tag1", "net_config": {}})
-    assert _wait(lambda: started == ["tag1"])
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "g1", "net_config": {}})
+    assert _wait(lambda: started == ["g1"])
 
-    client.emit("start_worker", {"worker": "rule34", "tag": "tag2", "net_config": {}})
-    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUE) == 1)
-    client.emit("start_worker", {"worker": "safe", "tag": "tag3", "net_config": {}})
-    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUE) == 2)
+    # second gelbooru request queues behind the first
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "g2", "net_config": {}})
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("gelbooru", [])) == 1)
 
+    # a different site runs concurrently — no global serialization
+    client.emit("start_worker", {"worker": "rule34", "tag": "r1", "net_config": {}})
+    assert _wait(lambda: "r1" in started)
     with Rems_Dl.QUEUE_LOCK:
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["tag2", "tag3"]
-    # first job still the only one running
-    assert started == ["tag1"]
+        assert Rems_Dl.ACTIVE_JOBS["gelbooru"]["tag"] == "g1"
+        assert Rems_Dl.ACTIVE_JOBS["rule34"]["tag"] == "r1"
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["g2"]
 
-    gates["tag1"].set()
-    assert _wait(lambda: started == ["tag1", "tag2"])
+    gates["g1"].set()
+    assert _wait(lambda: started == ["g1", "r1", "g2"])
     with Rems_Dl.QUEUE_LOCK:
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["tag3"]
+        assert not Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]
+    gates["r1"].set()
+    gates["g2"].set()
+    assert _wait(_drained)
 
-    gates["tag2"].set()
-    assert _wait(lambda: started == ["tag1", "tag2", "tag3"])
-    gates["tag3"].set()
-    assert _wait(lambda: Rems_Dl._active_job is None and not Rems_Dl.DOWNLOAD_QUEUE)
-
-    assert "dl_queue" in [m["name"] for m in client.get_received()]
+    received = client.get_received()
+    assert "dl_queue" in [m["name"] for m in received]
+    payload = [m for m in received if m["name"] == "dl_queue"][-1]["args"][0]
+    assert isinstance(payload["active"], list)
 
 
-def test_stop_cancels_only_own_queued_entries(queue_env):
+def test_stop_cancels_only_own_site_queue(queue_env):
     started, gates = queue_env
     client = Rems_Dl.socketio.test_client(Rems_Dl.app)
 
-    client.emit("start_worker", {"worker": "gelbooru", "tag": "run", "net_config": {}})
+    client.emit("start_worker", {"worker": "rule34", "tag": "run", "net_config": {}})
     assert _wait(lambda: started == ["run"])
     client.emit("start_worker", {"worker": "rule34", "tag": "wait", "net_config": {}})
-    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUE) == 1)
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("rule34", [])) == 1)
+
+    # another site runs and queues independently
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "gr", "net_config": {}})
+    assert _wait(lambda: "gr" in started)
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "gw", "net_config": {}})
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("gelbooru", [])) == 1)
 
     client.emit("stop_worker", {"worker": "rule34"})
-    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUE) == 0)
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("rule34", [])) == 0)
+    with Rems_Dl.QUEUE_LOCK:
+        # the other site's waiting entry survives
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["gw"]
 
     gates["run"].set()
-    assert _wait(lambda: Rems_Dl._active_job is None)
+    gates["gr"].set()
+    # gw starts once gr hands off, then gets its own (fresh) gate
+    assert _wait(lambda: "gw" in gates and started.count("gw") == 1)
+    gates["gw"].set()
+    assert _wait(_drained)
     # the cancelled entry never ran
-    assert started == ["run"]
+    assert "wait" not in started
 
 
 def test_queue_move_and_cancel(queue_env):
@@ -118,36 +138,37 @@ def test_queue_move_and_cancel(queue_env):
     client.emit("start_worker", {"worker": "gelbooru", "tag": "run", "net_config": {}})
     assert _wait(lambda: started == ["run"])
     for tag in ("a", "b", "c"):
-        client.emit("start_worker", {"worker": "rule34", "tag": tag, "net_config": {}})
-    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUE) == 3)
+        client.emit("start_worker", {"worker": "gelbooru", "tag": tag, "net_config": {}})
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("gelbooru", [])) == 3)
 
     # move "c" (index 2) up to priority 1
-    client.emit("queue_move", {"from": 2, "to": 0})
+    client.emit("queue_move", {"site": "gelbooru", "from": 2, "to": 0})
     with Rems_Dl.QUEUE_LOCK:
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["c", "a", "b"]
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["c", "a", "b"]
 
     # out-of-range destination clamps to the end
-    client.emit("queue_move", {"from": 0, "to": 99})
+    client.emit("queue_move", {"site": "gelbooru", "from": 0, "to": 99})
     with Rems_Dl.QUEUE_LOCK:
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["a", "b", "c"]
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["a", "b", "c"]
 
     # cancel the middle entry
-    client.emit("queue_cancel", {"index": 1})
+    client.emit("queue_cancel", {"site": "gelbooru", "index": 1})
     with Rems_Dl.QUEUE_LOCK:
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["a", "c"]
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["a", "c"]
 
-    # invalid indices are no-ops
-    client.emit("queue_cancel", {"index": 50})
-    client.emit("queue_move", {"from": -1, "to": 0})
+    # invalid indices / foreign site are no-ops
+    client.emit("queue_cancel", {"site": "gelbooru", "index": 50})
+    client.emit("queue_move", {"site": "gelbooru", "from": -1, "to": 0})
+    client.emit("queue_move", {"site": "rule34", "from": 0, "to": 0})
     with Rems_Dl.QUEUE_LOCK:
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["a", "c"]
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["a", "c"]
 
     gates["run"].set()
     assert _wait(lambda: started == ["run", "a"])
     gates["a"].set()
     assert _wait(lambda: started == ["run", "a", "c"])
     gates["c"].set()
-    assert _wait(lambda: Rems_Dl._active_job is None and not Rems_Dl.DOWNLOAD_QUEUE)
+    assert _wait(_drained)
 
 
 def test_queue_bump_holds_active_and_starts_target(queue_env):
@@ -156,32 +177,40 @@ def test_queue_bump_holds_active_and_starts_target(queue_env):
 
     client.emit("start_worker", {"worker": "gelbooru", "tag": "first", "net_config": {}})
     assert _wait(lambda: started == ["first"])
-    client.emit("start_worker", {"worker": "rule34", "tag": "second", "net_config": {}})
-    client.emit("start_worker", {"worker": "safe", "tag": "third", "net_config": {}})
-    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUE) == 2)
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "second", "net_config": {}})
+    client.emit("start_worker", {"worker": "gelbooru", "tag": "third", "net_config": {}})
+    assert _wait(lambda: len(Rems_Dl.DOWNLOAD_QUEUES.get("gelbooru", [])) == 2)
+
+    # another site's job keeps running untouched through the bump
+    client.emit("start_worker", {"worker": "rule34", "tag": "other", "net_config": {}})
+    assert _wait(lambda: "other" in started)
 
     # double-click "third" (index 1): "first" goes on hold, "third" runs now
     # even though first's gate was never released
-    client.emit("queue_bump", {"index": 1})
-    assert _wait(lambda: started == ["first", "third"])
+    client.emit("queue_bump", {"site": "gelbooru", "index": 1})
+    assert _wait(lambda: started == ["first", "third", "other"] or started[-1] == "third")
     with Rems_Dl.QUEUE_LOCK:
-        assert Rems_Dl._active_job["tag"] == "third"
+        assert Rems_Dl.ACTIVE_JOBS["gelbooru"]["tag"] == "third"
         # held job is back at the front, second still behind it
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUE] == ["first", "second"]
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["first", "second"]
+        assert Rems_Dl.ACTIVE_JOBS["rule34"]["tag"] == "other"
 
     gates["third"].set()
     # the held job resumes next, then second — teardown releases the tail
-    assert _wait(lambda: started == ["first", "third", "first"])
+    assert _wait(lambda: started[-1] == "first" and started.count("first") == 2)
+    gates["other"].set()
 
 
 def test_queue_bump_when_idle_promotes_directly(queue_env):
     started, gates = queue_env
     client = Rems_Dl.socketio.test_client(Rems_Dl.app)
 
-    # no active job, queued entries exist (defensive path): just promote
+    # no active job for the site, waiting entries exist (defensive path):
+    # just promote
     with Rems_Dl.QUEUE_LOCK:
-        Rems_Dl.DOWNLOAD_QUEUE.append({"worker": "yande", "tag": "solo", "net_config": {}})
-    client.emit("queue_bump", {"index": 0})
+        Rems_Dl.DOWNLOAD_QUEUES.setdefault("yande", []).append(
+            {"worker": "yande", "tag": "solo", "net_config": {}})
+    client.emit("queue_bump", {"site": "yande", "index": 0})
     assert _wait(lambda: started == ["solo"])
     gates["solo"].set()
-    assert _wait(lambda: Rems_Dl._active_job is None and not Rems_Dl.DOWNLOAD_QUEUE)
+    assert _wait(_drained)
