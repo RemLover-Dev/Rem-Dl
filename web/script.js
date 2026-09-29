@@ -2666,14 +2666,96 @@ function historySearchInput(v) {
     renderHistory();
     renderImageHistory();
 }
-function historyDatePicked(el) {
-    if (!el.value) return;
-    // "2026-09-22T12:04" → "2026-09-22 12:04" — parses as a date + time token
-    const q = el.value.replace("T", " ");
-    el.value = "";  // reset so picking the same value fires again
+// custom date+time picker (native datetime-local has no time UI in webkit)
+const HP_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const HP_DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+let hp = null;
+function historyPickerClose() {
+    if (!hp) return;
+    hp.el.remove();
+    document.removeEventListener("mousedown", hp.onDoc, true);
+    document.removeEventListener("keydown", hp.onKey, true);
+    hp = null;
+}
+function openHistoryPicker(btn) {
+    if (hp) { historyPickerClose(); return; }
+    const now = new Date();
+    const el = document.createElement("div");
+    el.style.cssText = "position: fixed; z-index: 9999; width: 232px; padding: 10px; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); color: var(--text-color); font-size: 13px;";
+    document.body.appendChild(el);
+    const r = btn.getBoundingClientRect();
+    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
+    el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
+    hp = { vy: now.getFullYear(), vm: now.getMonth(), sel: null, h: null, mm: 0, btn, el, onDoc: null, onKey: null };
+    hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
+    hp.onKey = (e) => { if (e.key === "Escape") historyPickerClose(); };
+    document.addEventListener("mousedown", hp.onDoc, true);
+    document.addEventListener("keydown", hp.onKey, true);
+    renderHistoryPicker();
+}
+function renderHistoryPicker() {
+    const s = hp;
+    const first = new Date(s.vy, s.vm, 1).getDay();
+    const n = new Date(s.vy, s.vm + 1, 0).getDate();
+    const now = new Date();
+    let days = "";
+    for (let i = 0; i < first; i++) days += "<span></span>";
+    for (let d = 1; d <= n; d++) {
+        const sel = s.sel && s.sel.y === s.vy && s.sel.mo === s.vm && s.sel.d === d;
+        const today = d === now.getDate() && s.vm === now.getMonth() && s.vy === now.getFullYear();
+        days += `<span onclick="hpPickDay(${d})" style="text-align:center; padding:4px 0; border-radius:4px; cursor:pointer; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}">${d}</span>`;
+    }
+    let hrs = `<option value="">Any time</option>`;
+    for (let i = 0; i < 24; i++) hrs += `<option value="${i}"${s.h === i ? " selected" : ""}>${String(i).padStart(2, "0")}</option>`;
+    let mms = "";
+    for (let i = 0; i < 60; i++) mms += `<option value="${i}"${s.mm === i ? " selected" : ""}>${String(i).padStart(2, "0")}</option>`;
+    const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
+    const selStyle = "flex: 1; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px;";
+    s.el.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <button onclick="hpNav(-1)" style="${navBtn}">&lsaquo;</button>
+            <b style="font-weight: 600;">${HP_MONTHS[s.vm]} ${s.vy}</b>
+            <button onclick="hpNav(1)" style="${navBtn}">&rsaquo;</button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: 11px; opacity: .6; margin-bottom: 4px;">${HP_DAYS.map(x => `<span>${x}</span>`).join("")}</div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
+        <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
+            <span style="opacity: .7;">Time</span>
+            <select onchange="hpSetTime(this.value)" style="${selStyle}">${hrs}</select>
+            <select onchange="hpSetMin(this.value)" ${s.h == null ? "disabled" : ""} style="${selStyle}">${mms}</select>
+        </div>
+        <div style=" display: flex; justify-content: flex-end; margin-top: 10px;">
+            <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
+        </div>`;
+}
+function hpNav(dir) {
+    const s = hp;
+    s.vm += dir;
+    if (s.vm < 0) { s.vm = 11; s.vy--; }
+    if (s.vm > 11) { s.vm = 0; s.vy++; }
+    renderHistoryPicker();
+}
+function hpPickDay(d) {
+    hp.sel = { y: hp.vy, mo: hp.vm, d };
+    renderHistoryPicker();
+}
+function hpSetTime(v) {
+    hp.h = v === "" ? null : +v;
+    renderHistoryPicker();
+}
+function hpSetMin(v) {
+    hp.mm = +v;
+}
+function hpApply() {
+    const s = hp;
+    if (!s || !s.sel) return;
+    const pad = (n) => String(n).padStart(2, "0");
+    const date = `${s.sel.y}-${pad(s.sel.mo + 1)}-${pad(s.sel.d)}`;
+    const q = s.h == null ? date : `${date} ${pad(s.h)}:${pad(s.mm)}`;
     const box = document.getElementById("historySearch");
     if (box) box.value = q;
     historySearchInput(q);
+    historyPickerClose();
 }
 
 async function loadTagsData() {
