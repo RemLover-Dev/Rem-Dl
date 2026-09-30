@@ -953,8 +953,6 @@ class ZerochanWorker(BaseDownloader):
                         merged.update(detail)
                     posts.append(merged)
                     await asyncio.sleep(min(self.anti_ban_pause, 1.0))
-                if not has_next and page > 1:
-                    pass  # last page flag; loop exits naturally when items run out
 
             if not posts:
                 self.log("No more posts available.")
@@ -977,7 +975,9 @@ class ZerochanWorker(BaseDownloader):
             if not self.stop_event.is_set() and (self.amount <= 0 or collected_count < self.amount):
                 await asyncio.sleep(self.anti_ban_pause)
 
-        actual = collected_count + (self.download_queue.qsize() if self.download_queue else 0)
+        # collected_count already counts everything enqueued this run — adding
+        # qsize too double-counted every item still sitting in the queue
+        actual = collected_count
         if actual == 0:
             self.log("No new images to download.")
         else:

@@ -19,15 +19,6 @@ class NekosLifeWorker(BaseWorker):
         self.api_base = "https://nekos.life/api/v2"
         self.fetch_url = f"{self.api_base}/img/{category}"
 
-    def get_tags(self):
-        return [self.category]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         if self.category in GIF_ONLY:
             self.log(f"Initializing worker for category: '{self.category}' [GIF ONLY]")
@@ -73,9 +64,15 @@ class NekosLifeWorker(BaseWorker):
             is_gif = filename.lower().endswith(".gif")
 
             if self.category in MIXED:
+                # continue targets the fetch loop — without a pause a filtered
+                # response turns into a tight no-sleep API loop
                 if self.fmt == "gif" and not is_gif:
+                    if not self.stop_event.is_set():
+                        await asyncio.sleep(self.anti_ban_pause)
                     continue
                 elif self.fmt == "image" and is_gif:
+                    if not self.stop_event.is_set():
+                        await asyncio.sleep(self.anti_ban_pause)
                     continue
 
             type_dir = os.path.join(self.gifs_root if is_gif else self.images_root, self.safe_category)

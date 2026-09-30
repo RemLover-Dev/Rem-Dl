@@ -140,6 +140,7 @@ class EShuushuuWorker(BaseDownloader):
 
         req_session = self._http_session()
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected < self.amount):
             try:
                 params = []
@@ -170,9 +171,14 @@ class EShuushuuWorker(BaseDownloader):
 
             except Exception as e:
                 self.log(f"Search page {page} error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             for img_id in thumb_ids:
                 if self.stop_event.is_set() or (self.amount > 0 and collected >= self.amount): break
                 try:

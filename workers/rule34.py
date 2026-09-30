@@ -1,4 +1,4 @@
-import os, re, random
+import os, random
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 
@@ -110,15 +110,6 @@ class Rule34Worker(BaseWorker):
         self.client = client
         return session
 
-    def get_tags(self):
-        return self.tag_list
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         self.log("Initializing worker... [RULE34PY LIBRARY MODE]")
 
@@ -168,7 +159,9 @@ class Rule34Worker(BaseWorker):
                 if not file_url:
                     continue
 
-                ext = file_url.split('.')[-1].lower()
+                # strip the query first: "file.jpg?client=1" must yield jpg,
+                # not "jpg?client=1" (exclusion filters then never match)
+                ext = file_url.split('?')[0].split('.')[-1].lower()
 
                 if ext in ["mp4", "webm", "zip"] and "-video" in self.exclusions:
                     continue

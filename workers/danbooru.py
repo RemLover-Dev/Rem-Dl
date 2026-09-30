@@ -1,4 +1,4 @@
-import os, re
+import os
 import asyncio
 import aiohttp
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
@@ -35,15 +35,6 @@ class DanbooruWorker(BaseWorker):
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _log_auth_status(self):
         # ponytail: one cheap call so the log states the real tier —
         # Member accounts keep the 2-tag cap, so "authenticated" alone misleads
@@ -53,7 +44,9 @@ class DanbooruWorker(BaseWorker):
                     auth=self._auth,
                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
-                    self.log(f"Authenticated as {self.dan_login}")
+                    # non-200 here means bad credentials — this must not
+                    # print as a successful authentication
+                    self.log(f"Could not verify Danbooru credentials (HTTP {resp.status}) — continuing as {self.dan_login} (unverified).")
                     return
                 prof = await resp.json()
                 name = prof.get("name", self.dan_login)
@@ -75,6 +68,7 @@ class DanbooruWorker(BaseWorker):
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -113,9 +107,14 @@ class DanbooruWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a proxy.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             had_valid = False
             for post in posts:
                 if self.stop_event.is_set() or (self.amount > 0 and collected_count >= self.amount):

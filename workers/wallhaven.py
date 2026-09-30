@@ -43,20 +43,12 @@ class WallhavenWorker(BaseWorker):
         self._seed = None
         self._rate_retries = 0
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag or 'latest'}'")
 
         collected_count = 0
         page = 1
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             params = {
                 "categories": self.category_bits,
@@ -91,9 +83,14 @@ class WallhavenWorker(BaseWorker):
                 data = await resp.json()
             except Exception as e:
                 self.log(f"API Error: {e}. Retrying in {self.retry_wait}s...")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(self.retry_wait)
                 continue
 
+            consecutive_errors = 0
             items = data.get("data") or []
             meta = data.get("meta") or {}
             if page == 1 and meta.get("seed"):

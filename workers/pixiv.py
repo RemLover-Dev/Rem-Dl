@@ -18,7 +18,6 @@
 # proxy/TLS framework, added ugoira-to-GIF conversion via Pillow.
 
 import os
-import re
 import io
 import time
 import hashlib
@@ -45,10 +44,11 @@ RATING_CODES = {0: "General", 1: "R18", 2: "R18G"}
 class PixivAppAPI:
     """Minimal Pixiv App API (adapted from gallery-dl PixivAppAPI)."""
 
-    def __init__(self, session, log_fn, refresh_token):
+    def __init__(self, session, log_fn, refresh_token, stop_event=None):
         self.session = session
         self.log = log_fn
         self.refresh_token = refresh_token
+        self.stop_event = stop_event
         self.user = None
         self._token = None
         self._token_expires = 0
@@ -98,67 +98,44 @@ class PixivAppAPI:
 
     def _call(self, endpoint, params=None):
         url = "https://app-api.pixiv.net" + endpoint
+        rate_strikes = 0
+
+        def rate_limited():
+            # stop_event-aware 300s wait — a blocking time.sleep(300) here
+            # made stop take up to 5 min; 3 strikes and we give up for good
+            nonlocal rate_strikes
+            rate_strikes += 1
+            if rate_strikes > 3:
+                raise Exception("Pixiv rate limited repeatedly — giving up.")
+            self.log("Rate limited - waiting 300s")
+            deadline = time.time() + 300
+            while time.time() < deadline:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    return True
+                time.sleep(5)
+            return False
+
         while True:
             self.login()
             resp = self.session.get(url, params=params, timeout=30)
             if resp.status_code in (403, 429):
-                self.log("Rate limited - waiting 300s")
-                time.sleep(300)
+                if rate_limited():
+                    return {}
                 continue
             resp.raise_for_status()
             data = resp.json()
             if "error" not in data:
+                rate_strikes = 0
                 return data
             err = data["error"]
             msg = (
                 err.get("user_message") or err.get("message") or str(err)
                 if isinstance(err, dict) else str(err))
             if "rate limit" in msg.lower():
-                self.log("Rate limited - waiting 300s")
-                time.sleep(300)
+                if rate_limited():
+                    return {}
                 continue
             raise Exception(f"Pixiv API error: {msg}")
-
-    def _paginate(self, endpoint, params, key="illusts", limit=0):
-        items = []
-        while True:
-            data = self._call(endpoint, params)
-            items.extend(data.get(key, []))
-            if limit > 0 and len(items) >= limit:
-                items = items[:limit]
-                break
-            if not data.get("next_url"):
-                break
-            qs = data["next_url"].rpartition("?")[2]
-            params = dict(
-                (k, unquote(v)) for part in qs.split("&") if "=" in part
-                for k, v in [part.split("=", 1)]
-            )
-        return items
-
-    def user_illusts(self, user_id, limit=0):
-        return self._paginate("/v1/user/illusts", {"user_id": str(user_id)}, limit=limit)
-
-    def user_bookmarks(self, user_id, restrict="public", limit=0):
-        return self._paginate("/v1/user/bookmarks/illust", {
-            "user_id": str(user_id), "restrict": restrict}, limit=limit)
-
-    def search(self, word, sort="date_desc",
-               target="partial_match_for_tags",
-               date_start=None, date_end=None, limit=0):
-        params = {"word": word, "sort": sort,
-                  "search_target": target}
-        if date_start:
-            params["start_date"] = date_start
-        if date_end:
-            params["end_date"] = date_end
-        return self._paginate("/v1/search/illust", params, limit=limit)
-
-    def ranking(self, mode="day", date=None, limit=0):
-        params = {"mode": mode}
-        if date:
-            params["date"] = date
-        return self._paginate("/v1/illust/ranking", params, limit=limit)
 
     def ugoira_meta(self, illust_id):
         data = self._call("/v1/ugoira/metadata",
@@ -198,7 +175,7 @@ class PixivWorker(BaseDownloader):
 
     def _api_instance(self):
         if self._api is None:
-            self._api = PixivAppAPI(self.api_session, self.log, self.refresh_token)
+            self._api = PixivAppAPI(self.api_session, self.log, self.refresh_token, self.stop_event)
         return self._api
 
     async def scraper_task(self):
@@ -233,11 +210,14 @@ class PixivWorker(BaseDownloader):
             if not works:
                 self.log("No more posts found.")
                 break
-            for work in works:
+            # page-local index: `collected < len(works)` compared the RUNNING
+            # total against one page's size, so pacing stopped entirely after
+            # page 1 and later pages downloaded with no anti-ban pause
+            for page_i, work in enumerate(works):
                 if self.stop_event.is_set() or (need and collected >= need):
                     break
                 collected += await self._process_work(work)
-                if collected < len(works) and (need == 0 or collected < need):
+                if page_i + 1 < len(works) and (need == 0 or collected < need):
                     await asyncio.sleep(self.anti_ban_pause)
             if need and collected >= need:
                 break

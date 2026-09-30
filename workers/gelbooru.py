@@ -44,15 +44,6 @@ class GelbooruWorker(BaseWorker):
         cached = DatabaseManager.load_json(TAG_TYPES_FILE)
         self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _fetch_tag_types(self, tag_names):
         api_key = os.getenv("GELBOORU_API_KEY", "")
         user_id = os.getenv("GELBOORU_USER_ID", "")
@@ -116,6 +107,7 @@ class GelbooruWorker(BaseWorker):
         collected_count = 0
         pid = 0
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
@@ -144,9 +136,14 @@ class GelbooruWorker(BaseWorker):
 
             except Exception as e:
                 self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             all_tags = set()
             for post in posts:
                 if isinstance(post, dict):
@@ -168,7 +165,9 @@ class GelbooruWorker(BaseWorker):
                 file_url = post.get("file_url", "")
                 if not file_url: continue
 
-                ext = file_url.split('.')[-1].lower()
+                # strip the query first: "file.jpg?client=1" must yield jpg,
+                # not "jpg?client=1" (exclusion filters then never match)
+                ext = file_url.split('?')[0].split('.')[-1].lower()
                 if ext in ["mp4", "webm", "zip"] and "-video" in self.exclusions: continue
                 if ext in ["jpg", "jpeg", "png", "webp"] and "-image" in self.exclusions: continue
                 if ext == "gif" and "-gif" in self.exclusions: continue

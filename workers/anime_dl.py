@@ -206,30 +206,30 @@ class AnimeDlWorker(BaseDownloader):
                         if not detail:
                             continue
 
-                    file_url = detail.get("file_url", "")
-                    if not file_url: continue
+                        file_url = detail.get("file_url", "")
+                        if not file_url: continue
 
-                    dl_url = f"https://api.anime-pictures.net/pictures/download_image/{file_url}"
-                    ext = file_url.rsplit(".", 1)[-1].split("?")[0]
-                    filename = sanitize_filename(f"{self.tag_slug}_{post_id}.{ext}", fallback=f"anime_{post_id}.jpg")
-                    filepath = os.path.join(self.tag_dir, filename)
+                        dl_url = f"https://api.anime-pictures.net/pictures/download_image/{file_url}"
+                        ext = file_url.rsplit(".", 1)[-1].split("?")[0]
+                        filename = sanitize_filename(f"{self.tag_slug}_{post_id}.{ext}", fallback=f"anime_{post_id}.jpg")
+                        filepath = os.path.join(self.tag_dir, filename)
 
-                    raw_tags = detail.get("tags", [])
-                    artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-                    for t in raw_tags:
-                        tag_info = t.get("tag", {}) if isinstance(t, dict) else {}
-                        # ponytail: API tags use underscores — show spaces everywhere
-                        tag_name = tag_info.get("tag", "").replace("_", " ")
-                        tag_type = tag_info.get("type", 0)
-                        if not tag_name: continue
-                        if tag_type == 4: artists.append(tag_name)
-                        elif tag_type == 1: characters.append(tag_name)
-                        elif tag_type == 5: copyrights.append(tag_name)
-                        elif tag_type == 7: metadata_tags.append(tag_name)
-                        else: general.append(tag_name)
+                        raw_tags = detail.get("tags", [])
+                        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
+                        for t in raw_tags:
+                            tag_info = t.get("tag", {}) if isinstance(t, dict) else {}
+                            # ponytail: API tags use underscores — show spaces everywhere
+                            tag_name = tag_info.get("tag", "").replace("_", " ")
+                            tag_type = tag_info.get("type", 0)
+                            if not tag_name: continue
+                            if tag_type == 4: artists.append(tag_name)
+                            elif tag_type == 1: characters.append(tag_name)
+                            elif tag_type == 5: copyrights.append(tag_name)
+                            elif tag_type == 7: metadata_tags.append(tag_name)
+                            else: general.append(tag_name)
 
-                    if await self.enqueue_download(dl_url, filepath, filename, general, artists, characters, copyrights, metadata_tags):
-                        collected += 1
+                        if await self.enqueue_download(dl_url, filepath, filename, general, artists, characters, copyrights, metadata_tags):
+                            collected += 1
             finally:
                 for t in pending:
                     if not t.done():

@@ -1,4 +1,4 @@
-import os, re
+import os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 
@@ -75,9 +75,6 @@ class SankakuWorker(BaseWorker):
 
         return session
 
-    def get_tags(self):
-        return [self.original_tag]
-
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None):
         if artists is None: artists = []
         if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
@@ -87,18 +84,13 @@ class SankakuWorker(BaseWorker):
         # Download immediately — Sankaku signed URLs expire before queued download starts
         return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
 
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -149,9 +141,14 @@ class SankakuWorker(BaseWorker):
                     self.log("ERROR 403: Access denied.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             await asyncio.sleep(0.25)
 
             had_valid = False

@@ -37,15 +37,6 @@ class KonachanWorker(BaseWorker):
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _fetch_tag_types(self, tag_names):
         # ponytail: cap per run — v1 cache migration drops unverified "tag"
         # entries; heal incrementally instead of stalling the first run
@@ -111,6 +102,7 @@ class KonachanWorker(BaseWorker):
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -153,8 +145,14 @@ class KonachanWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a proxy.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
+
+            consecutive_errors = 0
 
             had_valid = False
 

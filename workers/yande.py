@@ -39,15 +39,6 @@ class YandeWorker(BaseWorker):
         cached = DatabaseManager.load_json(TAG_TYPES_FILE)
         self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _fetch_tag_types(self, tag_names):
         cache = self.tag_cache
         # ponytail: cap per run — uncached tags page through on later calls
@@ -105,6 +96,7 @@ class YandeWorker(BaseWorker):
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -142,9 +134,14 @@ class YandeWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a proxy.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             all_tag_names = set()
             for post in posts:
                 if not isinstance(post, dict):

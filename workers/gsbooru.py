@@ -79,28 +79,6 @@ class GsbooruWorker(BaseWorker):
 
         safe_ensure_dir(self.tag_dir)
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(
-        self,
-        url,
-        filepath,
-        filename,
-        tags_list,
-        artists=None
-    ):
-        return await self.enqueue_download(
-            url,
-            filepath,
-            filename,
-            tags_list,
-            artists or []
-        )
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _api_get(self, params, url=POSTS_API):
         """GET a JSON API endpoint with Bearer auth. Returns the parsed dict,
         or None after logging a whitelisted 'API error' line (console-visible)."""

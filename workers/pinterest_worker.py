@@ -1,7 +1,7 @@
 import os, re, json, random
 import asyncio
 from pathlib import Path
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, sanitize_path_component, safe_ensure_dir
 import core.shared as shared
 
 
@@ -37,15 +37,6 @@ class PinterestWorker(BaseWorker):
         self.site_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
         safe_ensure_dir(self.site_root)
         self.tag_dir = self.site_root
-
-    def get_tags(self):
-        return [self.url_or_query]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
 
     async def _create_session(self):
         """Pinterest uses its own library, not aiohttp – return None."""
@@ -209,7 +200,19 @@ class PinterestWorker(BaseWorker):
         self.failed_count = len(medias) - downloaded
 
     def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
+        # pinterest_dl reads proxy config only from the process env — save
+        # and restore it so a pinterest run can't leave its proxy settings
+        # glued to every other worker after it finishes
+        proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        saved = {k: os.environ.get(k) for k in proxy_keys}
+        try:
+            asyncio.run(self.run_async_loop(self.scraper_task))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 def worker_pinterest(url_or_query, amount, is_search, net_config, min_w=0, min_h=0):
     worker = PinterestWorker(url_or_query, amount, is_search, net_config, min_w, min_h)
