@@ -531,19 +531,19 @@ function logToConsole(tabID, msg) {
             });
             let artistNames = cats.artist || [];
             delete cats.artist;
-            var logArtistBadge = artistNames.map(a => `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(a)}</span>`).join('');
+            var logArtistBadge = artistNames.map(a => `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
             // ponytail: log cards show plain tag text — only the artist keeps a colored badge
-            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => cleanTagDisplay(t)).join(', ') + `</span>`;
+            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => escapeHtml(cleanTagDisplay(t))).join(', ') + `</span>`;
         } else {
             var logArtistBadge = "";
-            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => cleanTagDisplay(t)).join(', ') + `</span>` : "No tags";
+            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => escapeHtml(cleanTagDisplay(t))).join(', ') + `</span>` : "No tags";
         }
         let fnMatch = raw.match(/Downloaded ([^\s]+)/);
         let fn = fnMatch ? fnMatch[1] : "image";
         let countMatch = raw.match(/\((\d+)\/\d+\)/);
         let countNum = countMatch ? countMatch[1] : "1";
 
-        let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn);
+        let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn).replace(/'/g, "%27");
 
         let ratingHtml = "";
         let logRating = "";
@@ -619,6 +619,9 @@ function logToConsole(tabID, msg) {
         // ponytail: prettify quoted tags for display — skip paths (slashes) and files (dots)
         clean = clean.replace(/'([^'/.,]*_[^'/.,]*)'/g, (m, t) => "'" + cleanTagDisplay(t) + "'");
         clean = hideFileNames(clean);
+        // escape log-derived text before it hits innerHTML — tags are
+        // attacker-controlled; WARN_ICON swap happens after so the svg survives
+        clean = escapeHtml(clean);
         clean = clean.replace(/⚠️?/g, WARN_ICON);
         let card = document.createElement("div");
         card.className = "log-item system";
@@ -1996,12 +1999,23 @@ socket.on("pixiv_notifs", function (data) {
 
 let _histReloadTimer = null;
 socket.on("update_history", function () {
-    loadGallery();
-    populateGallerySiteFilter();
-    // ponytail: downloads fire this per file — coalesce history reloads
-    // or the tab re-renders dozens of times per run
+    // ponytail: downloads fire this per file — coalesce history reloads or
+    // the tab re-fetches and re-renders dozens of times per run
     if (_histReloadTimer) return;
-    _histReloadTimer = setTimeout(() => { _histReloadTimer = null; loadTagsData(); }, 1500);
+    _histReloadTimer = setTimeout(() => {
+        _histReloadTimer = null;
+        loadGallery();
+        populateGallerySiteFilter();
+        loadTagsData();
+    }, 1500);
+});
+
+socket.on("gallery_rescan_done", function (data) {
+    if (data && data.success) {
+        showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`);
+        loadGallery(1);
+        populateGallerySiteFilter();
+    } else showToast("Rescan failed", { warn: true, icon: WARN_ICON });
 });
 
 socket.on("pinterest_progress", function (data) {
@@ -2258,7 +2272,7 @@ window.onload = async function () {
         let resp = await fetch("/api/folder");
         let data = await resp.json();
         if (data.folder) document.getElementById("folderDisplay").innerText = data.folder;
-    } catch (e) {}
+    } catch (e) { console.error("folder load failed:", e); }
 
     updateNekoDropdown();
     updateNekosLifeType();
@@ -2282,7 +2296,7 @@ window.onload = async function () {
             let opt = document.createElement("option");
             opt.value = t; opt.textContent = cleanTagDisplay(t); sel.appendChild(opt);
         });
-    } catch (e) {}
+    } catch (e) { console.error("waifu tags load failed:", e); }
 
     await _startupTail;
     const gBlurBtn = document.getElementById("galleryBlurBtn");
@@ -2555,13 +2569,14 @@ function showToast(msg, opts) {
     const container = document.getElementById("toastContainer") || (() => { const c = document.createElement('div'); c.id = 'toastContainer'; c.className = 'toast-container'; document.body.appendChild(c); return c; })();
     let toast = document.createElement("div");
     toast.className = "toast-item" + (opts.warn ? " warn" : "");
-    toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${msg}</span></div><button class="toast-dismiss" onclick="this.parentElement.remove()">✕</button>`;
+    toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${escapeHtml(msg)}</span></div><button class="toast-dismiss" onclick="this.parentElement.remove()">✕</button>`;
     container.appendChild(toast);
     // ponytail: warnings (e.g. copy fallback) stay until dismissed; info toasts fade
     if (!opts.sticky) setTimeout(() => { if (!toast.parentElement) return; toast.classList.add("fade-out"); setTimeout(() => toast.remove(), 350); }, 4000);
 }
 
 // ponytail: silent JS failures are undebuggable in the desktop window — surface them
+window.addEventListener("unhandledrejection", function (e) { console.error("Unhandled promise rejection:", e.reason); });
 const WARN_ICON = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7.89003 1.0499C7.80611 0.886097 7.67861 0.748632 7.52158 0.652642 7.36455 0.556651 7.18407 0.505859 7.00003 0.505859c-0.18405 0 -0.36453 0.050792 -0.52156 0.146783 -0.15703 0.09599 -0.28453 0.233455 -0.36844 0.397258l-5.500004 11c-0.07671 0.1522 -0.113232 0.3215 -0.106098 0.4919 0.007134 0.1703 0.057688 0.3359 0.146861 0.4812 0.089172 0.1453 0.214003 0.2654 0.362641 0.3488 0.14863 0.0835 0.31613 0.1276 0.4866 0.1281H12.5c0.1705 -0.0005 0.338 -0.0446 0.4866 -0.1281 0.1487 -0.0834 0.2735 -0.2035 0.3627 -0.3488 0.0891 -0.1453 0.1397 -0.3109 0.1468 -0.4812 0.0072 -0.1704 -0.0294 -0.3397 -0.1061 -0.4919l-5.49997 -11Z"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 5v3.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c-0.13807 0 -0.25 -0.1119 -0.25 -0.25s0.11193 -0.25 0.25 -0.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c0.13807 0 0.25 -0.1119 0.25 -0.25s-0.11193 -0.25 -0.25 -0.25"/></svg>`;
 const CHECK_ICON = ZERO_CHECK_ICON;
 const TRASH_ICON = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path fill="currentColor" d="M15.2188 0c0.2229 0.0000058603 0.4394 0.0747674 0.6152 0.211914 0.1757 0.137143 0.3013 0.328695 0.3555 0.544922L16.6182 3H24v2h-3v16c0 0.7957 -0.3163 1.5585 -0.8789 2.1211S18.7957 24 18 24H6c-0.79565 0 -1.55849 -0.3163 -2.12109 -0.8789C3.3163 22.5585 3 21.7957 3 21V5H0V3h7.38184L7.81055 0.756836c0.05418 -0.216227 0.17973 -0.407779 0.35547 -0.544922C8.34176 0.0747674 8.55833 0.0000058603 8.78125 0zM8 19h2V8H8zm6 -11v11h2V8z"></path></svg>`;
@@ -3174,7 +3189,7 @@ async function loadTagsData() {
         if (h || f) renderHistory();
         if (f) renderFavorites();
         if (i) renderImageHistory();
-    } catch(e) {}
+    } catch(e) { console.error("loadTagsData failed:", e); }
 }
 
 function isFavorite(site, tag) { return favoriteTags.some(x => x.site === site && x.tag === tag); }
@@ -3249,7 +3264,7 @@ function renderFavorites() {
         return;
     }
     favoriteTags.forEach(item => {
-        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${item.site}]</span><span>${cleanTagDisplay(item.tag)}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${item.site}', '${item.tag}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
+        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(item.site)}]</span><span>${escapeHtml(cleanTagDisplay(item.tag))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
     });
 }
 
@@ -3264,7 +3279,7 @@ async function toggleFavorite(site, tag) {
         favoriteTags = data.favorites;
         renderHistory();
         renderFavorites();
-    } catch(e) {}
+    } catch(e) { console.error("favorites save failed:", e); }
 }
 
 async function removeFromHistory(site, tag, rating) { await fetch("/api/history/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ site: site, tag: tag, rating: rating || "" }) }); await loadTagsData(); }
@@ -3467,7 +3482,7 @@ async function toggleImageHistoryFav(filename, btn) {
             const h = imageHistory.find(i => i.filename === filename);
             if (h) h.favourite = data.favourite;
         }
-    } catch(e) {}
+    } catch(e) { console.error("image-history favourite save failed:", e); }
 }
 async function clearImageHistory() { if(await customConfirm("Delete all image tag history?", "Delete")) { await fetch("/api/image_history/clear", { method: "POST" }); await loadTagsData(); } }
 
@@ -3860,6 +3875,8 @@ async function loadGallery(page, remeasured) {
         // viewport moved mid-flight (fast zoom switch) → refetch for the settled size
         if (window.innerWidth !== reqW) return loadGallery(page);
         galleryState = data;
+        // server clamps page to total_pages — trust its answer, not our guess
+        if (data.page) currentGalleryPage = data.page;
         renderGallery();
         // empty-state hides pagination (grid box grows ~44px) so per_page above was
         // measured against the wrong height — re-measure with pagination restored and
@@ -3867,7 +3884,7 @@ async function loadGallery(page, remeasured) {
         const pp = galleryPerPage();
         if (!remeasured && data.images && data.images.length > pp) return loadGallery(page, true);
         populateGallerySiteFilter();
-    } catch (e) {}
+    } catch (e) { console.error("loadGallery failed:", e); }
 }
 async function loadGalleryPage(page, callback) {
     const reqId = ++galleryReqId;
@@ -3886,9 +3903,9 @@ async function loadGalleryPage(page, callback) {
         if (reqId !== galleryReqId) return;
         if (window.innerWidth !== reqW) return loadGalleryPage(page, callback);
         galleryState = data;
-        currentGalleryPage = page;
+        if (data.page) currentGalleryPage = data.page;
         if (callback) callback();
-    } catch (e) {}
+    } catch (e) { console.error("loadGalleryPage failed:", e); }
 }
 function resetGalleryFilters() {
     const s = document.getElementById("gallerySearch");
@@ -3968,7 +3985,9 @@ function renderGallery() {
         const fp = (img.filepath || '').replace(/\\/g, '/');
         const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
         const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
-        const src = `/api/gallery/thumb/${encodeURI(fp)}`;
+        // per-segment encoding: encodeURI leaves "#"/"?" raw, which truncates
+        // the request at the fragment — filepaths can legitimately contain them
+        const src = `/api/gallery/thumb/${fp.split('/').map(encodeURIComponent).join('/')}`;
         const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
@@ -4057,10 +4076,10 @@ async function favouriteSelected() {
     if (!ids.length) return;
     try {
         await fetch("/api/gallery/favourite_batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
-    } catch (e) {}
+    } catch (e) { console.error("favourite batch save failed:", e); }
     loadGallery();
 }
-async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) {} }
+async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) { console.error("favourite save failed:", e); } }
 let viewerIndex = -1;
 let viewerZoom = 1;
 function openGalleryViewer(id) {
@@ -4458,7 +4477,7 @@ function showViewerImage() {
     let vw = document.querySelector('.gallery-video-wrap');
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
-    const fullSrc = safeFp ? `/api/gallery/file/${encodeURI(safeFp)}` : '';
+    const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
@@ -4506,8 +4525,7 @@ function showViewerImage() {
         const fsBtn = ctrls.querySelector('.gv-fs-btn');
         fsBtn.onclick = (e) => { e.stopPropagation(); if (!document.fullscreenElement && !document.webkitFullscreenElement) { if (video.requestFullscreen) video.requestFullscreen(); else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen(); } else { if (document.exitFullscreen) document.exitFullscreen(); else if (document.webkitExitFullscreen) document.webkitExitFullscreen(); } };
         function fsIcon() { fsBtn.innerHTML = (document.fullscreenElement || document.webkitFullscreenElement) ? '&#x2715;' : '&#x26F6;'; }
-        document.addEventListener('fullscreenchange', fsIcon);
-        document.addEventListener('webkitfullscreenchange', fsIcon);
+        _setFsIconHandler(fsIcon);
         video.play();
     } else if (fullSrc) { loadViewerRaster(fullSrc, img.filename); }
     else { clearViewerResource(); viewerImg.style.display = ''; }
@@ -4521,7 +4539,22 @@ function showViewerImage() {
 
     viewer.style.display = 'flex';
 }
-function closeGalleryViewer() { clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+// one fullscreenchange listener at a time: fsIcon is a fresh closure per
+// video shown, so plain addEventListener leaked one listener per image view
+let _fsIconHandler = null;
+function _setFsIconHandler(fn) {
+    if (_fsIconHandler) {
+        document.removeEventListener('fullscreenchange', _fsIconHandler);
+        document.removeEventListener('webkitfullscreenchange', _fsIconHandler);
+        _fsIconHandler = null;
+    }
+    if (fn) {
+        _fsIconHandler = fn;
+        document.addEventListener('fullscreenchange', fn);
+        document.addEventListener('webkitfullscreenchange', fn);
+    }
+}
+function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
 function viewerNav(dir) {
     if (viewerSingle) {
         // log previews carry their sibling list — walk it like the gallery
@@ -4847,8 +4880,8 @@ function toggleViewerFav() {
     document.getElementById("galleryViewerImg").addEventListener('mousedown', function(e) { if (viewerZoom <= 1 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
-    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) { console.error("gallery import failed:", e); } }
+    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes"); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
     let _siteFilterSeq = 0;
     async function populateGallerySiteFilter() {
         const seq = ++_siteFilterSeq;
@@ -4857,7 +4890,6 @@ function toggleViewerFav() {
         // rebuild wipes innerHTML, which would snap an open, scrolled menu to the top
         const prevScroll = container.scrollTop;
         const prevSelected = getMultiSelectValues('sourceDropdown');
-        container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
         const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') });
         if (galleryFavFilter) params.set("favourites", "true");
         applyDateParams(params, galleryDateFilter);
@@ -4865,6 +4897,9 @@ function toggleViewerFav() {
             let resp = await fetch(`/api/gallery/sources?${params}`);
             const counts = await resp.json();
             if (seq !== _siteFilterSeq) return;
+            // wipe only after the seq check — a stale or failed call used to
+            // destroy a menu a newer call had already rebuilt
+            container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
             const sorted = Object.entries(counts).sort((a,b) => a[0].localeCompare(b[0]));
             
             const allSelectedBefore = !prevSelected || prevSelected === '';
@@ -4893,7 +4928,7 @@ function toggleViewerFav() {
                     if (allItems) itemCbs.forEach(c => c.checked = false);
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.error("site filter load failed:", e); }
         const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
         if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
         updateSourceDropdown();
