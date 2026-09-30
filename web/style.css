@@ -1097,7 +1097,7 @@ body.blur-nsfw .hist-item.is-nsfw:hover .hist-tag {
 .gallery-viewer-top-btn.copy:hover { background: #a29bfe; color: #000; box-shadow: 0 0 0 1px #a29bfe; }
 .gallery-viewer-top-btn.trash { right: 220px; font-size: 20px; color: #ff9f43;}
 .gallery-viewer-top-btn.trash:hover { background: #ff9f43; color: #000; box-shadow: 0 0 0 1px #ff9f43; }
-.gallery-viewer-top-btn.focus-mode { right: 280px; font-size: 20px; color: #1abc9c; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; }
+.gallery-viewer-top-btn.focus-mode { right: 280px; font-size: 20px; color: #1abc9c; box-shadow: none; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; }
 .gallery-viewer-top-btn.focus-mode:hover { background: #1abc9c; color: #000; box-shadow: 0 0 0 1px #1abc9c; }
 
 .gallery-viewer-top-btn.zoom-label { left: 0; right: 0; width: fit-content; margin: 0 auto; transform: none; padding: 0 20px; border-radius: 20px; font-weight: bold; font-size: 14px; background: rgba(15, 15, 20, 0.85); color: var(--title-color); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); cursor: default; display: none; }
@@ -1166,6 +1166,9 @@ body.blur-nsfw .hist-item.is-nsfw:hover .hist-tag {
 .gallery-viewer.focus .gallery-video-ctrls { opacity: 0 !important; pointer-events: none !important; }
 .gallery-viewer.focus .gallery-viewer-top-btn.focus-mode { right: 40px !important; opacity: 0.3 !important; }
 .gallery-viewer.focus .gallery-viewer-top-btn.focus-mode:hover { opacity: 1 !important; }
+.gallery-viewer-top-btn:focus { outline: none; }
+.gallery-viewer.focus.cursor-hidden,
+.gallery-viewer.focus.cursor-hidden * { cursor: none !important; }
 
 /* ===== FIX DATALIST & DROPDOWN TRANSPARENCY ===== */
 datalist, option {

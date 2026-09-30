@@ -4602,6 +4602,7 @@ function toggleViewerFav() {
         if (e.key === 'Escape') {
             if (viewer.classList.contains("focus")) {
                 viewer.classList.remove("focus");
+                syncFocusCursor();
             } else {
                 closeGalleryViewer();
             }
@@ -4610,6 +4611,7 @@ function toggleViewerFav() {
                  && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
             // f toggles focus mode (same as the 👁 button); skip when typing
             viewer.classList.toggle("focus");
+            syncFocusCursor();
         }
         else if (e.key === 'ArrowLeft') viewerNav(-1);
         else if (e.key === 'ArrowRight') viewerNav(1);
@@ -4622,6 +4624,25 @@ function toggleViewerFav() {
             copyViewerImage();
         }
     }, true);
+
+    // focus mode hides the cursor; moving it brings it back for 5s of idle
+    let _focusCursorTimer = null;
+    function syncFocusCursor() {
+        const viewer = document.getElementById("galleryViewer");
+        if (!viewer) return;
+        clearTimeout(_focusCursorTimer);
+        if (viewer.classList.contains("focus")) viewer.classList.add("cursor-hidden");
+        else viewer.classList.remove("cursor-hidden");
+    }
+    document.addEventListener("mousemove", function() {
+        const viewer = document.getElementById("galleryViewer");
+        if (!viewer || !viewer.classList.contains("focus")) return;
+        viewer.classList.remove("cursor-hidden");
+        clearTimeout(_focusCursorTimer);
+        _focusCursorTimer = setTimeout(function() {
+            if (viewer.classList.contains("focus")) viewer.classList.add("cursor-hidden");
+        }, 5000);
+    });
     let _resizeTimer = null;
     window.addEventListener('resize', function() {
         clearTimeout(_resizeTimer);
@@ -4825,6 +4846,7 @@ function toggleViewerFav() {
     function toggleFocusMode() {
         const viewer = document.getElementById("galleryViewer");
         if (viewer) viewer.classList.toggle("focus");
+        syncFocusCursor();
     }
 
     document.addEventListener("DOMContentLoaded", function() {
