@@ -374,7 +374,7 @@ const WORKER_TO_TAB = {
     "neko": "neko", "nekos_life": "nekos_life", "zero": "zero", "waifu": "waifu",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
-    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
+    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia", "wallhaven": "wallhaven"
 };
 
 function updateProgressBar(worker, msg) {
@@ -444,7 +444,7 @@ function capConsole(cb, max) {
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia", "wallhaven": "consoleLog_wallhaven" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -2497,6 +2497,20 @@ function buildWorkerPayload(workerName) {
         payload.limit = document.getElementById('nekosiaLimit').value;
         payload.rating = document.getElementById('nekosiaRating').value;
     }
+    else if (workerName === 'wallhaven') {
+        const rawTagInput = document.getElementById('wallhavenTag').value.trim();
+        payload.tag = [...new Set(currentWallhavenTags.concat(rawTagInput ? rawTagInput.split(/[\s,]+/) : []))].join(' ');
+        // empty tag = latest feed, but the queue gate wants a truthy payload key
+        if (!payload.tag) payload.category = 'latest';
+        payload.limit = document.getElementById('wallhavenLimit').value;
+        payload.purity = document.getElementById('wallhavenPurity').value;
+        payload.sorting = document.getElementById('wallhavenSort').value;
+        payload.order = document.getElementById('wallhavenOrder').value;
+        // history/blur only understand single canon ratings — strongest purity wins,
+        // All (nothing selected) falls back to explicit like danbooru-style unfiltered
+        const pSel = payload.purity.split(' ').filter(Boolean);
+        payload.rating = pSel.includes('nsfw') ? 'explicit' : pSel.includes('sketchy') ? 'questionable' : pSel.includes('sfw') ? 'safe' : 'explicit';
+    }
 
     // ponytail: don't fire a worker with no query — it scans nothing and
     // the empty limit box (now possible) already defaults server-side
@@ -2515,8 +2529,35 @@ function buildWorkerPayload(workerName) {
     return payload;
 }
 
+let currentWallhavenTags = [];
+function addWallhavenTag() {
+    let input = document.getElementById("wallhavenTag");
+    if (!input) return;
+    let parts = input.value.trim().split(/[\s,]+/).filter(Boolean);
+    let added = false;
+    parts.forEach(function(t) { if (!currentWallhavenTags.includes(t)) { currentWallhavenTags.push(t); added = true; } });
+    if (added) { input.value = ""; renderWallhavenTags(); }
+}
+function removeWallhavenTag(tag) {
+    currentWallhavenTags = currentWallhavenTags.filter(function(t) { return t !== tag; });
+    renderWallhavenTags();
+}
+function renderWallhavenTags() {
+    let container = document.getElementById("wallhavenTagsContainer");
+    if (!container) return;
+    container.innerHTML = currentWallhavenTags.map(function(t) {
+        let isNeg = t.startsWith('-');
+        let text = isNeg ? t.substring(1) : t;
+        let cls = isNeg ? 'warning' : 'neutral';
+        let icon = isNeg ? '− ' : ZERO_CHECK_ICON;
+        let safeT = escJs(t);
+        return '<span class="v-tag ' + cls + '" onclick="removeWallhavenTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+    }).join('');
+}
+
 function clearSubmittedTags(workerName) {
     // ponytail: submitted combo clears so the box is fresh for the next search
+    if (workerName === 'wallhaven') { currentWallhavenTags = []; renderWallhavenTags(); document.getElementById('wallhavenTag').value = ''; }
     if (workerName === 'zero') { currentZerochanTags = []; zerochanSubTags.clear(); renderZerochanTags(); document.getElementById('zeroTag').value = ''; }
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
@@ -2585,6 +2626,7 @@ async function loadApiSettings() {
     document.getElementById("gelKey").value = settings.gelbooru_api_key || "";
     document.getElementById("gelUid").value = settings.gelbooru_user_id || "";
     document.getElementById("gsApiKey").value = settings.gsbooru_api_key || "";
+    document.getElementById("wallhavenApikey").value = settings.wallhaven_api_key || "";
     document.getElementById("konaLogin").value = settings.konachan_login || "";
     document.getElementById("konaPassword").value = settings.konachan_password || "";
     document.getElementById("sankaLogin").value = settings.sanka_login || "";
@@ -2607,6 +2649,7 @@ async function saveApiSettings() {
         gelbooru_api_key: document.getElementById("gelKey").value.trim(),
         gelbooru_user_id: document.getElementById("gelUid").value.trim(),
         gsbooru_api_key: document.getElementById("gsApiKey").value.trim(),
+        wallhaven_api_key: document.getElementById("wallhavenApikey").value.trim(),
         konachan_login: document.getElementById("konaLogin").value.trim(),
         konachan_password: document.getElementById("konaPassword").value.trim(),
         sanka_login: document.getElementById("sankaLogin").value.trim(),
@@ -3114,8 +3157,11 @@ function jumpToSite(site, tag, rating) {
         } else if (input) {
             input.value = tag || "";
         }
+    } else if (site === "wallhaven") {
+        currentWallhavenTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
+        renderWallhavenTags();
     }
-    let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
+    let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" }, "wallhaven": { tab: "Wallhaven", input: "wallhavenTag" } };
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
     // ponytail: match the button's openTab target, not its label —
     // labels like "e-shuushuu" never contain the key "eshuushuu"
@@ -3357,6 +3403,7 @@ const SOURCE_RATINGS = {
     rule34: ['explicit'],
     nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'],
     nekosia: ['safe', 'sensitive'],
+    wallhaven: ['safe', 'questionable', 'explicit'],
     'waifu.im': ['safe', 'explicit'],
     pinterest: ['safe'],
     pixiv: ['safe', 'explicit'],
@@ -3405,6 +3452,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
     else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
     else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
+    else if (menu.id === 'wallhavenPurityDropdown') onWallhavenPurityChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -3432,6 +3480,18 @@ function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaR
 function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
 function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
 function onSankakuRatingChange() { onMultiRatingChange('sankakuRatingDropdown', 'sankakuRating'); }
+function onWallhavenPurityChange() {
+    const menu = document.getElementById('wallhavenPurityDropdown');
+    const hidden = document.getElementById('wallhavenPurity');
+    if (!menu || !hidden) return;
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    const checkedItems = itemChecks.filter(c => c.checked);
+    const allCheck = menu.querySelector('input[value=""]');
+    if (checkedItems.length === 0 && allCheck) allCheck.checked = true;
+    hidden.value = checkedItems.map(c => c.value).join(' ');
+    const btn = document.querySelector('[onclick="toggleDropdown(\'wallhavenPurityDropdown\')"]');
+    if (btn) btn.textContent = getMultiLabel('wallhavenPurityDropdown', 'All Ratings') + ' ▾';
+}
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it

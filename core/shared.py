@@ -52,6 +52,7 @@ SITE_CANONICAL = {
     "neko": "nekos.life", "nekos.life": "nekos.life",
     "nekos.best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
     "waifu": "waifu.im", "waifu.im": "waifu.im",
+    "wallhaven": "wallhaven", "wallhaven.cc": "wallhaven",
     "anime_dl": "anime_dl", "animepictures": "anime_dl",
 }
 

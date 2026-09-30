@@ -365,7 +365,8 @@ class SettingsManager:
             "PIXIV_COOKIE": data.get("pixiv_cookie", ""),
             "DANBOORU_LOGIN": data.get("danbooru_login", ""),
             "DANBOORU_API_KEY": data.get("danbooru_api_key", ""),
-            "GSBOORU_API_KEY": data.get("gsbooru_api_key", "")
+            "GSBOORU_API_KEY": data.get("gsbooru_api_key", ""),
+            "WALLHAVEN_API_KEY": data.get("wallhaven_api_key", "")
         }
         self._upsert_env_keys(env_keys)
         for k, v in env_keys.items():
@@ -401,7 +402,8 @@ class SettingsManager:
             "pixiv_cookie": resolved.get("PIXIV_COOKIE", ""),
             "danbooru_login": resolved.get("DANBOORU_LOGIN", ""),
             "danbooru_api_key": resolved.get("DANBOORU_API_KEY", ""),
-            "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", "")
+            "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", ""),
+            "wallhaven_api_key": resolved.get("WALLHAVEN_API_KEY", "")
         }
 
 

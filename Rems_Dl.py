@@ -1369,6 +1369,7 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             "rule34": {"explicit"},
             "nekosapi": {"safe", "sensitive", "questionable", "explicit"},
             "nekosia": {"safe", "sensitive"},
+            "wallhaven": {"safe", "questionable", "explicit"},
             "waifu.im": {"safe", "explicit"},
             "pixiv": {"safe", "explicit"},
             "zerochan": {"safe"},
@@ -1967,6 +1968,19 @@ def _dispatch_worker(data):
             worker_nekosia(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config)
         except ImportError:
             pass # در صورتی که بعدا خواستی فایل nekosia.py رو بسازی ارور نده
+
+    elif worker == "wallhaven":
+        from workers.wallhaven import worker_wallhaven
+        net_config["wallhaven_apikey"] = os.getenv("WALLHAVEN_API_KEY", "")
+        worker_wallhaven(
+            data.get("tag", ""),
+            _safe_int(data.get("limit", 50), 50),
+            data.get("purity", ""),
+            data.get("categories", ""),
+            data.get("sorting", "date_added"),
+            data.get("order", "desc"),
+            net_config,
+        )
 
 @socketio.on("get_queue")
 def handle_get_queue():
