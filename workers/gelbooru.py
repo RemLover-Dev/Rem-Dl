@@ -58,7 +58,7 @@ class GelbooruWorker(BaseWorker):
             return
         # ponytail: burst through the page's tags — failures/misses just stay
         # uncached (fall back to 'tag' this run, retried next run)
-        sem = asyncio.Semaphore(100)
+        sem = asyncio.Semaphore(1000)
         async def query_one(tag_name):
             async with sem:
                 params = {"page": "dapi", "s": "tag", "q": "index", "name": tag_name, "json": 1, "limit": 50}
