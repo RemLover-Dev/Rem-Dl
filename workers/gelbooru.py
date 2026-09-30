@@ -6,6 +6,32 @@ from core.database import DatabaseManager, DATABASE_DIR
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gelbooru_tag_types.json")
 
+RATING_CODE_MAP = {"g": "general", "s": "sensitive", "q": "questionable", "e": "explicit"}
+RATING_LABEL_MAP = {"general": "Safe", "sensitive": "Sensitive", "questionable": "Questionable", "explicit": "NSFW"}
+_CODE_OF = {"rating:g": "g", "rating:s": "s", "rating:q": "q", "rating:e": "e",
+            "rating:general": "g", "rating:sensitive": "s",
+            "rating:questionable": "q", "rating:explicit": "e"}
+
+
+def build_query(tag, rating):
+    """One AND query string for the dapi `tags` param plus the allowed-rating
+    set. Shared by the downloader and the tag watcher — single source of
+    truth for how tags+ratings serialize."""
+    original_tag = tag.strip().lower()
+    codes = [_CODE_OF[p] for p in (rating or "").split() if p in _CODE_OF]
+    rating_allowed = {RATING_CODE_MAP[c] for c in codes}
+    # ponytail: gelbooru ANDs rating tags (g+s returns count 0, no OR keyword),
+    # so a multi-rating subset is expressed by negating the complement instead
+    api_tag = original_tag
+    if codes and len(codes) < len(RATING_CODE_MAP):
+        if len(codes) == 1:
+            api_tag = f"{original_tag} rating:{RATING_CODE_MAP[codes[0]]}".strip()
+        else:
+            neg = " ".join(f"-rating:{RATING_CODE_MAP[c]}" for c in RATING_CODE_MAP if c not in codes)
+            api_tag = f"{original_tag} {neg}".strip()
+    rating_display = ", ".join(RATING_LABEL_MAP[RATING_CODE_MAP[c]] for c in codes)
+    return api_tag, rating_allowed, rating_display
+
 
 class GelbooruWorker(BaseWorker):
     def __init__(self, tag, amount, rating, exclusions, net_config):
@@ -13,26 +39,9 @@ class GelbooruWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
         self.exclusions = exclusions
-
-        code_of = {"rating:g": "g", "rating:s": "s", "rating:q": "q", "rating:e": "e",
-                   "rating:general": "g", "rating:sensitive": "s",
-                   "rating:questionable": "q", "rating:explicit": "e"}
-        self.rating_code_map = {"g": "general", "s": "sensitive", "q": "questionable", "e": "explicit"}
-        self.rating_label_map = {"general": "Safe", "sensitive": "Sensitive", "questionable": "Questionable", "explicit": "NSFW"}
-        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
-        self.rating_allowed = {self.rating_code_map[c] for c in codes}
-
-        # ponytail: gelbooru ANDs rating tags (g+s returns count 0, no OR keyword),
-        # so a multi-rating subset is expressed by negating the complement instead
-        self.api_tag = self.original_tag
-        if codes and len(codes) < len(self.rating_code_map):
-            if len(codes) == 1:
-                self.api_tag = f"{self.original_tag} rating:{self.rating_code_map[codes[0]]}".strip()
-            else:
-                neg = " ".join(f"-rating:{self.rating_code_map[c]}" for c in self.rating_code_map if c not in codes)
-                self.api_tag = f"{self.original_tag} {neg}".strip()
-
-        self.rating_display = ", ".join(self.rating_label_map[self.rating_code_map[c]] for c in codes)
+        self.rating_code_map = RATING_CODE_MAP
+        self.rating_label_map = RATING_LABEL_MAP
+        self.api_tag, self.rating_allowed, self.rating_display = build_query(self.original_tag, rating)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         self.safe_tag_name = sanitize_path_component(clean_tag, fallback="gelbooru")

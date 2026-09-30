@@ -5,17 +5,15 @@ timeline (/v2/illust/follow), no per-artist polling. gallery-dl remains
 the downloader; this only records what's new so the UI can notify.
 """
 
-import os
 import threading
 import time
 from urllib.parse import unquote, parse_qs
 
 import requests
 
-from core.database import DatabaseManager, DATABASE_DIR
+from core import notifications
+from core.database import DatabaseManager
 
-NOTIF_FILE = os.path.join(DATABASE_DIR, "pixiv_notifications.json")
-MAX_ITEMS = 500
 FOLLOW_ENDPOINT = "/v2/illust/follow"
 
 STATE = {
@@ -29,7 +27,6 @@ STATE = {
 
 _check_lock = threading.Lock()   # held for a whole check (may sit in rate-limit waits)
 _state_lock = threading.Lock()   # guards pending_toast only — GET must never block
-_file_lock = threading.Lock()    # read-modify-write on the store file
 _wakeup = threading.Event()
 _emit_fn = None
 _get_config = lambda: {}
@@ -59,44 +56,26 @@ def _log_token_hint():
 
 
 def _load_raw():
-    raw = DatabaseManager.load_json(NOTIF_FILE)
-    if not isinstance(raw, dict):
-        raw = {}
-    raw.setdefault("items", [])
-    raw.setdefault("seen", [])  # ids cleared from the list — never re-notify
-    # persisted wall-clock stamp: the 1-2h timer keeps counting while the
-    # app or PC is off; on open the watcher scans if the interval has elapsed
-    raw.setdefault("last_check", 0)
-    return raw
-
-
-def _save_raw(raw):
-    DatabaseManager.save_json(NOTIF_FILE, raw)
+    """Legacy-shaped view kept for callers/tests; storage lives in
+    core.notifications, source-scoped to pixiv."""
+    return {
+        "items": notifications.items("pixiv"),
+        "seen": notifications.seen_keys("pixiv"),
+        "last_check": notifications.last_check("pixiv"),
+    }
 
 
 def load_items():
-    with _file_lock:
-        return _load_raw()["items"]
-
-
-def save_items(items):
-    with _file_lock:
-        raw = _load_raw()
-        raw["items"] = items
-        _save_raw(raw)
+    return notifications.items("pixiv")
 
 
 def _stamp_check(ts):
     STATE["last_check"] = ts
-    with _file_lock:
-        raw = _load_raw()
-        raw["last_check"] = ts
-        _save_raw(raw)
+    notifications.stamp_check("pixiv", ts)
 
 
 def last_check_ts():
-    with _file_lock:
-        return _load_raw()["last_check"]
+    return notifications.last_check("pixiv")
 
 
 def seconds_until_due():
@@ -125,55 +104,30 @@ def entry_from_work(w):
 
 
 def known_ids():
-    with _file_lock:
-        raw = _load_raw()
-        return {i.get("work_id") for i in raw["items"]} | set(raw["seen"])
+    return notifications.known("pixiv")
 
 
 def ingest(works):
     """works: raw illust dicts, newest first. Returns the new entries."""
-    with _file_lock:
-        raw = _load_raw()
-        known = {i.get("work_id") for i in raw["items"]} | set(raw["seen"])
-        fresh = []
-        for w in works:
-            e = entry_from_work(w)
-            if not e["work_id"] or e["work_id"] in known:
-                continue
-            known.add(e["work_id"])
-            fresh.append(e)
-        if fresh:
-            # newest-first feed, newest-first store; bound size (ponytail: after
-            # 500 newer works an old id can be re-discovered as "new" — harmless)
-            raw["items"] = (fresh + raw["items"])[:MAX_ITEMS]
-            _save_raw(raw)
-        return fresh
+    entries = []
+    for w in works:
+        e = entry_from_work(w)
+        if e["work_id"]:
+            e["external_id"] = e["work_id"]
+            entries.append(e)
+    return notifications.ingest("pixiv", entries)
 
 
 def clear_items():
     """Drop all notifications but remember their ids, so the next scan
     doesn't re-notify the same works."""
-    with _file_lock:
-        raw = _load_raw()
-        ids = [i.get("work_id") for i in raw["items"] if i.get("work_id")]
-        # ponytail: seen only grows on clear, bounded at 2000 — an evicted id
-        # could re-notify once, but only after 2000 newer works arrive first
-        raw["seen"] = (ids + raw["seen"])[:2000]
-        raw["items"] = []
-        _save_raw(raw)
+    notifications.clear("pixiv")
 
 
 def mark_read(ids=None):
-    # one lock span: load_items()+save_items() as two sections let an
-    # ingest() landing in between be clobbered by this stale write-back
-    with _file_lock:
-        raw = _load_raw()
-        items = raw["items"]
-        for i in items:
-            if ids is None or i.get("work_id") in ids:
-                i["read"] = True
-        _save_raw(raw)
-    return unread_count(items)
+    # dedup check + write span one lock inside notifications: an ingest()
+    # landing in between must not be clobbered by a stale write-back
+    return notifications.mark_read("pixiv", ids)
 
 
 def interval_minutes():
@@ -259,7 +213,12 @@ def _notify(new_count):
     delivered = False
     if new_count and _emit_fn:
         try:
-            _emit_fn({"new": new_count, "unread": unread_count()})
+            _emit_fn({
+                "source": "pixiv",
+                "new": new_count,
+                "unread": notifications.unread(),
+                "unread_by_source": notifications.unread_by_source(),
+            })
             delivered = True
         except Exception:
             pass

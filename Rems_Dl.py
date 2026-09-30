@@ -40,7 +40,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from core.database import DatabaseManager, SettingsManager
-from core import pixiv_notify
+from core import notifications, pixiv_notify, watchers
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1978,6 +1978,91 @@ def pixiv_notifications_clear():
     return jsonify({"unread": 0, "items": []})
 
 
+# ==========================================
+# === MULTI-SOURCE NOTIFICATIONS ===
+# ==========================================
+# status providers per source — a registry lookup, not scattered if/elif
+NOTIF_STATUS = {
+    "pixiv": lambda: {
+        "last_check": pixiv_notify.last_check_ts(),
+        "error": pixiv_notify.STATE["error"],
+        "checking": pixiv_notify.STATE["checking"],
+        "interval_minutes": pixiv_notify.interval_minutes(),
+        "due_in": pixiv_notify.seconds_until_due(),
+        "pending_toast": pixiv_notify.take_pending_toast(),
+    },
+}
+
+
+@app.route("/api/notifications", methods=["GET"])
+def notifications_get():
+    source = request.args.get("source") or None
+    return jsonify({
+        # items only when a page asks for them — the startup dot fetch
+        # just wants the counts
+        "items": notifications.items(source) if source else [],
+        "unread": notifications.unread(),
+        "unread_by_source": notifications.unread_by_source(),
+        "status": (NOTIF_STATUS.get(source) or (lambda: {}))(),
+    })
+
+
+@app.route("/api/notifications/read", methods=["POST"])
+def notifications_read():
+    data = request.json or {}
+    source = data.get("source") or ""
+    if not source:
+        return jsonify({"error": "source required"}), 400
+    keys = data.get("keys") or data.get("ids")
+    unread = notifications.mark_read(source, keys if keys else None)
+    return jsonify({"unread": unread,
+                    "unread_by_source": notifications.unread_by_source()})
+
+
+@app.route("/api/notifications/clear", methods=["POST"])
+def notifications_clear():
+    data = request.json or {}
+    source = data.get("source") or ""
+    if not source:
+        return jsonify({"error": "source required"}), 400
+    notifications.clear(source)
+    return jsonify({"unread": notifications.unread(),
+                    "unread_by_source": notifications.unread_by_source()})
+
+
+# ==========================================
+# === TAG WATCHERS ===
+# ==========================================
+@app.route("/api/watchers", methods=["GET"])
+def watchers_list():
+    source = request.args.get("source") or None
+    return jsonify({"watchers": watchers.list_watchers(source)})
+
+
+@app.route("/api/watchers", methods=["POST"])
+def watchers_create():
+    w, err = watchers.create(request.json or {})
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"watcher": w})
+
+
+@app.route("/api/watchers/<wid>", methods=["POST"])
+def watchers_update(wid):
+    w, err = watchers.update(wid, request.json or {})
+    if err:
+        code = 404 if err == "watcher not found" else 400
+        return jsonify({"error": err}), code
+    return jsonify({"watcher": w})
+
+
+@app.route("/api/watchers/<wid>", methods=["DELETE"])
+def watchers_delete(wid):
+    if not watchers.remove(wid):
+        return jsonify({"error": "watcher not found"}), 404
+    return jsonify({"success": True})
+
+
 _PIXIV_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
 
 @app.route("/api/pixiv/notif_thumb")
@@ -2327,8 +2412,12 @@ if __name__ == "__main__":
             "refresh_token": (settings.load_api_settings().get("pixiv_refresh_token")
                               or os.getenv("PIXIV_REFRESH_TOKEN", "")),
         },
-        emit_fn=lambda payload: socketio.emit("pixiv_notifs", payload),
+        emit_fn=lambda payload: socketio.emit("notifications", payload),
         log_fn=lambda msg: log_msg("pixiv", msg),
+    )
+    watchers.start_scheduler(
+        emit_fn=lambda payload: socketio.emit("notifications", payload),
+        log_fn=lambda msg: log_msg("watcher", msg),
     )
 
     is_headless = (

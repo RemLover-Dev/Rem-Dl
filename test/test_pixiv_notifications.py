@@ -11,6 +11,7 @@ _ENV_KEYS = [
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
 import Rems_Dl  # noqa: E402
+import core.notifications as notifications  # noqa: E402
 import core.pixiv_notify as pn  # noqa: E402
 
 for _k, _v in _env_before.items():
@@ -32,7 +33,9 @@ def _work(wid, user=7, title=None, name="Artist"):
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.setattr(pn, "NOTIF_FILE", str(tmp_path / "pixiv_notifications.json"))
+    monkeypatch.setattr(notifications, "NOTIF_FILE", str(tmp_path / "notifications.json"))
+    monkeypatch.setattr(notifications, "LEGACY_PIXIV_FILE", str(tmp_path / "legacy_missing.json"))
+    monkeypatch.setattr(notifications, "_migration_done", True)
     pn.STATE.update({"error": "", "checking": False, "last_new": 0, "pending_toast": 0})
     return tmp_path
 

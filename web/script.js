@@ -82,6 +82,32 @@ document.addEventListener("focusin", e => { if (e.target && e.target.matches('in
 // ponytail: the mouseup ending the click clears the select-all — swallow it only while fresh, so later drag-selects still work
 document.addEventListener("mouseup", e => { if (e.target !== _selBox) { _selBox = null; return; } if (Date.now() - _selAt < 1000) e.preventDefault(); _selBox = null; });
 
+// Persian / Arabic-Indic digits -> ASCII. Replacement is 1:1 in length, so
+// caret offsets never move.
+function faToEnDigits(s) {
+    return String(s)
+        .replace(/[\u06F0-\u06F9]/g, d => String.fromCharCode(d.charCodeAt(0) - 0x06F0 + 0x30))
+        .replace(/[\u0660-\u0669]/g, d => String.fromCharCode(d.charCodeAt(0) - 0x0660 + 0x30));
+}
+const _FA_DIGIT_RE = /[\u06F0-\u06F9\u0660-\u0669]/;
+// capture phase: convert before the element's own input handlers run, so
+// autosuggest/search handlers never see the raw Persian digits
+document.addEventListener("input", function (e) {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT" || !el.value || !_FA_DIGIT_RE.test(el.value)) return;
+    el.value = faToEnDigits(el.value);
+    try { el.setSelectionRange(el.selectionStart, el.selectionEnd); } catch (_) {}
+}, true);
+// number inputs drop non-ASCII digits before they ever land — catch at keydown
+document.addEventListener("keydown", function (e) {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT" || el.type !== "number" || !e.key || !_FA_DIGIT_RE.test(e.key)) return;
+    e.preventDefault();
+    try {
+        if (!document.execCommand("insertText", false, faToEnDigits(e.key))) el.value = (el.value || "") + faToEnDigits(e.key);
+    } catch (_) { el.value = (el.value || "") + faToEnDigits(e.key); }
+});
+
 // Streamline heart (web/icons/heart.svg): one asset, both states via paint
 const HEART_PATH = "M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z";
 function heartIcon(filled) {
@@ -714,6 +740,146 @@ function renderGelbooruTags() {
         let safeT = escJs(t);
         return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
     }).join('');
+}
+
+// --- Gelbooru tag watcher (chips mirror the downloader; ratings reuse the shared dropdown machinery) ---
+let watcherTags = [];
+let gelWatchers = [];
+let editingWatcherId = null;
+
+function addWatcherTag() {
+    let input = document.getElementById("watcherTag");
+    if (!input) return;
+    let added = false;
+    danTagForRequest('watcherTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+        if (!watcherTags.includes(val)) { watcherTags.push(val); added = true; }
+    });
+    if (added) { input.value = ""; delete input.dataset.raw; renderWatcherTags(); }
+}
+function removeWatcherTag(tag) {
+    watcherTags = watcherTags.filter(t => t !== tag);
+    renderWatcherTags();
+}
+function renderWatcherTags() {
+    let container = document.getElementById("watcherTagsContainer");
+    if (!container) return;
+    container.innerHTML = watcherTags.map(function(t, idx) {
+        const isNeg = t.startsWith('-');
+        const text = isNeg ? t.substring(1) : t;
+        const cls = isNeg ? 'warning' : (idx === 0 ? 'main' : 'neutral');
+        const icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
+        const safeT = escJs(t);
+        return '<span class="v-tag ' + cls + '" onclick="removeWatcherTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+    }).join('');
+}
+function onWatcherRatingChange() { onMultiRatingChange('watcherRatingDropdown', 'watcherGelRating'); }
+
+async function loadGelWatchers() {
+    try {
+        const r = await fetch("/api/watchers?source=gelbooru");
+        const d = await r.json();
+        gelWatchers = d.watchers || [];
+        renderGelWatcherList();
+    } catch (e) { console.error("watchers load failed", e); }
+}
+
+function relTime(ts) {
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 90) return "just now";
+    if (s < 3600) return Math.round(s / 60) + " min ago";
+    if (s < 86400) return Math.round(s / 3600) + " h ago";
+    return Math.round(s / 86400) + " d ago";
+}
+
+function renderGelWatcherList() {
+    const box = document.getElementById("gelWatcherList");
+    if (!box) return;
+    if (!gelWatchers.length) {
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">No watchers yet — add tags above to get notified about new matching posts.</div>`;
+        return;
+    }
+    box.innerHTML = gelWatchers.map(w => {
+        const ratings = (w.ratings || []).map(r => (GEL_RATING_LABEL[r.split(":")[1]] || r)).join(", ") || "All ratings";
+        const last = w.last_checked_at ? relTime(w.last_checked_at) : "never";
+        const state = w.enabled ? "" : " (disabled)";
+        const err = w.error ? `<div style="color:#e08585; font-size:11px;">⚠ ${escapeHtml(w.error)}</div>` : "";
+        const pending = !w.initialized ? `<div style="opacity:0.6; font-size:11px;">first check establishes a baseline (no notifications)</div>` : "";
+        return `<div style="border:1px solid var(--border-color); border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div style="flex:1; min-width:200px;">
+                <div style="font-size:13px; font-weight:bold;">${escapeHtml(w.tags.join(" "))}${state}</div>
+                <div style="font-size:11px; opacity:0.7;">${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
+                ${err}${pending}
+            </div>
+            <button class="action-btn" onclick="editGelWatcher('${w.watcher_id}')">Edit</button>
+            <button class="action-btn" onclick="toggleGelWatcher('${w.watcher_id}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
+            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')">✕</button>
+        </div>`;
+    }).join("");
+}
+
+async function saveGelWatcher() {
+    if (!watcherTags.length) { showToast("Add at least one tag first", { warn: true }); return; }
+    const body = {
+        source: "gelbooru",
+        tags: watcherTags,
+        ratings: (document.getElementById("watcherGelRating").value || "").split(/\s+/).filter(Boolean),
+        interval_minutes: parseInt(document.getElementById("watcherInterval").value, 10) || 5,
+    };
+    const url = editingWatcherId ? "/api/watchers/" + editingWatcherId : "/api/watchers";
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || "Failed to save watcher", { warn: true }); return; }
+    showToast(editingWatcherId ? "Watcher updated — fresh baseline on next check" : "Watcher added — baseline on first check");
+    cancelGelWatcherEdit();
+    await loadGelWatchers();
+}
+
+function editGelWatcher(id) {
+    const w = gelWatchers.find(x => x.watcher_id === id);
+    if (!w) return;
+    editingWatcherId = id;
+    watcherTags = (w.tags || []).slice();
+    renderWatcherTags();
+    const hidden = document.getElementById("watcherGelRating");
+    hidden.value = (w.ratings || []).join(" ");
+    hidden.dispatchEvent(new Event("change", { bubbles: true })); // syncs checkboxes + label
+    const iv = document.getElementById("watcherInterval");
+    const ivVal = String(w.interval_minutes || 5);
+    if (iv && ![...iv.options].some(o => o.value === ivVal)) {
+        const opt = document.createElement("option"); // custom values keep their own menu entry
+        opt.value = ivVal; opt.textContent = ivVal + " min";
+        iv.appendChild(opt);
+    }
+    if (iv) setSelectValue(iv, ivVal);
+    const sb = document.getElementById("watcherSaveBtn");
+    if (sb) sb.textContent = "Update Watcher";
+    const cb = document.getElementById("watcherCancelBtn");
+    if (cb) cb.style.display = "inline-block";
+}
+
+function cancelGelWatcherEdit() {
+    editingWatcherId = null;
+    watcherTags = [];
+    renderWatcherTags();
+    const input = document.getElementById("watcherTag");
+    if (input) { input.value = ""; delete input.dataset.raw; }
+    const hidden = document.getElementById("watcherGelRating");
+    if (hidden) { hidden.value = ""; hidden.dispatchEvent(new Event("change", { bubbles: true })); }
+    const sb = document.getElementById("watcherSaveBtn");
+    if (sb) sb.textContent = "Add Watcher";
+    const cb = document.getElementById("watcherCancelBtn");
+    if (cb) cb.style.display = "none";
+}
+
+async function toggleGelWatcher(id, enabled) {
+    await fetch("/api/watchers/" + id, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: enabled }) });
+    await loadGelWatchers();
+}
+
+async function deleteGelWatcher(id) {
+    if (!await customConfirm("Delete this watcher? Its notifications stay in the Notifications tab.", "Delete")) return;
+    await fetch("/api/watchers/" + id, { method: "DELETE" });
+    await loadGelWatchers();
 }
 
 // --- E-Shuushuu interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
@@ -1883,7 +2049,7 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
                             dropdown.style.display = "none";
                             input.focus();
                             // ponytail: chip tabs add on pick — other tabs keep fill-then-confirm
-                            var _chipFn = { 'gelbooruTag': 'addGelbooruTag', 'gsbooruTag': 'addGsbooruTag', 'konaTag': 'addKonaTag', 'nekosiaTag': 'addNekosiaTag', 'safeTag': 'addSafeTag', 'sankakuTag': 'addSankakuTag', 'yandeTag': 'addYandeTag' }[inputId];
+                            var _chipFn = { 'gelbooruTag': 'addGelbooruTag', 'watcherTag': 'addWatcherTag', 'gsbooruTag': 'addGsbooruTag', 'konaTag': 'addKonaTag', 'nekosiaTag': 'addNekosiaTag', 'safeTag': 'addSafeTag', 'sankakuTag': 'addSankakuTag', 'yandeTag': 'addYandeTag' }[inputId];
                             if (_chipFn && typeof window[_chipFn] === 'function') window[_chipFn]();
                         };
                         dropdown.appendChild(div);
@@ -1955,6 +2121,7 @@ document.addEventListener("DOMContentLoaded", function() {
     setupAutosuggest("nekosapiTag", "nekosapiAutosuggest", "/api/tags/nekosapi", cleanTagDisplay);
     setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay);
     setupAutosuggest("gelbooruTag", "gelbooruAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
+    setupAutosuggest("watcherTag", "watcherAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
     setupAutosuggest("konaTag", "konaAutosuggest", "/api/tags/kona", cleanTagDisplay);
     setupAutosuggest("safeTag", "safeAutosuggest", "/api/tags/safe", cleanTagDisplay);
     setupAutosuggest("sankakuTag", "sankakuAutosuggest", "/api/tags/sankaku", cleanTagDisplay);
@@ -1963,8 +2130,8 @@ document.addEventListener("DOMContentLoaded", function() {
 
 
     document.addEventListener("click", function(e) {
-        let dropdowns = ["eshuushuuAutosuggest", "nekosapiAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
-        let inputs = ["eshuushuuTag", "nekosapiTag", "nekosiaTag", "gelbooruTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
+        let dropdowns = ["eshuushuuAutosuggest", "nekosapiAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "watcherAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
+        let inputs = ["eshuushuuTag", "nekosapiTag", "nekosiaTag", "gelbooruTag", "watcherTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
         for (let i = 0; i < dropdowns.length; i++) {
             let dp = document.getElementById(dropdowns[i]);
             let inp = document.getElementById(inputs[i]);
@@ -1990,9 +2157,12 @@ socket.on("worker_finished", function (data) {
     else updateProgressBar(data.worker, `Task finished. No new images to download${dup}.`);
 });
 
-socket.on("pixiv_notifs", function (data) {
+socket.on("notifications", function (data) {
     setNotifDot((data && data.unread) || 0);
-    if (data && data.new > 0) showToast(`${data.new} new artwork${data.new === 1 ? "" : "s"} from artists you follow`);
+    if (data && data.new > 0) {
+        const src = NOTIF_SOURCES[data.source];
+        showToast(src && src.toast ? src.toast(data.new) : `${data.new} new notification${data.new === 1 ? "" : "s"}`);
+    }
     const tab = document.getElementById("Notifications");
     if (tab && tab.style.display !== "none") loadNotifications();
 });
@@ -2440,37 +2610,87 @@ function openTab(tabName, btn) {
     // must refetch too, or favourites toggled in the gallery stay stale here
     if (tabName === "History") loadTagsData();
     if (tabName === "Notifications") loadNotifications();
+    if (tabName === "Gelbooru") loadGelWatchers();
 }
 
-// --- Pixiv Following Notifications ---
+// --- Multi-source notifications ---
 let notifItems = [];
+let notifSource = null;
 const NOTIF_FALLBACK = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><rect x='30' y='34' width='40' height='32' rx='4' fill='none' stroke='%23888888' stroke-width='4'/><circle cx='42' cy='46' r='4' fill='%23888888'/><path d='M34 62l12-12 8 8 6-6 6 6z' fill='%23888888'/></svg>";
+const GEL_RATING_LABEL = { g: "Safe", s: "Sensitive", q: "Questionable", e: "NSFW" };
+
+// Source registry: dropdown options, unread counts, empty text, card
+// markup and the ⚡ flash all come from here — adding a source means
+// adding one entry, not threading if/else through the UI.
+const NOTIF_SOURCES = {
+    gelbooru: {
+        name: "Gelbooru",
+        empty: "No watcher notifications yet — matching posts from your Gelbooru watchers will appear here.",
+        toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
+        flash: n => gelbooruGotoFlash(n),
+        card: (n, idx) => gelbooruNotifCard(n, idx),
+    },
+    pixiv: {
+        name: "Pixiv",
+        empty: "No notifications yet — new works from the artists you follow will appear here.",
+        toast: n => `${n} new artwork${n === 1 ? "" : "s"} from artists you follow`,
+        flash: n => pixivGotoArtist(String(n.artist_id || "").replace(/[^0-9]/g, "")),
+        card: (n, idx) => pixivNotifCard(n, idx),
+        controls: true, // interval + Check now row belongs to the pixiv watcher
+    },
+};
+
+function notifSourceId() {
+    return notifSource || (typeof uiConfig !== "undefined" && uiConfig.notif_source) || "pixiv";
+}
 
 function setNotifDot(n) {
     const d = document.getElementById("notifDot");
     if (d) d.style.display = n > 0 ? "inline-block" : "none";
 }
 // startup: show the dot for unread that arrived before this page load
-fetch("/api/pixiv/notifications").then(r => r.json()).then(d => setNotifDot((d && d.unread) || 0)).catch(() => {});
+fetch("/api/notifications").then(r => r.json()).then(d => setNotifDot((d && d.unread) || 0)).catch(() => {});
+
+function onNotifSourceChange(sel) {
+    if (sel.value === notifSourceId()) return; // programmatic setSelectValue fires change too
+    notifSource = sel.value;
+    uiConfig.notif_source = notifSource;
+    persistUiConfig();
+    loadNotifications();
+}
+
+function renderNotifSourceSelect(counts) {
+    const sel = document.getElementById("notifSource");
+    if (!sel) return;
+    sel.innerHTML = Object.keys(NOTIF_SOURCES).map(id =>
+        `<option value="${id}">${NOTIF_SOURCES[id].name} (${(counts && counts[id]) || 0})</option>`).join("");
+    setSelectValue(sel, notifSourceId());
+}
 
 async function loadNotifications() {
     try {
-        const resp = await fetch("/api/pixiv/notifications");
+        const source = notifSourceId();
+        const resp = await fetch("/api/notifications?source=" + encodeURIComponent(source));
         const data = await resp.json();
         notifItems = data.items || [];
+        renderNotifSourceSelect(data.unread_by_source);
         renderNotifications();
         setNotifDot(data.unread || 0);
+        const src = NOTIF_SOURCES[source];
+        const controls = document.getElementById("notifPixivControls");
+        if (controls) controls.style.display = (src && src.controls) ? "inline-flex" : "none";
+        const status = data.status || {};
         const iv = document.getElementById("notifInterval");
-        if (iv && document.activeElement !== iv) iv.value = data.interval_minutes || 90;
-        updateNotifStatus(data);
-        if (data.pending_toast > 0) {
-            const n = data.pending_toast;
-            showToast(`${n} new artwork${n === 1 ? "" : "s"} from artists you follow`);
+        if (iv && document.activeElement !== iv && status.interval_minutes) iv.value = status.interval_minutes;
+        updateNotifStatus(status);
+        if (status.pending_toast > 0) {
+            showToast(src && src.toast ? src.toast(status.pending_toast) : `${status.pending_toast} new notification${status.pending_toast === 1 ? "" : "s"}`);
         }
-        // viewing the tab = reading
+        // viewing a page = reading that source (other sources stay lit on the bell)
         if (notifItems.some(i => !i.read)) {
-            await fetch("/api/pixiv/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-            setNotifDot(0);
+            const r = await fetch("/api/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: source }) });
+            const rd = await r.json();
+            setNotifDot((rd && rd.unread) || 0);
         }
     } catch (e) { console.error("Notifications load failed", e); }
 }
@@ -2485,31 +2705,68 @@ function updateNotifStatus(d) {
     el.textContent = parts.join("  ·  ");
 }
 
-function renderNotifications() {
-    const box = document.getElementById("notifList");
-    if (!box) return;
-    if (!notifItems.length) {
-        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">No notifications yet — new works from the artists you follow will appear here.</div>`;
-        return;
-    }
-    box.innerHTML = notifItems.map(n => {
-        const title = escapeHtml(n.title || "Untitled");
-        const artist = escapeHtml(n.artist_name || "Unknown artist");
-        const date = String(n.create_date || "").replace("T", " ").slice(0, 16);
-        const thumb = n.thumb ? `/api/pixiv/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
-        const artistId = String(n.artist_id || "").replace(/[^0-9]/g, "");
-        return `
+function notifCardShell(n, idx, body, flashTitle) {
+    return `
         <div class="image-card-log" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+            ${body}
+            <button onclick="flashNotif(${idx})" title="${flashTitle}" style="position: absolute; top: 10px; right: 10px; padding: 5px 8px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color); border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button>
+        </div>`;
+}
+
+function pixivNotifCard(n, idx) {
+    const title = escapeHtml(n.title || "Untitled");
+    const artist = escapeHtml(n.artist_name || "Unknown artist");
+    const date = String(n.create_date || "").replace("T", " ").slice(0, 16);
+    const thumb = n.thumb ? `/api/pixiv/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
+    return notifCardShell(n, idx, `
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
                 <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
                 <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
                 <div style="font-size: 12px; opacity: 0.75;">${artist}${date ? " · " + date : ""}</div>
+            </div>`, "Open this artist in the Pixiv downloader");
+}
+
+function gelbooruNotifCard(n, idx) {
+    const m = n.metadata || {};
+    const title = escapeHtml(n.title || "New matching Gelbooru post");
+    const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
+    const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
+    const thumb = n.thumb ? escapeHtml(n.thumb) : "";
+    return notifCardShell(n, idx, `
+            <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
+                <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
             </div>
-            <button onclick="pixivGotoArtist('${artistId}')" title="Open this artist in the Pixiv downloader" style="position: absolute; top: 10px; right: 10px; padding: 5px 8px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color); border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button>
-        </div>`;
+            <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
+                <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
+                <div style="font-size: 12px; opacity: 0.75;">New matching Gelbooru post · ${rating}${date ? " · " + date : ""}</div>
+            </div>`, "Populate the Gelbooru downloader with this watcher's tags");
+}
+
+function renderNotifications() {
+    const box = document.getElementById("notifList");
+    if (!box) return;
+    const src = NOTIF_SOURCES[notifSourceId()];
+    if (!notifItems.length) {
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">${escapeHtml((src && src.empty) || "No notifications yet.")}</div>`;
+        return;
+    }
+    box.innerHTML = notifItems.map((n, idx) => {
+        const s = NOTIF_SOURCES[n.source];
+        return (s && s.card ? s.card : pixivNotifCard)(n, idx);
     }).join("");
+}
+
+function flashNotif(idx) {
+    const n = notifItems[idx];
+    const s = n && NOTIF_SOURCES[n.source];
+    if (n && s && s.flash) s.flash(n);
+}
+
+function gelbooruGotoFlash(n) {
+    const m = n.metadata || {};
+    jumpToSite("gelbooru", (m.tags || []).join(" "), (m.ratings || []).join(" "));
 }
 
 function pixivGotoArtist(artistId) {
@@ -2541,8 +2798,9 @@ function checkPixivNow() {
 }
 
 async function clearNotifications() {
-    if (!await customConfirm("Clear all notifications? Works you've already seen won't reappear.", "Clear")) return;
-    await fetch("/api/pixiv/notifications/clear", { method: "POST" });
+    const src = NOTIF_SOURCES[notifSourceId()];
+    if (!await customConfirm(`Clear these ${(src && src.name) || ""} notifications? Posts you've already seen won't reappear.`, "Clear")) return;
+    await fetch("/api/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: notifSourceId() }) });
     await loadNotifications();
 }
 
@@ -3637,6 +3895,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'ratingDropdown') onRatingChange();
     else if (menu.id === 'typeDropdown') onTypeChange();
     else if (menu.id === 'gelRatingDropdown') onGelRatingChange();
+    else if (menu.id === 'watcherRatingDropdown') onWatcherRatingChange();
     else if (menu.id === 'danRatingDropdown') onDanRatingChange();
     else if (menu.id === 'gsRatingDropdown') onGsRatingChange();
     else if (menu.id === 'konaRatingDropdown') onKonaRatingChange();
@@ -3687,7 +3946,7 @@ function onWallhavenPurityChange() {
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    [['gelbooruRating', 'gelRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown']].forEach(function (pair) {
+    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown']].forEach(function (pair) {
         const hidden = document.getElementById(pair[0]);
         if (!hidden) return;
         hidden.addEventListener('change', function () {
@@ -3945,6 +4204,10 @@ function renderGallery() {
     const grid = document.getElementById("galleryGrid");
     const pagination = document.getElementById("galleryPagination");
     if (!grid) return;
+    // keep the page-jump input alive across background re-renders (downloads
+    // fire update_history -> loadGallery while the user is typing a page no.)
+    const jumpFocused = document.activeElement && document.activeElement.classList
+        && document.activeElement.classList.contains('gallery-page-jump');
     const blurBtn = document.getElementById("galleryBlurBtn");
     if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
 
@@ -3985,7 +4248,7 @@ function renderGallery() {
             <div style="font-size: 13px; opacity: 0.65; max-width: 480px; line-height: 1.5;">${safeDetail}</div>
             <button class="action-btn" onclick="resetGalleryFilters()" style="margin-top: 8px; padding: 6px 18px; font-size: 13px; cursor: pointer;">Reset All Filters</button>
         </div>`;
-        pagination.innerHTML = '';
+        if (!jumpFocused) pagination.innerHTML = '';
         return;
     }
     let html = '';
@@ -4023,7 +4286,7 @@ function renderGallery() {
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
     grid.innerHTML = html;
     const countPill = `<span class="gallery-count-pill"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg>${total}</span>`;
-    if (total_pages <= 1) { pagination.innerHTML = countPill; return; }
+    if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; return; }
     let pHtml = '';
     if (page > 2) pHtml += '<button onclick="loadGallery(1)">«</button>';
     if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+')">‹</button>';
@@ -4035,7 +4298,7 @@ function renderGallery() {
     if (page < total_pages) pHtml += '<button onclick="loadGallery('+(page+1)+')">›</button>';
     if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+')">»</button>';
     pHtml += countPill;
-    pagination.innerHTML = pHtml;
+    if (!jumpFocused) pagination.innerHTML = pHtml;
     updateSelectBar();
 }
 function paginationRange(current, total) {
@@ -4060,15 +4323,18 @@ function pageJumpInput(btn) {
     function go() {
         if (done) return; done = true;
         // ponytail: digits only — negatives and junk never survive the input filter
-        const n = parseInt(String(input.value).replace(/\D/g, ''), 10);
+        const n = parseInt(String(faToEnDigits(input.value)).replace(/\D/g, ''), 10);
+        // blur first: renderGallery skips its rebuild while the jump input is
+        // focused, so let go of it before reloading
+        input.blur();
         if (!isNaN(n)) loadGallery(Math.min(Math.max(n, 1), total));
         else renderGallery();
     }
-    input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, ''); });
+    input.addEventListener('input', () => { input.value = faToEnDigits(input.value).replace(/\D/g, ''); });
     input.addEventListener('keydown', e => {
         e.stopPropagation();
         if (e.key === 'Enter') go();
-        else if (e.key === 'Escape') { done = true; renderGallery(); }
+        else if (e.key === 'Escape') { done = true; input.blur(); renderGallery(); }
     });
     input.addEventListener('blur', go);
 }
