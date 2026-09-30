@@ -2,6 +2,9 @@ import os, hashlib
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 from core.shared import TAG_TYPE_MAP
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "konachan_tag_types.json")
 
 
 class KonachanWorker(BaseWorker):
@@ -10,7 +13,9 @@ class KonachanWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
         self.exclusions = exclusions
-        self.tag_cache = {}
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
         code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
@@ -50,22 +55,34 @@ class KonachanWorker(BaseWorker):
         sem = asyncio.Semaphore(4)
         async def query_one(tag_name):
             async with sem:
-                try:
-                    resp = await self.session.get(
-                        "https://konachan.com/tag.json",
-                        params={"name": tag_name, "order": "count", "limit": 50}
-                    )
-                    if resp.status == 200:
-                        tags = await resp.json() or []
-                        # ponytail: scan every row for the exact tag
-                        match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
-                        if match is not None:
-                            self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                except Exception:
-                    pass
-                # ponytail: failures/no-matches stay uncached (retried next run)
+                # ponytail: 3 attempts — a transient failure must not leave a
+                # tag miscategorized for this whole run
+                for attempt in range(3):
+                    fetched = False
+                    try:
+                        resp = await self.session.get(
+                            "https://konachan.com/tag.json",
+                            params={"name": tag_name, "order": "count", "limit": 50}
+                        )
+                        if resp.status == 200:
+                            tags = await resp.json() or []
+                            # ponytail: scan every row for the exact tag
+                            match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
+                            if match is not None:
+                                self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                            fetched = True  # 200 processed: match OR genuinely absent
+                    except Exception:
+                        fetched = False
+                    if fetched:
+                        break
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                # ponytail: a tag that never comes back stays uncached —
+                # caching a failure would mislabel it forever; next run retries
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
+        # ponytail: concurrent workers may overwrite each other's save —
+        # worst case those tags refetch on a later run
+        DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
 
     def _categorize_tags(self, tag_names):
         artists, characters, copyrights, metadata_tags, general = [], [], [], [], []

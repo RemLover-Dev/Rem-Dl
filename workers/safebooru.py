@@ -3,6 +3,9 @@ import asyncio
 import xml.etree.ElementTree as ET
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 import core.shared as shared
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "safebooru_tag_types.json")
 
 
 class SafebooruWorker(BaseWorker):
@@ -15,7 +18,9 @@ class SafebooruWorker(BaseWorker):
         self.safe_tag = sanitize_path_component(clean_tag, fallback="safebooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
-        self.tag_cache = {}
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
     def get_tags(self):
         return [self.original_tag]
@@ -38,25 +43,37 @@ class SafebooruWorker(BaseWorker):
             sem = asyncio.Semaphore(4)
             async def query_one(tag_name):
                 async with sem:
-                    try:
-                        resp = await self.session.get("https://safebooru.org/index.php", params={
-                            "page": "dapi", "s": "tag", "q": "index",
-                            # safebooru tag search needs entity-encoded names (kal&#039;tsit_...); &#x27; doesn't match
-                            "name": html.escape(tag_name, quote=False).replace("'", "&#039;"), "limit": 50
-                        })
-                        if resp.status == 200:
-                            text = await resp.text()
-                            root = ET.fromstring(text)
-                            # ponytail: scan every row for the exact tag
-                            for tag_el in root.findall("tag"):
-                                if tag_el.get("name", "").lower() == tag_name.lower():
-                                    cache[tag_name] = int(tag_el.get("type", 0))
-                                    break
-                    except Exception:
-                        pass
-                    # ponytail: failures/no-matches stay uncached (retried next run)
+                    # ponytail: 3 attempts — a transient failure must not leave
+                    # a tag miscategorized for this whole run
+                    for attempt in range(3):
+                        fetched = False
+                        try:
+                            resp = await self.session.get("https://safebooru.org/index.php", params={
+                                "page": "dapi", "s": "tag", "q": "index",
+                                # safebooru tag search needs entity-encoded names (kal&#039;tsit_...); &#x27; doesn't match
+                                "name": html.escape(tag_name, quote=False).replace("'", "&#039;"), "limit": 50
+                            })
+                            if resp.status == 200:
+                                text = await resp.text()
+                                root = ET.fromstring(text)
+                                # ponytail: scan every row for the exact tag
+                                for tag_el in root.findall("tag"):
+                                    if tag_el.get("name", "").lower() == tag_name.lower():
+                                        cache[tag_name] = int(tag_el.get("type", 0))
+                                        break
+                                fetched = True  # 200 processed: match OR genuinely absent
+                        except Exception:
+                            fetched = False
+                        if fetched:
+                            break
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                    # ponytail: a tag that never comes back stays uncached —
+                    # caching a failure would mislabel it forever
                     await asyncio.sleep(0.2)
             await asyncio.gather(*[query_one(t) for t in uncached])
+            # ponytail: concurrent workers may overwrite each other's save —
+            # worst case those tags refetch on a later run
+            DatabaseManager.save_json(TAG_TYPES_FILE, cache)
         return cache
 
     def _categorize_tags(self, tag_names, cache):

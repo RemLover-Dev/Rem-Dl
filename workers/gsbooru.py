@@ -14,9 +14,11 @@ from core.shared import (
     safe_ensure_dir,
     TAG_TYPE_MAP,
 )
+from core.database import DatabaseManager, DATABASE_DIR
 
 POSTS_API = "https://gsbooru.org/api/posts"
 TAGS_API = "https://gsbooru.org/api/tags"
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gsbooru_tag_types.json")
 
 # API schema: rating is an integer {0: g, 1: s, 2: q, 3: e}
 RATING_WORD_BY_INT = {0: "general", 1: "sensitive", 2: "questionable", 3: "explicit"}
@@ -31,7 +33,9 @@ class GsbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
         self.api_key = os.getenv("GSBOORU_API_KEY", "")
-        self.tag_cache = {}
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
         self._last_api_launch = 0.0
 
         # UI sends rating:g / rating:s / rating:q (space-separated when multi).
@@ -157,6 +161,16 @@ class GsbooruWorker(BaseWorker):
         return await asyncio.gather(*[one(p) for p in params_list])
 
     async def _fetch_tag_types(self, tag_names):
+        had = len(self.tag_cache)
+        try:
+            await self._fetch_tag_types_impl(tag_names)
+        finally:
+            # ponytail: save even partial fetches (impl bails on API failure);
+            # skip the write when nothing new landed
+            if len(self.tag_cache) > had:
+                DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
+
+    async def _fetch_tag_types_impl(self, tag_names):
         """Categorize tags via batched prefix lookups on /api/tags (the server
         takes ~3 s per exact query, so group by first letter)."""
         remaining = {t for t in tag_names if t not in self.tag_cache}

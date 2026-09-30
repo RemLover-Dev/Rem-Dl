@@ -52,3 +52,57 @@ def test_fetch_persists_verified_types(tmp_path, monkeypatch):
     # known tag fetched nothing; unknown/no-match stays uncached (retried next run)
     assert w2.tag_cache["mika_pikazo"] == "artist"
     assert "brand_new_tag" not in w2.tag_cache
+
+
+async def _no_sleep(*_a, **_k):
+    return None
+
+
+def test_failed_fetch_is_retried(tmp_path, monkeypatch):
+    w = _worker(tmp_path, monkeypatch)
+
+    class _Resp:
+        status = 200
+
+        async def json(self):
+            return {"tag": [{"name": "mika_pikazo", "type": 1}]}
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, *a, **k):
+            self.calls += 1
+            if self.calls < 3:
+                raise RuntimeError("flaky network")
+            return _Resp()
+
+    w.session = _Session()
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
+    assert w.session.calls == 3  # two failures, third attempt landed
+    assert w.tag_cache["mika_pikazo"] == "artist"  # verified → cached
+
+
+def test_gives_up_after_three_attempts(tmp_path, monkeypatch):
+    w = _worker(tmp_path, monkeypatch)
+
+    class _Resp:
+        status = 429
+
+        async def json(self):
+            return {}
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, *a, **k):
+            self.calls += 1
+            return _Resp()
+
+    w.session = _Session()
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
+    assert w.session.calls == 3
+    assert w.tag_cache == {}  # failure never cached — next run retries

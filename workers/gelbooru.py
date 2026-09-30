@@ -62,8 +62,6 @@ class GelbooruWorker(BaseWorker):
         uncached = [t for t in tag_names if t not in self.tag_cache][:150]
         if not uncached:
             return
-        # ponytail: burst through the page's tags — failures/misses just stay
-        # uncached (fall back to 'tag' this run, retried next run)
         sem = asyncio.Semaphore(1000)
         async def query_one(tag_name):
             async with sem:
@@ -71,20 +69,28 @@ class GelbooruWorker(BaseWorker):
                 if api_key and user_id:
                     params["api_key"] = api_key
                     params["user_id"] = user_id
-                try:
-                    resp = await self.session.get("https://gelbooru.com/index.php", params=params)
-                    if resp.status == 200:
-                        data = await resp.json()
-                        tags = data.get("tag") or []
-                        # ponytail: only trust the exact tag, never a near miss
-                        # gelbooru entity-encodes response names (kal&#039;tsit_...)
-                        match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
-                        if match is not None:
-                            self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                except Exception:
-                    pass
-                # ponytail: failures/no-matches stay uncached — caching them once
-                # would mislabel the tag forever; it retries next run instead
+                # ponytail: 3 attempts — a transient 429/network fluke must not
+                # leave a tag miscategorized for this whole run
+                for attempt in range(3):
+                    fetched = False
+                    try:
+                        resp = await self.session.get("https://gelbooru.com/index.php", params=params)
+                        if resp.status == 200:
+                            data = await resp.json()
+                            tags = data.get("tag") or []
+                            # ponytail: only trust the exact tag, never a near miss
+                            # gelbooru entity-encodes response names (kal&#039;tsit_...)
+                            match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
+                            if match is not None:
+                                self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                            fetched = True  # 200 processed: match OR genuinely absent
+                    except Exception:
+                        fetched = False
+                    if fetched:
+                        break
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                # ponytail: a tag that never comes back stays uncached —
+                # caching a failure would mislabel it forever; next run retries
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
         # ponytail: two concurrent gelbooru workers can overwrite each other's
