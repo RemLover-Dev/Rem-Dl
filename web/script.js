@@ -4200,6 +4200,10 @@ function loadViewerRaster(url, filename) {
             if (generation !== viewerResource.generation) { URL.revokeObjectURL(objectUrl); return null; }
             viewerResource.objectUrl = objectUrl;
             viewerImg.src = objectUrl;
+            viewerImg.onload = () => {
+                if (generation !== viewerResource.generation) return;
+                if (viewerZoom === 1) resetViewerToFit();
+            };
             return blob;
         } catch (err) {
             if (generation === viewerResource.generation && err && err.name !== "AbortError") showToast("Failed to load image: " + (err.message || err), { warn: true, icon: WARN_ICON });
@@ -4474,81 +4478,113 @@ function toggleViewerFav() {
             img.style.transform = '';
         }
     }
+    function getViewerFitScale() {
+        const img = document.getElementById("galleryViewerImg");
+        const viewer = document.getElementById("galleryViewer");
+
+        if (!img || !viewer || !img.naturalWidth || !img.naturalHeight) {
+            return 1;
+        }
+
+        const vr = viewer.getBoundingClientRect();
+
+        // Use the actual available viewer dimensions.
+        const vw = vr.width;
+        const vh = vr.height;
+
+        if (vw <= 0 || vh <= 0) return 1;
+
+        return Math.min(
+            vw / img.naturalWidth,
+            vh / img.naturalHeight
+        );
+    }
+
+    function getViewerFitSize() {
+        const img = document.getElementById("galleryViewerImg");
+        if (!img || !img.naturalWidth || !img.naturalHeight) {
+            return { width: 0, height: 0, scale: 1 };
+        }
+
+        const scale = getViewerFitScale();
+
+        return {
+            width: img.naturalWidth * scale,
+            height: img.naturalHeight * scale,
+            scale
+        };
+    }
+
+    function resetViewerToFit() {
+        const img = document.getElementById("galleryViewerImg");
+        const viewer = document.getElementById("galleryViewer");
+
+        if (!img || !viewer || !img.naturalWidth || !img.naturalHeight) {
+            return;
+        }
+
+        // 100% means "fit to window", NOT 100% of the image's
+        // natural pixel dimensions.
+        viewerZoom = 1;
+
+        img.classList.remove('zoomed');
+        img.style.transformOrigin = '50% 50%';
+        img.style.transform = '';
+
+        const label = document.getElementById("galleryViewerZoom");
+        if (label) {
+            label.textContent = '100%';
+            label.classList.remove('show');
+        }
+
+        stopViewerDrag();
+    }
+
     function zoomViewer(delta, cx, cy) {
         const img = document.getElementById("galleryViewerImg");
         const viewer = document.getElementById("galleryViewer");
 
-
         if (!img || !viewer || img.style.display === 'none') return;
         if (!img.complete || img.naturalWidth === 0) return;
 
+        const fit = getViewerFitSize();
+        if (!fit.width || !fit.height) return;
 
         const oldZoom = viewerZoom;
         const newZoom = Math.max(0.25, Math.min(10, oldZoom + delta));
 
-
         if (newZoom === oldZoom) return;
 
+        const viewerRect = viewer.getBoundingClientRect();
 
-        /*
-         * IMPORTANT:
-         *
-         * At 100% the image is still using:
-         *   max-width: 95vw
-         *   max-height: 90vh
-         *
-         * We get its ORIGINAL untransformed rectangle here.
-         *
-         * Once zoomed, getBoundingClientRect() contains the transform,
-         * so we reconstruct the original rectangle using the current
-         * translation and zoom.
-         */
-
-
-        const rect = img.getBoundingClientRect();
-        const [oldTx, oldTy] = getViewerTransform();
-
-
-        // Position of the image before transform.
-        const baseLeft = rect.left - oldTx;
-        const baseTop = rect.top - oldTy;
-
+        // the fitted image sits centered in the viewer — that rect is the baseline
+        const baseLeft = viewerRect.left + (viewerRect.width - fit.width) / 2;
+        const baseTop = viewerRect.top + (viewerRect.height - fit.height) / 2;
 
         // Mouse position. If called from keyboard, use viewer center.
         if (cx == null || cy == null) {
-            const viewerRect = viewer.getBoundingClientRect();
             cx = viewerRect.left + viewerRect.width / 2;
             cy = viewerRect.top + viewerRect.height / 2;
         }
 
+        // natural image pixel under the mouse; rendered size at zoom Z is
+        // always fit.size * Z, so the fitted scale is the baseline
+        let imageX, imageY;
+        if (oldZoom > 1) {
+            const [oldTx, oldTy] = getViewerTransform();
+            imageX = (cx - baseLeft - oldTx) / (fit.scale * oldZoom);
+            imageY = (cy - baseTop - oldTy) / (fit.scale * oldZoom);
+        } else {
+            imageX = (cx - baseLeft) / fit.scale;
+            imageY = (cy - baseTop) / fit.scale;
+        }
 
-        /*
-         * Find which point on the ORIGINAL image is underneath
-         * the mouse cursor.
-         *
-         * This is the key calculation.
-         */
-        const imageX = (cx - baseLeft - oldTx) / oldZoom;
-        const imageY = (cy - baseTop - oldTy) / oldZoom;
-
-
-        /*
-         * Calculate the new translation so the SAME image pixel
-         * remains underneath the mouse.
-         */
-        const newTx = cx - baseLeft - imageX * newZoom;
-        const newTy = cy - baseTop - imageY * newZoom;
-
-
-        viewerZoom = newZoom;
-
+        viewerZoom = newZoom > 1 ? newZoom : 1;
 
         const label = document.getElementById("galleryViewerZoom");
 
-
         if (label) {
             label.textContent = Math.round(viewerZoom * 100) + '%';
-
 
             if (viewerZoom > 1) {
                 label.classList.add('show');
@@ -4557,11 +4593,12 @@ function toggleViewerFav() {
             }
         }
 
-
         if (viewerZoom <= 1) {
             setViewerTransform(0, 0);
             stopViewerDrag();
         } else {
+            const newTx = cx - baseLeft - imageX * fit.scale * viewerZoom;
+            const newTy = cy - baseTop - imageY * fit.scale * viewerZoom;
             setViewerTransform(newTx, newTy);
         }
     }
@@ -4594,6 +4631,10 @@ function toggleViewerFav() {
     }, true);
     let _resizeTimer = null;
     window.addEventListener('resize', function() {
+        const viewer = document.getElementById("galleryViewer");
+        if (viewer && viewer.style.display === 'flex' && viewerZoom === 1) {
+            requestAnimationFrame(() => resetViewerToFit());
+        }
         clearTimeout(_resizeTimer);
         _resizeTimer = setTimeout(() => {
             const galleryTab = document.getElementById("Gallery");
