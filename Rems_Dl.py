@@ -29,6 +29,8 @@ import urllib3
 import urllib.parse
 import random
 import hashlib
+import io
+from functools import lru_cache
 import webbrowser
 from PIL import Image
 from datetime import datetime
@@ -1632,12 +1634,6 @@ def gallery_file(filepath):
 
 @app.route("/api/thumb_by_name/<filename>")
 def thumb_by_name(filename):
-    # ponytail: check the disk cache BEFORE walking the library — the walk
-    # cost a full 4GB+ traversal per thumbnail on cache hits
-    cache_key = hashlib.sha256(filename.encode()).hexdigest()[:16]
-    cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
-    if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/jpeg')
     full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
@@ -1649,61 +1645,67 @@ def thumb_by_name(filename):
                 break
         else:
             return "Image was deleted", 404
-    return redirect_to_thumb(full, filename)
+    return redirect_to_thumb(full)
 
-def redirect_to_thumb(full_path, rel_filename):
-    cache_key = hashlib.sha256(rel_filename.encode()).hexdigest()[:16]
-    cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
-    if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/jpeg')
+
+@lru_cache(maxsize=512)
+def _make_thumb(full, mtime_ns, size):
+    """300px JPEG bytes in a bounded RAM LRU — nothing ever written to disk.
+    mtime/size are part of the key, so an edited file regenerates.
+    Exceptions are NOT cached, so a mid-download read retries next request."""
+    ext = os.path.splitext(full)[1].lower()
+    if ext in EXTENSIONS_VIDEO:
+        import subprocess
+        # stdout pipe — frame goes straight into RAM, never to disk
+        proc = subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+                              capture_output=True, timeout=10)
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout
+        raise RuntimeError("ffmpeg frame extraction failed")
+    img = Image.open(full)
+    # ponytail: cap memory usage for very large images; decompress bomb protection
+    img.draft('RGB', (300, 300))
+    if img.mode in ('RGBA', 'P', 'LA'):
+        img = img.convert('RGB')
+    # BILINEAR: ~2x faster than LANCZOS at 300px, invisible at thumbnail size
+    img.thumbnail((300, 300), Image.Resampling.BILINEAR)
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=80)
+    return buf.getvalue()
+
+
+def _cached_thumb(full):
+    st = os.stat(full)
+    return _make_thumb(full, st.st_mtime_ns, st.st_size)
+
+
+def _send_thumb(data):
+    """RAM-served 300px JPEG; the browser keeps it per-URL for a day, so
+    repeat views skip the server entirely."""
+    resp = Response(data, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
+
+def redirect_to_thumb(full_path):
     try:
-        img = Image.open(full_path)
-        img.draft('RGB', (300, 300))
-        if img.mode in ('RGBA', 'P', 'LA'):
-            img = img.convert('RGB')
-        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-        img.save(cache_path, format='JPEG', quality=85)
-        return send_file(cache_path, mimetype='image/jpeg')
+        return _send_thumb(_cached_thumb(full_path))
     except Exception:
         return "Thumbnail generation failed", 415
-
-THUMB_CACHE = os.path.join(DATABASE_DIR, "thumb_cache")
-os.makedirs(THUMB_CACHE, exist_ok=True)
 
 @app.route("/api/gallery/thumb/<path:filepath>")
 def gallery_thumb(filepath):
     full = os.path.normpath(os.path.join(MASTER_FOLDER, filepath))
     if not full.startswith(os.path.normpath(MASTER_FOLDER)):
         return "Forbidden", 403
-    ext = os.path.splitext(full)[1].lower()
-    cache_key = hashlib.sha256(filepath.encode()).hexdigest()[:16]
-    cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
-
-    if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/jpeg')
-    # ponytail: stale cache still beats a broken icon when the user
-    # deleted the source file outside the app, so it is checked above
     if not os.path.isfile(full):
         return "Image was deleted", 404
 
-    if ext in EXTENSIONS_VIDEO:
-        import subprocess
-        subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", cache_path],
-                       capture_output=True, timeout=10)
-        if os.path.exists(cache_path):
-            return send_file(cache_path, mimetype='image/jpeg')
-        return "", 415
-
     try:
-        img = Image.open(full)
-        # ponytail: cap memory usage for very large images; decompress bomb protection
-        img.draft('RGB', (300, 300))
-        if img.mode in ('RGBA', 'P', 'LA'):
-            img = img.convert('RGB')
-        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-        img.save(cache_path, format='JPEG', quality=85)
-        return send_file(cache_path, mimetype='image/jpeg')
+        return _send_thumb(_cached_thumb(full))
     except Exception as e:
+        if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
+            return "", 415
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         return send_file(full)
