@@ -2,6 +2,9 @@ import html, os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 from core.shared import TAG_TYPE_MAP
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gelbooru_tag_types.json")
 
 
 class GelbooruWorker(BaseWorker):
@@ -36,7 +39,10 @@ class GelbooruWorker(BaseWorker):
         self.tag_dir = os.path.join(self.site_root, self.safe_tag_name)
         safe_ensure_dir(self.tag_dir)
 
-        self.tag_cache = {}
+        # persistent across runs: verified tag types are stored, so known tags
+        # never refetch (was re-querying up to 150 tags per page every run)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
     def get_tags(self):
         return [self.original_tag]
@@ -81,6 +87,9 @@ class GelbooruWorker(BaseWorker):
                 # would mislabel the tag forever; it retries next run instead
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
+        # ponytail: two concurrent gelbooru workers can overwrite each other's
+        # save — worst case those tags refetch on a later run
+        DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
 
     def _categorize_tags(self, tag_names):
         artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
