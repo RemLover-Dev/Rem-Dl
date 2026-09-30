@@ -624,7 +624,15 @@ function logToConsole(tabID, msg) {
         card.className = "log-item system";
         card.innerHTML = `<span style="font-size:16px;display:inline-flex;"><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none"><path fill="currentColor" fill-rule="evenodd" d="M18.98 2.458c0.805 -0.423 2.358 -0.958 5.02 -0.958s4.215 0.535 5.022 0.958c0.612 0.32 0.97 0.83 1.174 1.256 0.29 0.605 0.925 1.97 1.48 3.449a18.483 18.483 0 0 1 3.063 1.771c1.56 -0.26 3.061 -0.39 3.731 -0.443 0.47 -0.036 1.09 0.02 1.675 0.39 0.77 0.486 2.01 1.563 3.34 3.869 1.332 2.306 1.644 3.918 1.681 4.828 0.029 0.69 -0.233 1.255 -0.5 1.645a44.816 44.816 0 0 1 -2.25 3.01 18.738 18.738 0 0 1 0 3.534 44.867 44.867 0 0 1 2.25 3.01c0.267 0.39 0.529 0.954 0.5 1.645 -0.037 0.91 -0.35 2.522 -1.68 4.828 -1.332 2.306 -2.572 3.383 -3.341 3.87 -0.584 0.37 -1.204 0.425 -1.675 0.389a44.829 44.829 0 0 1 -3.731 -0.443 18.478 18.478 0 0 1 -3.063 1.771 44.816 44.816 0 0 1 -1.48 3.449c-0.204 0.426 -0.562 0.935 -1.174 1.256 -0.807 0.422 -2.36 0.958 -5.022 0.958 -2.662 0 -4.215 -0.535 -5.022 -0.958 -0.612 -0.32 -0.97 -0.83 -1.174 -1.256 -0.29 -0.605 -0.925 -1.97 -1.48 -3.449a18.48 18.48 0 0 1 -3.063 -1.771c-1.56 0.26 -3.062 0.39 -3.732 0.443 -0.47 0.036 -1.09 -0.02 -1.674 -0.39 -0.77 -0.486 -2.01 -1.563 -3.34 -3.869 -1.332 -2.306 -1.645 -3.918 -1.682 -4.828 -0.028 -0.69 0.234 -1.255 0.5 -1.645a44.84 44.84 0 0 1 2.25 -3.01 18.727 18.727 0 0 1 0 -3.534 44.844 44.844 0 0 1 -2.25 -3.01c-0.266 -0.39 -0.528 -0.954 -0.5 -1.645 0.038 -0.91 0.35 -2.522 1.681 -4.828 1.331 -2.306 2.572 -3.383 3.341 -3.87 0.584 -0.37 1.204 -0.425 1.675 -0.389 0.67 0.052 2.17 0.184 3.73 0.443a18.48 18.48 0 0 1 3.064 -1.771 44.852 44.852 0 0 1 1.48 -3.449c0.204 -0.426 0.562 -0.935 1.174 -1.256ZM32 24a8 8 0 1 1 -16 0 8 8 0 0 1 16 0Z" clip-rule="evenodd"></path></svg></span> <span style="flex:1;">${clean}</span>`;
         appendLogCard(cb, card);
+        return;
     }
+
+    // plain lines with no special pattern still deserve a row — otherwise
+    // e.g. the pixiv auth steps and "Auth error: ..." are silently dropped
+    let plain = document.createElement("div");
+    plain.className = "log-item system";
+    plain.innerHTML = `<span style="flex:1;">${escapeHtml(raw)}</span>`;
+    appendLogCard(cb, plain);
 }
 
 // --- Rule34 Interactive Tag System ---
@@ -1978,6 +1986,13 @@ socket.on("worker_finished", function (data) {
     else updateProgressBar(data.worker, "Task finished. No new images to download.");
 });
 
+socket.on("pixiv_notifs", function (data) {
+    setNotifDot((data && data.unread) || 0);
+    if (data && data.new > 0) showToast(`${data.new} new artwork${data.new === 1 ? "" : "s"} from artists you follow`);
+    const tab = document.getElementById("Notifications");
+    if (tab && tab.style.display !== "none") loadNotifications();
+});
+
 let _histReloadTimer = null;
 socket.on("update_history", function () {
     loadGallery();
@@ -2395,8 +2410,10 @@ function openTab(tabName, btn) {
     let buttons = document.getElementsByClassName("tab-btn");
     for (let i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
 
+    // btn is optional: programmatic jumps (e.g. notifications -> Pixiv) find it
+    if (!btn) btn = Array.from(buttons).find(b => (b.getAttribute("onclick") || "").includes("'" + tabName + "'"));
     document.getElementById(tabName).style.display = "flex";
-    btn.classList.add("active");
+    if (btn) btn.classList.add("active");
     updateBackground(tabName);
     if (tabName === "Gallery") {
         const blurBtn = document.getElementById("galleryBlurBtn");
@@ -2407,6 +2424,109 @@ function openTab(tabName, btn) {
     // gallery keeps its hearts fresh by reloading on open; the history tab
     // must refetch too, or favourites toggled in the gallery stay stale here
     if (tabName === "History") loadTagsData();
+    if (tabName === "Notifications") loadNotifications();
+}
+
+// --- Pixiv Following Notifications ---
+let notifItems = [];
+const NOTIF_FALLBACK = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><rect x='30' y='34' width='40' height='32' rx='4' fill='none' stroke='%23888888' stroke-width='4'/><circle cx='42' cy='46' r='4' fill='%23888888'/><path d='M34 62l12-12 8 8 6-6 6 6z' fill='%23888888'/></svg>";
+
+function setNotifDot(n) {
+    const d = document.getElementById("notifDot");
+    if (d) d.style.display = n > 0 ? "inline-block" : "none";
+}
+
+async function loadNotifications() {
+    try {
+        const resp = await fetch("/api/pixiv/notifications");
+        const data = await resp.json();
+        notifItems = data.items || [];
+        renderNotifications();
+        setNotifDot(data.unread || 0);
+        const iv = document.getElementById("notifInterval");
+        if (iv && document.activeElement !== iv) iv.value = data.interval_minutes || 90;
+        updateNotifStatus(data);
+        if (data.pending_toast > 0) {
+            const n = data.pending_toast;
+            showToast(`${n} new artwork${n === 1 ? "" : "s"} from artists you follow`);
+        }
+        // viewing the tab = reading
+        if (notifItems.some(i => !i.read)) {
+            await fetch("/api/pixiv/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            setNotifDot(0);
+        }
+    } catch (e) { console.error("Notifications load failed", e); }
+}
+
+function updateNotifStatus(d) {
+    const el = document.getElementById("notifStatus");
+    if (!el) return;
+    const parts = [];
+    if (d.error) parts.push("⚠ " + d.error);
+    if (d.last_check) parts.push("Last check: " + new Date(d.last_check * 1000).toLocaleString());
+    if (!d.error && d.due_in > 0) parts.push("next check in " + Math.max(1, Math.round(d.due_in / 60)) + " min");
+    el.textContent = parts.join("  ·  ");
+}
+
+function renderNotifications() {
+    const box = document.getElementById("notifList");
+    if (!box) return;
+    if (!notifItems.length) {
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">No notifications yet — new works from the artists you follow will appear here.</div>`;
+        return;
+    }
+    box.innerHTML = notifItems.map(n => {
+        const title = escapeHtml(n.title || "Untitled");
+        const artist = escapeHtml(n.artist_name || "Unknown artist");
+        const date = String(n.create_date || "").replace("T", " ").slice(0, 16);
+        const thumb = n.thumb ? `/api/pixiv/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
+        const artistId = String(n.artist_id || "").replace(/[^0-9]/g, "");
+        return `
+        <div class="image-card-log" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+            <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
+                <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
+            </div>
+            <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
+                <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
+                <div style="font-size: 12px; opacity: 0.75;">${artist}${date ? " · " + date : ""}</div>
+            </div>
+            <button onclick="pixivGotoArtist('${artistId}')" title="Open this artist in the Pixiv downloader" style="position: absolute; top: 10px; right: 10px; background: rgba(255, 215, 0, 0.12); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255, 215, 0, 0.55); color: #ffd700; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 5; font-size: 13px; transition: 0.2s; line-height: 1;">⚡</button>
+        </div>`;
+    }).join("");
+}
+
+function pixivGotoArtist(artistId) {
+    if (!artistId) return;
+    openTab("Pixiv");
+    document.getElementById("pixivMode").value = "artworks";
+    document.getElementById("pixivTag").value = artistId;
+    updatePixivMode();
+}
+
+function saveNotifInterval(el) {
+    let v = parseInt(el.value, 10);
+    if (!v) v = 90;
+    v = Math.max(60, Math.min(120, v));
+    el.value = v;
+    uiConfig.pixiv_watch_minutes = v;
+    persistUiConfig();
+}
+
+function checkPixivNow() {
+    fetch("/api/pixiv/notifications/check", { method: "POST" })
+        .then(r => r.json())
+        .then(d => {
+            if (d.started) showToast("Checking for new works…");
+            else showToast("A check is already running", { warn: true });
+            setTimeout(loadNotifications, 6000);
+        })
+        .catch(() => {});
+}
+
+async function clearNotifications() {
+    if (!await customConfirm("Clear all notifications? Works you've already seen won't reappear.", "Clear")) return;
+    await fetch("/api/pixiv/notifications/clear", { method: "POST" });
+    await loadNotifications();
 }
 
 function toggleMenu(groupId) {
@@ -2697,11 +2817,30 @@ async function saveApiSettings() {
     return result.success ? "Saved!" : "Error!";
 }
 
+async function startPixivLogin() {
+    let statusEl = document.getElementById("pixivTokenStatus");
+    statusEl.textContent = "Getting login URL...";
+    try {
+        let resp = await fetch("/api/pixiv/oauth/start", { method: "POST" });
+        let result = await resp.json();
+        if (!result.success) { statusEl.textContent = result.error || "Failed to start login."; return; }
+        window.open(result.url, "_blank");
+        statusEl.textContent = "Log in, then paste the code from Network → callback?state=... ";
+        const a = document.createElement("a");
+        a.href = result.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = "(open URL again)";
+        a.style.textDecoration = "underline";
+        statusEl.appendChild(a);
+    } catch(e) { statusEl.textContent = "Failed: " + e; }
+}
+
 async function exchangePixivCookie() {
     let statusEl = document.getElementById("pixivTokenStatus");
     let cookie = document.getElementById("pixivCookie").value.trim();
-    if (!cookie) { statusEl.textContent = "Paste your PHPSESSID cookie first."; return; }
-    statusEl.textContent = "Exchanging via proxy...";
+    if (!cookie) { statusEl.textContent = "Paste the code (or PHPSESSID cookie) first."; return; }
+    statusEl.textContent = "Exchanging...";
     try {
         let resp = await fetch("/api/pixiv/exchange-cookie", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cookie: cookie }) });
         let result = await resp.json();

@@ -21,6 +21,7 @@
                 <button class="tab-btn active" onclick="openTab('Main', this)">MAIN</button>
                 <button class="tab-btn" onclick="openTab('Gallery', this)">Gallery</button>
                 <button class="tab-btn" onclick="openTab('History', this)">History</button>
+                <button class="tab-btn" onclick="openTab('Notifications', this)" title="Notifications"><svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M3.5 9.5V6a3.5 3.5 0 0 1 7 0v3.5l1 1.5h-9l1-1.5Z"/><path stroke="currentColor" stroke-linecap="round" d="M5.5 12a1.5 1.5 0 0 0 3 0"/></svg><span id="notifDot" class="notif-dot" style="display:none;"></span></button>
             </div>
             
             <div class="tab-group-title" onclick="toggleMenu('group-downloaders')">Downloaders <span class="chevron">▼</span></div>
@@ -672,12 +673,19 @@
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Pixiv Credentials</h3>
                             <div class="field-row"><label>Refresh Token:</label><input type="password" id="pixivToken" placeholder="PIXIV_REFRESH_TOKEN" style="flex:1;"></div>
-                            <div class="field-row"><label>Cookie:</label><input type="password" id="pixivCookie" placeholder="PHPSESSID=... (from pixiv.net login)" style="flex:1;"></div>
+                            <div class="field-row"><label>Cookie:</label><input type="password" id="pixivCookie" placeholder="PHPSESSID=... or the code from callback?state=..." style="flex:1;"></div>
                             <div class="field-row" style="align-items: center; gap: 12px;">
-                                <button class="action-btn" onclick="exchangePixivCookie()"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg> Get token from cookie</button>
+                                <button class="action-btn" onclick="startPixivLogin()">Get login URL</button>
+                                <button class="action-btn" onclick="exchangePixivCookie()"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg> Get token</button>
                                 <span id="pixivTokenStatus" style="font-size: 12px; color: var(--title-color);"></span>
                             </div>
-                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">Log in to pixiv.net in your browser → F12 → Application → Cookies → copy <b>PHPSESSID</b> → paste above. Uses your proxy (127.0.0.1:10808).</div>
+                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">
+                                Same flow as <code>gallery-dl oauth:pixiv</code>:<br>
+                                1. Click <b>Get login URL</b> (opens <code>https://app-api.pixiv.net/web/v1/login?client=pixiv-android</code> with a code challenge) and log in.<br>
+                                2. F12 → Network → select the last <code>callback?state=...</code> entry.<br>
+                                3. Copy its <code>code</code> query value (the whole callback URL works too), paste above, click <b>Get token</b>. The code expires ~30s after login.<br>
+                                Alternative: paste your <code>PHPSESSID</code> cookie instead of a code (uses your proxy only if "Use Proxy" is on).
+                            </div>
                         </div>
 
                         <div class="settings-card" style="grid-column: 1 / -1;">
@@ -748,6 +756,20 @@
             </div>
 
             <!-- PIXIV DOWNLOADER -->
+            <div id="Notifications" class="tab-content" style="display: none;">
+                <div class="options-scroll">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
+                        <h2>Notifications</h2>
+                        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <label style="font-size: 13px;">Check every <input type="number" id="notifInterval" min="60" max="120" step="1" style="width: 64px;" onchange="saveNotifInterval(this)"> min</label>
+                            <button class="action-btn" onclick="checkPixivNow(this)">Check now</button>
+                            <button class="action-btn stop-btn" onclick="clearNotifications()">Clear</button>
+                        </div>
+                    </div>
+                    <div id="notifStatus" style="font-size: 12px; opacity: 0.7; margin-bottom: 12px;"></div>
+                    <div id="notifList" class="notif-list"></div>
+                </div>
+            </div>
             <div id="Pixiv" class="tab-content" style="display: none;">
                 <h2>Pixiv Downloader</h2>
                 <div class="input-group" style="margin-bottom: 10px;">

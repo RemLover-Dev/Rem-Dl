@@ -33,12 +33,13 @@ import webbrowser
 from PIL import Image
 from datetime import datetime
 
-from flask import Flask, send_from_directory, send_file, jsonify, request
+from flask import Flask, send_from_directory, send_file, jsonify, request, Response
 from flask_socketio import SocketIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from core.database import DatabaseManager, SettingsManager
+from core import pixiv_notify
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -647,92 +648,137 @@ def api_settings_manager():
         return jsonify({"success": True, "message": "All API keys saved successfully!"})
     return jsonify(settings.load_api_settings())
 
+_PIXIV_OAUTH = {"verifier": ""}  # pending PKCE verifier, set by /api/pixiv/oauth/start
+
+
+@app.route("/api/pixiv/oauth/start", methods=["POST"])
+def pixiv_oauth_start():
+    """Start gallery-dl's `oauth:pixiv` flow: mint a PKCE challenge and hand
+    the user the login URL to open in their browser."""
+    import secrets as _secrets
+    import hashlib as _hashlib
+    import base64 as _base64
+
+    verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
+    challenge = _base64.urlsafe_b64encode(
+        _hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    _PIXIV_OAUTH["verifier"] = verifier
+    url = ("https://app-api.pixiv.net/web/v1/login?client=pixiv-android"
+           f"&code_challenge_method=S256&code_challenge={challenge}")
+    return jsonify({"success": True, "url": url})
+
+
+def _pixiv_session(cookie=None):
+    session = requests.Session()
+    if settings.get("use_proxy"):
+        p = settings.get("proxy_url") or "http://127.0.0.1:10808"
+        session.proxies = {"http": p, "https": p}
+    session.verify = False
+    if cookie:
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Cookie": f"PHPSESSID={cookie}",
+        })
+    return session
+
+
+def _pixiv_token_post(session, code, verifier):
+    resp = session.post(
+        "https://oauth.secure.pixiv.net/auth/token",
+        headers={"User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"},
+        data={
+            "client_id": "MOBrBDS8blbauoSck0ZfDbtuzpyT",
+            "client_secret": "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj",
+            "code": code,
+            "code_verifier": verifier,
+            "grant_type": "authorization_code",
+            "include_policy": "true",
+            "redirect_uri": "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback",
+        },
+        timeout=30,
+    )
+    body = resp.json()
+    if "error" in body:
+        return None, f"Token exchange failed: {body.get('error')}"
+    return body.get("refresh_token", ""), None
+
+
 @app.route("/api/pixiv/exchange-cookie", methods=["POST"])
 def pixiv_exchange_cookie():
-    """Exchange a pixiv.net PHPSESSID cookie for an OAuth refresh token.
+    """Exchange pasted input for an OAuth refresh token.
 
-    Same flow as `gallery-dl oauth:pixiv`, but the login step is done
-    server-side with the user's cookie instead of a browser:
-    1. GET the pixiv-android login URL (PKCE) with the PHPSESSID cookie
-    2. Grab the `code` from the callback redirect
-    3. Exchange code + verifier for tokens at oauth.secure.pixiv.net
-    Pixiv is only reachable through the proxy, so the exchange always
-    goes through the configured proxy (default 127.0.0.1:10808).
+    Code path (gallery-dl `oauth:pixiv`): the user opened the URL from
+    /api/pixiv/oauth/start, logged in, and pasted the `code` of the last
+    'callback?state=...' Network entry (full callback URL works too).
+    Cookie path: the login step runs server-side with a PHPSESSID cookie.
+    Proxy is used only when use_proxy is on.
     """
     import re as _re
     import secrets as _secrets
     import hashlib as _hashlib
     import base64 as _base64
 
-    raw = (request.json or {}).get("cookie", "").strip()
+    body = request.json or {}
+    raw = (body.get("code") or body.get("cookie") or "").strip()
     if not raw:
-        return jsonify({"success": False, "error": "No cookie provided"}), 400
-
-    m = _re.search(r"PHPSESSID=([0-9a-fA-F_]+)", raw)
-    phpsessid = m.group(1) if m else raw.split(";")[0].strip()
-    if not phpsessid or "=" in phpsessid:
-        return jsonify({"success": False, "error": "Could not find PHPSESSID in the provided cookie"}), 400
-
-    proxy_url = settings.get("proxy_url") or "http://127.0.0.1:10808"
-    session = requests.Session()
-    session.proxies = {"http": proxy_url, "https": proxy_url}
-    session.verify = False
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Cookie": f"PHPSESSID={phpsessid}",
-    })
+        return jsonify({"success": False, "error": "Nothing pasted"}), 400
 
     try:
-        verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
-        challenge = _base64.urlsafe_b64encode(
-            _hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        state = _secrets.token_urlsafe(16)
+        if "PHPSESSID" in raw:
+            m = _re.search(r"PHPSESSID=([0-9a-fA-F_]+)", raw)
+            phpsessid = m.group(1) if m else raw.split(";")[0].strip()
+            if not phpsessid or "=" in phpsessid:
+                return jsonify({"success": False, "error": "Could not find PHPSESSID in the provided cookie"}), 400
+            session = _pixiv_session(phpsessid)
+            verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
+            challenge = _base64.urlsafe_b64encode(
+                _hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+            state = _secrets.token_urlsafe(16)
 
-        login_url = "https://app-api.pixiv.net/web/v1/login"
-        params = {"client": "pixiv-android", "code_challenge": challenge,
-                  "code_challenge_method": "S256", "state": state}
-        resp = session.get(login_url, params=params, timeout=30, allow_redirects=True)
+            login_url = "https://app-api.pixiv.net/web/v1/login"
+            params = {"client": "pixiv-android", "code_challenge": challenge,
+                      "code_challenge_method": "S256", "state": state}
+            resp = session.get(login_url, params=params, timeout=30, allow_redirects=True)
 
-        code = None
-        for r in [resp, *resp.history]:
-            loc = r.headers.get("Location", "") or r.url
-            cm = _re.search(r"[?&]code=([^&#]+)", loc)
+            code = None
+            for r in [resp, *resp.history]:
+                loc = r.headers.get("Location", "") or r.url
+                cm = _re.search(r"[?&]code=([^&#]+)", loc)
+                if cm:
+                    code = cm.group(1)
+                    break
+            if not code:
+                cm = _re.search(r"[?&]code=([^&#]+)", resp.text)
+                code = cm.group(1) if cm else None
+            if not code:
+                return jsonify({"success": False, "error": "Login with this cookie failed (no auth code returned). The cookie may be expired — log in to pixiv.net again and copy a fresh PHPSESSID."}), 400
+        else:
+            cm = _re.search(r"[?&]code=([^&#]+)", raw)
             if cm:
-                code = cm.group(1)
-                break
-        if not code:
-            cm = _re.search(r"[?&]code=([^&#]+)", resp.text)
-            code = cm.group(1) if cm else None
-        if not code:
-            return jsonify({"success": False, "error": "Login with this cookie failed (no auth code returned). The cookie may be expired — log in to pixiv.net again and copy a fresh PHPSESSID."}), 400
+                code = urllib.parse.unquote(cm.group(1))
+            elif " " in raw or raw.startswith("http"):
+                return jsonify({"success": False, "error": "No code= found — paste the 'code' value (or the full callback URL) of the last 'callback?state=...' Network entry."}), 400
+            else:
+                code = raw
+            verifier = _PIXIV_OAUTH["verifier"]
+            if not verifier:
+                return jsonify({"success": False, "error": "No login URL started — click 'Get login URL' in Settings → Pixiv first (your code must match its code_challenge)."}), 400
+            session = _pixiv_session()
 
-        token_resp = session.post(
-            "https://oauth.secure.pixiv.net/auth/token",
-            headers={"User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"},
-            data={
-                "client_id": "MOBrBDS8blbauoSck0ZfDbtuzpyT",
-                "client_secret": "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj",
-                "code": code,
-                "code_verifier": verifier,
-                "grant_type": "authorization_code",
-                "include_policy": "true",
-                "redirect_uri": "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback",
-            },
-            timeout=30,
-        )
-        body = token_resp.json()
-        if "error" in body:
-            return jsonify({"success": False, "error": f"Token exchange failed: {body.get('error')}"}), 400
-
-        refresh_token = body.get("refresh_token", "")
+        refresh_token, err = _pixiv_token_post(session, code, verifier)
+        if err:
+            return jsonify({"success": False, "error": err}), 400
         if not refresh_token:
             return jsonify({"success": False, "error": "Token exchange returned no refresh token"}), 400
 
-        settings.save_api_settings({**settings.load_api_settings(), "pixiv_refresh_token": refresh_token, "pixiv_cookie": raw})
+        data = {**settings.load_api_settings(), "pixiv_refresh_token": refresh_token}
+        if "PHPSESSID" in raw:
+            data["pixiv_cookie"] = raw
+        settings.save_api_settings(data)
         return jsonify({"success": True, "refresh_token": refresh_token})
     except Exception as e:
         print("Pixiv auth error:", e)
-        return jsonify({"success": False, "error": "pixiv auth failed"}), 500
+        return jsonify({"success": False, "error": f"pixiv auth failed: {e}"}), 500
 
 @app.route("/api/tags/waifu", methods=["POST"])
 def get_waifu_tags():
@@ -1839,6 +1885,72 @@ def manage_ui_config():
 
 
 # ==========================================
+# === PIXIV FOLLOWING NOTIFICATIONS ===
+# ==========================================
+@app.route("/api/pixiv/notifications", methods=["GET"])
+def pixiv_notifications_get():
+    items = pixiv_notify.load_items()
+    return jsonify({
+        "items": items,
+        "unread": pixiv_notify.unread_count(items),
+        "pending_toast": pixiv_notify.take_pending_toast(),
+        "last_check": pixiv_notify.last_check_ts(),
+        "error": pixiv_notify.STATE["error"],
+        "checking": pixiv_notify.STATE["checking"],
+        "interval_minutes": pixiv_notify.interval_minutes(),
+        "due_in": pixiv_notify.seconds_until_due(),
+    })
+
+
+@app.route("/api/pixiv/notifications/read", methods=["POST"])
+def pixiv_notifications_read():
+    data = request.json or {}
+    ids = data.get("ids")
+    unread = pixiv_notify.mark_read(ids if ids else None)
+    return jsonify({"unread": unread})
+
+
+@app.route("/api/pixiv/notifications/check", methods=["POST"])
+def pixiv_notifications_check():
+    return jsonify({"started": pixiv_notify.check_now()})
+
+
+@app.route("/api/pixiv/notifications/clear", methods=["POST"])
+def pixiv_notifications_clear():
+    pixiv_notify.clear_items()
+    return jsonify({"unread": 0, "items": []})
+
+
+_PIXIV_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
+
+@app.route("/api/pixiv/notif_thumb")
+def pixiv_notif_thumb():
+    # pximg hotlink-blocks foreign referers, so the browser cannot fetch
+    # these directly; fetch server-side with a pixiv referer instead
+    from urllib.parse import urlparse
+    url = request.args.get("url", "")
+    host = urlparse(url).hostname or ""
+    if host != "i.pximg.net" and not host.endswith(".pximg.net"):
+        return jsonify({"error": "bad host"}), 400
+    cached = _PIXIV_THUMB_CACHE.get(url)
+    if cached:
+        return Response(cached[0], mimetype=cached[1])
+    try:
+        r = requests.get(url, timeout=15, headers={
+            "Referer": "https://www.pixiv.net/",
+            "User-Agent": "Mozilla/5.0",
+        })
+        r.raise_for_status()
+    except Exception:
+        return jsonify({"error": "thumbnail fetch failed"}), 502
+    if len(_PIXIV_THUMB_CACHE) >= 200:
+        _PIXIV_THUMB_CACHE.pop(next(iter(_PIXIV_THUMB_CACHE)))
+    ctype = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0]
+    _PIXIV_THUMB_CACHE[url] = (r.content, ctype)
+    return Response(r.content, mimetype=ctype)
+
+
+# ==========================================
 # === AUTO-SHUTDOWN SYSTEM ===
 # ==========================================
 @socketio.on("connect")
@@ -2140,6 +2252,17 @@ if __name__ == "__main__":
 
     threading.Thread(target=_warm_tag_dbs, daemon=True).start()
     threading.Thread(target=startup_rescan, daemon=True).start()
+    pixiv_notify.start_watcher(
+        get_config=lambda: {
+            "use_proxy": settings.get("use_proxy"),
+            "proxy_url": settings.get("proxy_url"),
+            "verify_tls": settings.get("verify_tls"),
+            "refresh_token": (settings.load_api_settings().get("pixiv_refresh_token")
+                              or os.getenv("PIXIV_REFRESH_TOKEN", "")),
+        },
+        emit_fn=lambda payload: socketio.emit("pixiv_notifs", payload),
+        log_fn=lambda msg: log_msg("pixiv", msg),
+    )
 
     is_headless = (
         os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")

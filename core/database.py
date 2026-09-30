@@ -206,6 +206,7 @@ class DatabaseManager:
         return {
             "theme_mode": "dark",
             "mute_auth_warnings": False,
+            "pixiv_watch_minutes": 90,
             "wallpapers": {
                 "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"},
                 "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"},

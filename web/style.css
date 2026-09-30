@@ -260,6 +260,8 @@ input[type="number"].queue-pos {
 .tab-btn:hover { background: var(--tab-hover-bg); }
 .tab-btn.active { background: var(--tab-active-bg); color: var(--title-color); font-weight: 600; box-shadow: inset 3px 0 0 var(--title-color); }
 .tab-btn:active { transform: scale(0.98); }
+.notif-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff4757; margin-left: 3px; vertical-align: top; box-shadow: 0 0 4px rgba(255, 71, 87, 0.85); }
+.notif-list { display: flex; flex-direction: column; gap: 10px; }
 
 /* ===== MAIN CONTENT AREA ===== */
 .tab-container { flex: 1; min-height: 0; overflow: hidden; height: 100%; padding: 2px; }

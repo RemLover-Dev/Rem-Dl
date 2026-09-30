@@ -34,6 +34,7 @@ from core.shared import (
     check_duplicate, MASTER_FOLDER, sanitize_path_component,
     sanitize_filename, safe_ensure_dir
 )
+from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
 
 CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
@@ -64,7 +65,8 @@ class PixivAppAPI:
         if self._token and now < self._token_expires:
             return
         if not self.refresh_token:
-            raise ValueError("PIXIV_REFRESH_TOKEN missing — paste your pixiv.net PHPSESSID cookie in Settings → Pixiv and click 'Get token from cookie'")
+            _log_token_hint()
+            raise ValueError("PIXIV_REFRESH_TOKEN missing — Settings → Pixiv → 'Get login URL' → log in → paste the code from Network 'callback?state=...' → 'Get token'")
 
         self.log("Refreshing access token")
         url = "https://oauth.secure.pixiv.net/auth/token"
@@ -84,7 +86,8 @@ class PixivAppAPI:
         resp = self.session.post(url, data=data, headers=headers, timeout=30)
         if resp.status_code >= 400:
             self.log(f"Auth failed: {resp.text[:200]}")
-            raise ValueError("Invalid refresh token")
+            _log_token_hint()
+            raise ValueError("Invalid refresh token — get a new one in Settings → Pixiv (steps above / in the pixiv log)")
 
         body = resp.json()["response"]
         self.user = body["user"]
