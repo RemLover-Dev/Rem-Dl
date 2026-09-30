@@ -164,11 +164,15 @@ def clear_items():
 
 
 def mark_read(ids=None):
-    items = load_items()
-    for i in items:
-        if ids is None or i.get("work_id") in ids:
-            i["read"] = True
-    save_items(items)
+    # one lock span: load_items()+save_items() as two sections let an
+    # ingest() landing in between be clobbered by this stale write-back
+    with _file_lock:
+        raw = _load_raw()
+        items = raw["items"]
+        for i in items:
+            if ids is None or i.get("work_id") in ids:
+                i["read"] = True
+        _save_raw(raw)
     return unread_count(items)
 
 

@@ -21,7 +21,6 @@ if sys.platform == "win32":
 import os
 import sys
 import time
-import bisect
 import html
 import threading
 import requests
@@ -811,36 +810,6 @@ def get_waifu_tags():
         return jsonify([t["name"] for t in WAIFU_TAGS_DB])
     return jsonify(['ass', 'ecchi', 'ero', 'genshin-impact', 'hentai', 'kamisato-ayaka', 'maid', 'marin-kitagawa', 'milf', 'mori-calliope', 'nami', 'one-piece', 'oppai', 'oral', 'paizuri', 'raiden-shogun', 'rem', 'selfies', 'uniform', 'waifu'])
 
-_suggest_sorted = {}
-
-def _suggest(db, query, limit=50):
-    """Prefix search over a tag list. Sorted DBs (sankaku/safe/yande/kona)
-    use bisect (~0.02ms); anything else falls back to a linear scan, which
-    also preserves popularity ordering (danbooru/gelbooru)."""
-    if not db or not query:
-        return []
-    key = id(db)
-    is_sorted = _suggest_sorted.get(key)
-    if is_sorted is None:
-        try:
-            is_sorted = all(db[i] <= db[i + 1] for i in range(len(db) - 1))
-        except TypeError:
-            is_sorted = False
-        _suggest_sorted[key] = is_sorted
-    if is_sorted:
-        out = []
-        i = bisect.bisect_left(db, query, 0, len(db))
-        while i < len(db):
-            t = db[i]
-            if not isinstance(t, str) or not t.startswith(query):
-                break
-            out.append(t)
-            if len(out) >= limit:
-                break
-            i += 1
-        return out
-    return [t for t in db if isinstance(t, str) and t.startswith(query)][:limit]
-
 @app.route("/api/tags/zerochan", methods=["POST"])
 def get_zerochan_suggestions():
     data = request.json or {}
@@ -1311,7 +1280,9 @@ def clear_tag_history():
 
 @app.route("/api/history/remove", methods=["POST"])
 def remove_tag_history():
-    data = request.json
+    data = request.json or {}
+    if not data.get("site") or not data.get("tag"):
+        return jsonify({"error": "site and tag required"}), 400
     DatabaseManager.remove_tag_history(data["site"], data["tag"], data.get("rating"))
     return jsonify({"success": True})
 
@@ -1340,8 +1311,10 @@ def clear_image_history():
 
 @app.route("/api/image_history/remove", methods=["POST"])
 def remove_image_history():
-    data = request.json
-    DatabaseManager.remove_image_history(data.get("filename"))
+    data = request.json or {}
+    if not data.get("filename"):
+        return jsonify({"error": "filename required"}), 400
+    DatabaseManager.remove_image_history(data["filename"])
     return jsonify({"success": True})
 
 @app.route("/api/favorites", methods=["GET", "POST"])
@@ -1507,25 +1480,19 @@ def get_gallery():
     type_filters = [t.strip() for t in type_filter_raw.split(",") if t.strip()] if type_filter_raw and type_filter_raw != "all" else []
     rating_filter_raw = request.args.get("rating", "").lower().strip()
     rating_filters = [r.strip() for r in rating_filter_raw.split(",") if r.strip()] if rating_filter_raw else []
-    page = max(1, int(request.args.get("page", 1)))
-    per_page = min(400, max(1, int(request.args.get("per_page", 24))))
+    page = max(1, _safe_int(request.args.get("page", 1), 1))
+    per_page = min(400, max(1, _safe_int(request.args.get("per_page", 24), 24)))
 
     gallery = shared.load_gallery()
     images = gallery.get("images", [])
     fp_cache = _build_filepath_cache()
-    dirty = False
+    # in-memory fix-up only: a GET must not rewrite gallery.json (2.5MB per
+    # page view), and deleting filepath on a cache miss drops live entries —
+    # the cache is keyed by bare filename, so a walk miss/collision is wrong
     for img in images:
         cached = fp_cache.get(img.get("filename", ""))
-        if cached:
-            if img.get("filepath") != cached:
-                img["filepath"] = cached
-                dirty = True
-        elif img.get("filepath"):
-            del img["filepath"]
-            dirty = True
-    if dirty:
-        shared.save_gallery(gallery)
-        images = gallery.get("images", [])
+        if cached and img.get("filepath") != cached:
+            img["filepath"] = cached
     images = [i for i in images if i.get("filepath")]
     images = _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=_parse_ts_range())
 
@@ -1553,14 +1520,15 @@ def get_gallery():
 
 @app.route("/api/gallery/favourite", methods=["POST"])
 def toggle_gallery_fav():
-    data = request.json
+    data = request.json or {}
     img_id = data.get("id")
-    gallery = shared.load_gallery()
-    for img in gallery["images"]:
-        if img["id"] == img_id:
-            img["favourite"] = not img.get("favourite", False)
-            shared.save_gallery(gallery)
-            return jsonify({"success": True, "favourite": img["favourite"]})
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for img in gallery["images"]:
+            if img.get("id") == img_id:
+                img["favourite"] = not img.get("favourite", False)
+                shared.save_gallery(gallery)
+                return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
 @app.route("/api/gallery/favourite_batch", methods=["POST"])
@@ -1570,55 +1538,62 @@ def toggle_gallery_fav_batch():
     ids = set((request.json or {}).get("ids") or [])
     if not ids:
         return jsonify({"success": True, "flipped": 0})
-    gallery = shared.load_gallery()
-    flipped = 0
-    for img in gallery["images"]:
-        if img.get("id") in ids:
-            img["favourite"] = not img.get("favourite", False)
-            flipped += 1
-    if flipped:
-        shared.save_gallery(gallery)
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        flipped = 0
+        for img in gallery["images"]:
+            if img.get("id") in ids:
+                img["favourite"] = not img.get("favourite", False)
+                flipped += 1
+        if flipped:
+            shared.save_gallery(gallery)
     return jsonify({"success": True, "flipped": flipped})
 
 @app.route("/api/gallery/favourite_by_name", methods=["POST"])
 def toggle_gallery_fav_by_name():
     fn = (request.json or {}).get("filename", "")
-    gallery = shared.load_gallery()
-    for img in gallery["images"]:
-        if img.get("filename") == fn:
-            img["favourite"] = not img.get("favourite", False)
-            shared.save_gallery(gallery)
-            return jsonify({"success": True, "favourite": img["favourite"]})
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for img in gallery["images"]:
+            if img.get("filename") == fn:
+                img["favourite"] = not img.get("favourite", False)
+                shared.save_gallery(gallery)
+                return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
 @app.route("/api/gallery/delete_by_name", methods=["POST"])
 def delete_gallery_image_by_name():
     fn = (request.json or {}).get("filename", "")
-    gallery = shared.load_gallery()
-    for i, img in enumerate(gallery["images"]):
-        if img.get("filename") == fn:
-            full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
-            try:
-                if os.path.exists(full_path):
-                    os.remove(full_path)
-            except Exception as e:
-                print("Error deleting file:", e)
-            gallery["images"].pop(i)
-            shared.save_gallery(gallery)
-            _invalidate_fp_cache()
-            try:
-                DatabaseManager.remove_image_history(fn)
-            except Exception as e:
-                print("History delete error:", e)
-            dedup_warning = False
-            try:
-                from core.dedup_store import get_store
-                get_store().remove_by_filepath(full_path)
-            except Exception as e:
-                dedup_warning = True
-                print("Dedup cleanup error:", e)
-            return jsonify({"success": True, "dedup_warning": dedup_warning})
-    return jsonify({"success": False, "error": "not found"}), 404
+    # lock the whole find+pop+save: a download finishing in between mutates
+    # the same live gallery dict and our save would resurrect the entry
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for i, img in enumerate(gallery["images"]):
+            if img.get("filename") == fn:
+                full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
+                gallery["images"].pop(i)
+                shared.save_gallery(gallery)
+                break
+        else:
+            return jsonify({"success": False, "error": "not found"}), 404
+    _invalidate_fp_cache()
+    try:
+        if os.path.exists(full_path):
+            os.remove(full_path)
+    except Exception as e:
+        print("Error deleting file:", e)
+    try:
+        DatabaseManager.remove_image_history(fn)
+    except Exception as e:
+        print("History delete error:", e)
+    dedup_warning = False
+    try:
+        from core.dedup_store import get_store
+        get_store().remove_by_filepath(full_path)
+    except Exception as e:
+        dedup_warning = True
+        print("Dedup cleanup error:", e)
+    return jsonify({"success": True, "dedup_warning": dedup_warning})
 
 @app.route("/api/gallery/tags", methods=["GET"])
 def get_gallery_tags():
@@ -1638,8 +1613,10 @@ def get_gallery_tags():
 
 @app.route("/api/gallery/file/<path:filepath>")
 def gallery_file(filepath):
-    full = os.path.normpath(os.path.join(MASTER_FOLDER, filepath))
-    if not full.startswith(os.path.normpath(MASTER_FOLDER)):
+    # realpath + sep: normpath+startswith lets "../<prefix-sibling>" through
+    # when MASTER_FOLDER's name prefixes another directory (foo vs foobar)
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if os.path.isfile(full):
         return send_file(full)
@@ -1651,12 +1628,11 @@ def thumb_by_name(filename):
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if not os.path.isfile(full):
-        # Search subdirectories
-        for root, _, files in os.walk(MASTER_FOLDER):
-            if filename in files:
-                full = os.path.join(root, filename)
-                break
-        else:
+        # look it up in the cached walk (same 30s TTL as the gallery) — no os.walk per miss
+        rel = _build_filepath_cache().get(filename)
+        if rel:
+            full = os.path.realpath(os.path.join(MASTER_FOLDER, rel))
+        if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep) or not os.path.isfile(full):
             return "Image was deleted", 404
     return redirect_to_thumb(full)
 
@@ -1730,8 +1706,8 @@ def redirect_to_thumb(full_path):
 
 @app.route("/api/gallery/thumb/<path:filepath>")
 def gallery_thumb(filepath):
-    full = os.path.normpath(os.path.join(MASTER_FOLDER, filepath))
-    if not full.startswith(os.path.normpath(MASTER_FOLDER)):
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if not os.path.isfile(full):
         return "Image was deleted", 404
@@ -1763,36 +1739,40 @@ def get_gallery_sources():
 
 @app.route("/api/gallery/delete", methods=["POST"])
 def delete_gallery_image():
-    data = request.json
+    data = request.json or {}
     img_id = data.get("id")
-    gallery = shared.load_gallery()
-    for i, img in enumerate(gallery["images"]):
-        if img["id"] == img_id:
-            # پاک کردن فیزیکی فایل از روی هارد
-            full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
-            try:
-                if os.path.exists(full_path):
-                    os.remove(full_path)
-            except Exception as e:
-                print("Error deleting file:", e)
-            # حذف از دیتابیس گالری
-            fn = img.get("filename", "")
-            gallery["images"].pop(i)
-            shared.save_gallery(gallery)
-            _invalidate_fp_cache()
-            try:
-                DatabaseManager.remove_image_history(fn)
-            except Exception as e:
-                print("History delete error:", e)
-            dedup_warning = False
-            try:
-                from core.dedup_store import get_store
-                get_store().remove_by_filepath(full_path)
-            except Exception as e:
-                dedup_warning = True
-                print("Dedup cleanup error:", e)
-            return jsonify({"success": True, "dedup_warning": dedup_warning})
-    return jsonify({"success": False, "error": "Not found"}), 404 
+    # find+pop+save atomically — a download finishing in between would have
+    # its new entry clobbered by our stale save (see delete_by_name)
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for i, img in enumerate(gallery["images"]):
+            if img.get("id") == img_id:
+                full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
+                fn = img.get("filename", "")
+                gallery["images"].pop(i)
+                shared.save_gallery(gallery)
+                break
+        else:
+            return jsonify({"success": False, "error": "Not found"}), 404
+    # پاک کردن فیزیکی فایل از روی هارد
+    try:
+        if os.path.exists(full_path):
+            os.remove(full_path)
+    except Exception as e:
+        print("Error deleting file:", e)
+    _invalidate_fp_cache()
+    try:
+        DatabaseManager.remove_image_history(fn)
+    except Exception as e:
+        print("History delete error:", e)
+    dedup_warning = False
+    try:
+        from core.dedup_store import get_store
+        get_store().remove_by_filepath(full_path)
+    except Exception as e:
+        dedup_warning = True
+        print("Dedup cleanup error:", e)
+    return jsonify({"success": True, "dedup_warning": dedup_warning})
 
 def _scan_and_merge_gallery():
     """Walk MASTER_FOLDER and merge files into the gallery.
@@ -1867,50 +1847,62 @@ def _hash_missing_dedup(gallery):
 
 @app.route("/api/gallery/rescan", methods=["POST"])
 def rescan_gallery():
-    gallery, count_added, count_fixed = _scan_and_merge_gallery()
-    _invalidate_fp_cache()
-    try:
-        from core.dedup_store import get_store
-        count_removed_records = get_store().remove_missing_files()
-    except Exception as e:
-        print("Dedup sweep error:", e)
-        count_removed_records = 0
-    hashed = _hash_missing_dedup(gallery)
-    shared.save_gallery(gallery)
-    return jsonify({"success": True, "added": count_added, "fixed": count_fixed,
-                    "removed_entries": 0,
-                    "removed_records": count_removed_records,
-                    "hashed": hashed})
+    # os.walk the whole library + dedup hashing takes seconds — a sync
+    # request holds the connection the whole time; run it in a thread and
+    # announce completion over the existing socket
+    def _rescan():
+        try:
+            gallery, count_added, count_fixed = _scan_and_merge_gallery()
+            _invalidate_fp_cache()
+            try:
+                from core.dedup_store import get_store
+                count_removed_records = get_store().remove_missing_files()
+            except Exception as e:
+                print("Dedup sweep error:", e)
+                count_removed_records = 0
+            hashed = _hash_missing_dedup(gallery)
+            shared.save_gallery(gallery)
+            socketio.emit("gallery_rescan_done", {
+                "success": True, "added": count_added, "fixed": count_fixed,
+                "removed_entries": 0,
+                "removed_records": count_removed_records,
+                "hashed": hashed})
+        except Exception as e:
+            print("Rescan error:", e)
+            socketio.emit("gallery_rescan_done", {"success": False})
+    threading.Thread(target=_rescan, daemon=True).start()
+    return jsonify({"success": True, "started": True})
 
 @app.route("/api/gallery/import", methods=["POST"])
 def import_gallery_from_history():
     from core.shared import tags_dict_from_lists
     hist = DatabaseManager.load_image_history()
-    gallery = shared.load_gallery()
-    existing = {i["filename"] for i in gallery["images"]}
-    fp_cache = _build_filepath_cache()
-    count = 0
-    for entry in hist:
-        fn = entry.get("filename", "")
-        if fn and fn not in existing:
-            entry_tags = entry.get("tags", {})
-            entry_artists = entry.get("artists", [])
-            if isinstance(entry_tags, dict):
-                tags = entry_tags
-            else:
-                tags = tags_dict_from_lists(entry_tags, entry_artists)
-            gallery["images"].append({
-                "id": hashlib.sha256(f"{entry.get('site','')}:{fn}".encode()).hexdigest()[:12],
-                "filename": fn,
-                "filepath": fp_cache.get(fn, ""),
-                "site": entry.get("site", ""),
-                "tags": tags,
-                "favourite": False,
-                "downloaded_at": ""
-            })
-            existing.add(fn)
-            count += 1
-    shared.save_gallery(gallery)
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        existing = {i["filename"] for i in gallery["images"]}
+        fp_cache = _build_filepath_cache()
+        count = 0
+        for entry in hist:
+            fn = entry.get("filename", "")
+            if fn and fn not in existing:
+                entry_tags = entry.get("tags", {})
+                entry_artists = entry.get("artists", [])
+                if isinstance(entry_tags, dict):
+                    tags = entry_tags
+                else:
+                    tags = tags_dict_from_lists(entry_tags, entry_artists)
+                gallery["images"].append({
+                    "id": hashlib.sha256(f"{entry.get('site','')}:{fn}".encode()).hexdigest()[:12],
+                    "filename": fn,
+                    "filepath": fp_cache.get(fn, ""),
+                    "site": entry.get("site", ""),
+                    "tags": tags,
+                    "favourite": False,
+                    "downloaded_at": ""
+                })
+                existing.add(fn)
+                count += 1
+        shared.save_gallery(gallery)
     return jsonify({"success": True, "imported": count})
 
 @app.route("/api/ui_config", methods=["GET", "POST"])
@@ -2006,8 +1998,18 @@ def handle_disconnect():
 
     def shutdown_server():
         print(">>> No active tabs. Killing Rems Dl Server... <<<")
+        # os._exit skips atexit — flush the batched gallery writes or the
+        # last N downloads are lost
+        try:
+            shared.flush_gallery()
+        except Exception:
+            pass
         os._exit(0)
 
+    # cancel the previous timer: without this a quick reconnect+disconnect
+    # leaves two timers, and the stale one kills a live tab
+    if shutdown_timer:
+        shutdown_timer.cancel()
     shutdown_timer = threading.Timer(3.0, shutdown_server)
     shutdown_timer.start()
 

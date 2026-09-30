@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import threading
 import time
 
 
@@ -12,6 +13,11 @@ def _app_base_dir():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
+
+# every JSON store here is read-modify-written from worker threads and
+# request handlers at once — one re-entrant lock spans load->mutate->save,
+# and save_json writes atomically so a crash can't truncate a store
+_DB_LOCK = threading.RLock()
 
 TAG_HISTORY_FILE = os.path.join(DATABASE_DIR, "tag_history.json")
 FAV_TAGS_FILE = os.path.join(DATABASE_DIR, "fav_tags.json")
@@ -36,8 +42,9 @@ class DatabaseManager:
 
     @staticmethod
     def save_learned_tags(data):
-        with open(LEARNED_TAGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        with _DB_LOCK:
+            with open(LEARNED_TAGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
 
     @staticmethod
     def add_learned_tag(site, tag):
@@ -45,13 +52,14 @@ class DatabaseManager:
         tag = str(tag).strip()
         if not tag or len(tag) < 2:
             return
-        tags = DatabaseManager.load_learned_tags()
-        site_list = tags.setdefault(site, [])
-        if tag not in site_list:
-            site_list.insert(0, tag)
-            # Bound per-site learned tags to top 500 to keep memory negligible (< 100 KB)
-            tags[site] = site_list[:500]
-            DatabaseManager.save_learned_tags(tags)
+        with _DB_LOCK:
+            tags = DatabaseManager.load_learned_tags()
+            site_list = tags.setdefault(site, [])
+            if tag not in site_list:
+                site_list.insert(0, tag)
+                # Bound per-site learned tags to top 500 to keep memory negligible (< 100 KB)
+                tags[site] = site_list[:500]
+                DatabaseManager.save_learned_tags(tags)
 
     @staticmethod
     def get_learned_suggestions(site, query, limit=20):
@@ -64,18 +72,22 @@ class DatabaseManager:
 
     @staticmethod
     def load_json(filepath):
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                return []
-        return []
+        with _DB_LOCK:
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception:
+                    return []
+            return []
 
     @staticmethod
     def save_json(filepath, data):
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+        with _DB_LOCK:
+            tmp = filepath + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(tmp, filepath)
 
     # --- Tag History ---
     @staticmethod
@@ -88,24 +100,26 @@ class DatabaseManager:
 
     @staticmethod
     def add_tag_history(site, tag, rating=""):
-        hist = DatabaseManager.load_tag_history()
-        rating = rating or ""
-        # re-searching the same tag refreshes it: move to top with a new stamp
-        hist = [x for x in hist
-                if not (x.get("site") == site and x.get("tag") == tag
-                        and (x.get("rating") or "") == rating)]
-        hist.insert(0, {"site": site, "tag": tag, "rating": rating,
-                        "searched_at": time.time()})
-        DatabaseManager.save_tag_history(hist)
+        with _DB_LOCK:
+            hist = DatabaseManager.load_tag_history()
+            rating = rating or ""
+            # re-searching the same tag refreshes it: move to top with a new stamp
+            hist = [x for x in hist
+                    if not (x.get("site") == site and x.get("tag") == tag
+                            and (x.get("rating") or "") == rating)]
+            hist.insert(0, {"site": site, "tag": tag, "rating": rating,
+                            "searched_at": time.time()})
+            DatabaseManager.save_tag_history(hist)
 
     @staticmethod
     def remove_tag_history(site, tag, rating=None):
-        hist = DatabaseManager.load_tag_history()
-        if rating is None:
-            hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag)]
-        else:
-            hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag and (x.get("rating") or "") == rating)]
-        DatabaseManager.save_tag_history(hist)
+        with _DB_LOCK:
+            hist = DatabaseManager.load_tag_history()
+            if rating is None:
+                hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag)]
+            else:
+                hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag and (x.get("rating") or "") == rating)]
+            DatabaseManager.save_tag_history(hist)
 
     @staticmethod
     def clear_tag_history():
@@ -115,16 +129,17 @@ class DatabaseManager:
     @staticmethod
     def load_image_history():
         from core.shared import tags_dict_from_lists
-        data = DatabaseManager.load_json(IMAGE_HISTORY_FILE)
-        changed = False
-        for entry in data:
-            tags = entry.get("tags")
-            if isinstance(tags, list):
-                entry["tags"] = tags_dict_from_lists(tags, entry.get("artists", []))
-                changed = True
-        if changed:
-            DatabaseManager.save_image_history(data)
-        return data
+        with _DB_LOCK:
+            data = DatabaseManager.load_json(IMAGE_HISTORY_FILE)
+            changed = False
+            for entry in data:
+                tags = entry.get("tags")
+                if isinstance(tags, list):
+                    entry["tags"] = tags_dict_from_lists(tags, entry.get("artists", []))
+                    changed = True
+            if changed:
+                DatabaseManager.save_image_history(data)
+            return data
 
     @staticmethod
     def save_image_history(data):
@@ -133,23 +148,25 @@ class DatabaseManager:
     @staticmethod
     def add_image_history(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         from core.shared import tags_dict_from_lists
-        hist = DatabaseManager.load_image_history()
-        tags_dict = tags_dict_from_lists(tags_list, artist_list, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-        entry = {
-            "site": worker_name,
-            "filename": filename,
-            "tags": dict(tags_dict),
-            "filepath": filepath,
-            "downloaded_at": time.time()
-        }
-        hist.insert(0, entry)
-        hist = hist[:100]
-        DatabaseManager.save_image_history(hist)
+        with _DB_LOCK:
+            hist = DatabaseManager.load_image_history()
+            tags_dict = tags_dict_from_lists(tags_list, artist_list, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+            entry = {
+                "site": worker_name,
+                "filename": filename,
+                "tags": dict(tags_dict),
+                "filepath": filepath,
+                "downloaded_at": time.time()
+            }
+            hist.insert(0, entry)
+            hist = hist[:100]
+            DatabaseManager.save_image_history(hist)
 
     @staticmethod
     def remove_image_history(filename):
-        hist = [x for x in DatabaseManager.load_image_history() if x.get("filename") != filename]
-        DatabaseManager.save_image_history(hist)
+        with _DB_LOCK:
+            hist = [x for x in DatabaseManager.load_image_history() if x.get("filename") != filename]
+            DatabaseManager.save_image_history(hist)
 
     @staticmethod
     def clear_image_history():
@@ -166,36 +183,38 @@ class DatabaseManager:
 
     @staticmethod
     def toggle_favorite(site, tag):
-        favs = DatabaseManager.load_favorites()
-        entry = {"site": site, "tag": tag}
-        if entry in favs:
-            favs.remove(entry)
-        else:
-            favs.append(entry)
-        DatabaseManager.save_favorites(favs)
-        return favs
+        with _DB_LOCK:
+            favs = DatabaseManager.load_favorites()
+            entry = {"site": site, "tag": tag}
+            if entry in favs:
+                favs.remove(entry)
+            else:
+                favs.append(entry)
+            DatabaseManager.save_favorites(favs)
+            return favs
 
     # --- UI Config ---
     @staticmethod
     def load_ui_config():
-        config = DatabaseManager.load_json(UI_CONFIG_FILE)
-        if not config or not isinstance(config, dict):
-            config = DatabaseManager._default_ui_config()
-            DatabaseManager.save_ui_config(config)
-            return config
-        # Migrate older configs: ensure new keys exist without wiping user data.
-        defaults = DatabaseManager._default_ui_config()
-        changed = False
-        for key, val in defaults.items():
-            if key not in config:
-                config[key] = val
-                changed = True
-        if changed:
-            try:
+        with _DB_LOCK:
+            config = DatabaseManager.load_json(UI_CONFIG_FILE)
+            if not config or not isinstance(config, dict):
+                config = DatabaseManager._default_ui_config()
                 DatabaseManager.save_ui_config(config)
-            except Exception:
-                pass
-        return config
+                return config
+            # Migrate older configs: ensure new keys exist without wiping user data.
+            defaults = DatabaseManager._default_ui_config()
+            changed = False
+            for key, val in defaults.items():
+                if key not in config:
+                    config[key] = val
+                    changed = True
+            if changed:
+                try:
+                    DatabaseManager.save_ui_config(config)
+                except Exception:
+                    pass
+            return config
 
     @staticmethod
     def save_ui_config(data):

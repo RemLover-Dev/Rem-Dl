@@ -221,10 +221,19 @@ def _load_gallery_from_disk():
         try:
             with open(GALLERY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            _migrate_gallery_tags(data)
-            return data
         except Exception:
+            # quarantine the bad file — returning an empty gallery here would
+            # get persisted over all real entries by the next save
+            try:
+                os.replace(GALLERY_FILE, GALLERY_FILE + ".corrupt")
+            except OSError:
+                pass
             return {"images": []}
+        try:
+            _migrate_gallery_tags(data)
+        except Exception:
+            pass
+        return data
     return {"images": []}
 
 def _migrate_gallery_tags(data):
@@ -244,17 +253,22 @@ def _migrate_gallery_tags(data):
         save_gallery(data)
 
 def save_gallery(data):
-    _write_gallery(data)
     with _GALLERY_LOCK:
+        # write under the lock: a worker save racing a route save used to
+        # interleave two truncate+dumps and corrupt gallery.json
+        _write_gallery(data)
         if data is _gallery_cache["data"]:
             _gallery_cache["filenames"] = {i.get("filename") for i in data.get("images", [])}
             _gallery_cache["dirty"] = 0
 
 def _write_gallery(data):
     # compact separators: gallery.json is gitignored data, indent only
-    # cost parse time and disk on every write
-    with open(GALLERY_FILE, "w", encoding="utf-8") as f:
+    # cost parse time and disk on every write; tmp+replace so a crash
+    # mid-write can't truncate the live file
+    tmp = GALLERY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, separators=(",", ":"))
+    os.replace(tmp, GALLERY_FILE)
 
 _GALLERY_LOCK = threading.RLock()
 _gallery_cache = {"data": None, "filenames": set(), "dirty": 0}
@@ -326,7 +340,11 @@ def write_image_metadata(filepath, tags_list, artists, site, characters=None, co
             pnginfo = PngImagePlugin.PngInfo()
             pnginfo.add_text("Rems_Dl", meta_text)
             img = Image.open(filepath)
-            img.save(filepath, pnginfo=pnginfo)  # lossless for PNG
+            # tmp+replace like the jpg branch — saving over the live file
+            # leaves a truncated image if we crash mid-write
+            tmp = filepath + ".meta"
+            img.save(tmp, pnginfo=pnginfo)  # lossless for PNG
+            os.replace(tmp, filepath)
         # webp/gif skipped: embedding would re-encode and lose quality
     except Exception as e:
         print(f"Metadata write error on {filepath}: {e}")
@@ -346,27 +364,10 @@ def save_history(site_root, history_set):
     hist_path = os.path.join(site_root, "download_history.json")
     with HISTORY_LOCK:
         try:
-            with open(hist_path, "w", encoding="utf-8") as f: json.dump(list(history_set), f)
+            tmp = hist_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f: json.dump(list(history_set), f)
+            os.replace(tmp, hist_path)
         except Exception as e: print(f"Error saving history: {e}")
-
-def remove_gallery_files(paths):
-    """Drop gallery entries whose file resolves to one of the given absolute paths."""
-    targets = {os.path.normcase(os.path.normpath(p)) for p in paths}
-    gal = load_gallery()
-    kept = [img for img in gal["images"]
-            if os.path.normcase(os.path.normpath(os.path.join(MASTER_FOLDER, img.get("filepath", "")))) not in targets]
-    removed = len(gal["images"]) - len(kept)
-    if removed:
-        gal["images"] = kept
-        save_gallery(gal)
-    try:
-        from core.dedup_store import get_store
-        store = get_store()
-        for p in paths:
-            store.remove_by_filepath(p)
-    except Exception:
-        pass
-    return removed
 
 
 # --- PERSISTENT IMAGE DEDUP (SQLite-backed, cross-session) ---
@@ -605,8 +606,10 @@ class BaseDownloader:
                 os.replace(part_path, filepath)
 
                 # persistent perceptual-hash dedup: skip re-uploads/re-encodes
-                # already seen (any site, any session) before counting success
-                dup = check_duplicate(filepath, self.name)
+                # already seen (any site, any session) before counting success.
+                # to_thread: hashing decodes the image — running it on the event
+                # loop would stall this worker's other 3 download tasks
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)
@@ -641,10 +644,11 @@ class BaseDownloader:
 
                 # ponytail: metadata + gallery publish BEFORE the SUCCESS log — the log card
                 # requests its thumb instantly and would otherwise read a half-written file
-                write_image_metadata(filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                # to_thread: PNG metadata re-encodes the whole image, too slow for the loop
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 add_to_gallery(self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-                send_tags(self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 return True
 
             except Exception as e:
