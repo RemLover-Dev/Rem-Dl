@@ -2012,10 +2012,10 @@ socket.on("update_history", function () {
 
 socket.on("gallery_rescan_done", function (data) {
     if (data && data.success) {
-        showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`);
+        showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" });
         loadGallery(1);
         populateGallerySiteFilter();
-    } else showToast("Rescan failed", { warn: true, icon: WARN_ICON });
+    } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" });
 });
 
 socket.on("pinterest_progress", function (data) {
@@ -2567,8 +2567,12 @@ function clearLog(tabID) {
 function showToast(msg, opts) {
     opts = opts || {};
     const container = document.getElementById("toastContainer") || (() => { const c = document.createElement('div'); c.id = 'toastContainer'; c.className = 'toast-container'; document.body.appendChild(c); return c; })();
+    // keyed toasts replace the previous toast of the same kind instead of
+    // stacking (e.g. "Rescan started" is pointless once "Rescan complete" lands)
+    if (opts.key) container.querySelectorAll(".toast-item").forEach(t => { if (t.dataset.toastKey === opts.key) t.remove(); });
     let toast = document.createElement("div");
     toast.className = "toast-item" + (opts.warn ? " warn" : "");
+    if (opts.key) toast.dataset.toastKey = opts.key;
     toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${escapeHtml(msg)}</span></div><button class="toast-dismiss" onclick="this.parentElement.remove()">✕</button>`;
     container.appendChild(toast);
     // ponytail: warnings (e.g. copy fallback) stay until dismissed; info toasts fade
@@ -4881,7 +4885,7 @@ function toggleViewerFav() {
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
     async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) { console.error("gallery import failed:", e); } }
-    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes"); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" }); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
     let _siteFilterSeq = 0;
     async function populateGallerySiteFilter() {
         const seq = ++_siteFilterSeq;
