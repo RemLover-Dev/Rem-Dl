@@ -1980,10 +1980,11 @@ socket.on("python_log", function (data) {
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
     if (!data || data.stopped) return;
-    const d = data.downloaded || 0, f = data.failed || 0;
-    if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Task finished: ${d} downloaded successfully, ${f} failed to download! ---`);
-    else if (d > 0) updateProgressBar(data.worker, `--- All ${d} downloads completed successfully! ---`);
-    else updateProgressBar(data.worker, "Task finished. No new images to download.");
+    const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
+    const dup = z ? ` (${z} duplicates removed)` : "";
+    if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Task finished: ${d} downloaded successfully, ${f} failed to download${dup}! ---`);
+    else if (d > 0) updateProgressBar(data.worker, `--- All ${d} downloads completed successfully!${dup} ---`);
+    else updateProgressBar(data.worker, `Task finished. No new images to download${dup}.`);
 });
 
 socket.on("pixiv_notifs", function (data) {

@@ -424,6 +424,7 @@ class BaseDownloader:
         self.session = None  # created lazily in _create_session
         self.downloaded_count = 0
         self.failed_count = 0
+        self.duplicate_count = 0
         self.downloaded_bytes = 0
         self.total_bytes = 0
         self.total_to_download = 0
@@ -612,6 +613,7 @@ class BaseDownloader:
                     except OSError:
                         pass
                     self.enqueued_count -= 1
+                    self.duplicate_count += 1
                     return False
 
                 self.downloaded_count += 1
@@ -703,15 +705,17 @@ class BaseDownloader:
                 await self.download_queue.join()
             for t in download_tasks: t.cancel()
 
+            z = self.duplicate_count
+            dup_note = f" ({z} duplicates removed)" if z else ""
             if self.downloaded_count > 0 and self.failed_count > 0:
-                self.log(f"--- Task finished: {self.downloaded_count} downloaded successfully, {self.failed_count} failed to download! ---")
+                self.log(f"--- Task finished: {self.downloaded_count} downloaded successfully, {self.failed_count} failed to download{dup_note}! ---")
             elif self.downloaded_count > 0:
-                self.log(f"--- All {self.downloaded_count} downloads completed successfully! ---")
+                self.log(f"--- All {self.downloaded_count} downloads completed successfully!{dup_note} ---")
             elif not self.stop_event.is_set():
-                self.log("Task finished. No new images to download.")
+                self.log(f"Task finished. No new images to download{dup_note}.")
             # ponytail: dedicated finish signal — log parsing alone is too fragile to drive UI state
             try:
-                socketio_emit("worker_finished", {"worker": self.name, "downloaded": self.downloaded_count, "failed": self.failed_count, "stopped": bool(self.stop_event.is_set())})
+                socketio_emit("worker_finished", {"worker": self.name, "downloaded": self.downloaded_count, "failed": self.failed_count, "duplicates": z, "stopped": bool(self.stop_event.is_set())})
             except Exception:
                 pass
         except Exception as critical_e:

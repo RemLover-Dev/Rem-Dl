@@ -185,6 +185,7 @@ class PinterestWorker(BaseWorker):
                         os.remove(path)
                     except OSError:
                         pass
+                    self.duplicate_count += 1
                     continue
 
                 rel = os.path.relpath(str(path), shared.MASTER_FOLDER)

@@ -837,6 +837,7 @@ class ZerochanWorker(BaseDownloader):
                     except OSError:
                         pass
                     self.enqueued_count -= 1
+                    self.duplicate_count += 1
                     return False
 
                 self.downloaded_count += 1

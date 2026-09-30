@@ -422,6 +422,7 @@ class PixivWorker(BaseDownloader):
                     os.remove(gif_path)
                 except OSError:
                     pass
+                self.duplicate_count += 1
                 return False
 
             self.downloaded_count += 1
