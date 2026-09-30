@@ -3878,9 +3878,11 @@ async function loadGallery(page, remeasured) {
         if (reqId !== galleryReqId) return;
         // viewport moved mid-flight (fast zoom switch) → refetch for the settled size
         if (window.innerWidth !== reqW) return loadGallery(page);
+        const prevViewId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
         galleryState = data;
         // server clamps page to total_pages — trust its answer, not our guess
         if (data.page) currentGalleryPage = data.page;
+        reanchorGalleryViewer(prevViewId);
         renderGallery();
         // empty-state hides pagination (grid box grows ~44px) so per_page above was
         // measured against the wrong height — re-measure with pagination restored and
@@ -3906,8 +3908,10 @@ async function loadGalleryPage(page, callback) {
         const data = await resp.json();
         if (reqId !== galleryReqId) return;
         if (window.innerWidth !== reqW) return loadGalleryPage(page, callback);
+        const prevViewId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
         galleryState = data;
         if (data.page) currentGalleryPage = data.page;
+        reanchorGalleryViewer(prevViewId);
         if (callback) callback();
     } catch (e) { console.error("loadGalleryPage failed:", e); }
 }
@@ -4085,6 +4089,15 @@ async function favouriteSelected() {
 }
 async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) { console.error("favourite save failed:", e); } }
 let viewerIndex = -1;
+// background refetches (new download, delete, resize) replace galleryState.images
+// and shift every index — re-find the open image by id so viewerIndex keeps
+// pointing at it, otherwise Next lands on whatever slid into the old slot
+// (typically the freshly downloaded image).
+function reanchorGalleryViewer(prevId) {
+    if (viewerIndex < 0 || !prevId) return;
+    const at = galleryState.images.findIndex(i => i.id === prevId);
+    viewerIndex = at >= 0 ? at : Math.min(viewerIndex, galleryState.images.length - 1);
+}
 let viewerZoom = 1;
 function openGalleryViewer(id) {
     if (gallerySelectMode) {
