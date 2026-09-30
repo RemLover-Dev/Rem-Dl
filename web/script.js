@@ -158,9 +158,10 @@ function captureFullscreenKey(e) {
     e.preventDefault();
     if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return false;
     capturingFullscreenKey = false;
-    e.target.value = e.key;
+    const k = e.key.length === 1 && e.key.toLowerCase() !== e.key.toUpperCase() ? e.key.toUpperCase() : e.key;
+    e.target.value = k;
     e.target.placeholder = "Click to change";
-    uiConfig.fullscreen_key = e.key;
+    uiConfig.fullscreen_key = k;
     fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
     return false;
 }
