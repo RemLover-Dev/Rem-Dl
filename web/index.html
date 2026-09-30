@@ -693,21 +693,8 @@
 
                         <div class="settings-card">
                             <h3>Keybinds</h3>
-                            <div class="field-row"><label>Fullscreen:</label><select id="fullscreenKey" onchange="saveFullscreenKey()" style="flex:1;">
-                                <option>F1</option>
-                                <option>F2</option>
-                                <option>F3</option>
-                                <option>F4</option>
-                                <option>F5</option>
-                                <option>F6</option>
-                                <option>F7</option>
-                                <option>F8</option>
-                                <option>F9</option>
-                                <option>F10</option>
-                                <option selected>F11</option>
-                                <option>F12</option>
-                            </select></div>
-                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">Toggle app fullscreen in the desktop window. Applies immediately.</div>
+                            <div class="field-row"><label>Fullscreen:</label><input type="text" id="fullscreenKey" readonly value="F11" placeholder="Click, then press a key" onclick="startFullscreenKeyCapture()" onkeydown="return captureFullscreenKey(event)" onblur="cancelFullscreenKeyCapture()" style="flex:1; text-align: center; cursor: pointer;"></div>
+                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">Click the box, then press any key. Applies immediately.</div>
                         </div>
 
                         <div class="settings-card" style="grid-column: 1 / -1;">

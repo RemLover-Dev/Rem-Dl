@@ -10,7 +10,7 @@ function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) 
 // fullscreen keybind (default F11) in the pywebview desktop shell — plain
 // browsers have no window.pywebview, so we bail out and let their native key handle it
 document.addEventListener("keydown", function (e) {
-    if (e.key !== (uiConfig.fullscreen_key || "F11") || !window.pywebview || !window.pywebview.api) return;
+    if (e.key.toLowerCase() !== String(uiConfig.fullscreen_key || "F11").toLowerCase() || !window.pywebview || !window.pywebview.api) return;
     e.preventDefault();
     window.pywebview.api.toggle_fullscreen();
 });
@@ -138,11 +138,31 @@ async function loadUIConfig() {
     } catch(e) { console.error("Error loading UI config", e); }
 }
 
-function saveFullscreenKey() {
-    const sel = document.getElementById("fullscreenKey");
-    if (!sel) return;
-    uiConfig.fullscreen_key = sel.value;
+let capturingFullscreenKey = false;
+function startFullscreenKeyCapture() {
+    const inp = document.getElementById("fullscreenKey");
+    if (!inp) return;
+    capturingFullscreenKey = true;
+    inp.value = "";
+    inp.placeholder = "Press any key\u2026";
+    inp.focus();
+}
+function cancelFullscreenKeyCapture() {
+    if (!capturingFullscreenKey) return;
+    capturingFullscreenKey = false;
+    const inp = document.getElementById("fullscreenKey");
+    if (inp) inp.value = uiConfig.fullscreen_key || "F11";
+}
+function captureFullscreenKey(e) {
+    if (!capturingFullscreenKey) return true;
+    e.preventDefault();
+    if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return false;
+    capturingFullscreenKey = false;
+    e.target.value = e.key;
+    e.target.placeholder = "Click to change";
+    uiConfig.fullscreen_key = e.key;
     fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+    return false;
 }
 
 function applyRenderTheme(themeStr) {
