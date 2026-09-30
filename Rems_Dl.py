@@ -29,7 +29,6 @@ import urllib.parse
 import random
 import hashlib
 import io
-from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 import webbrowser
 from PIL import Image
@@ -1627,6 +1626,10 @@ def thumb_by_name(filename):
     full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
+    # disk cache before any walk/isfile — a cached name answers instantly
+    cache_path = _thumb_cache_path(full)
+    if os.path.exists(cache_path):
+        return _send_thumb(cache_path)
     if not os.path.isfile(full):
         # look it up in the cached walk (same 30s TTL as the gallery) — no os.walk per miss
         rel = _build_filepath_cache().get(filename)
@@ -1637,40 +1640,60 @@ def thumb_by_name(filename):
     return redirect_to_thumb(full)
 
 
-@lru_cache(maxsize=4096)
-def _make_thumb(full, mtime_ns, size):
-    """300px JPEG bytes in a bounded RAM LRU — nothing ever written to disk.
-    mtime/size are part of the key, so an edited file regenerates.
-    Exceptions are NOT cached, so a mid-download read retries next request."""
-    ext = os.path.splitext(full)[1].lower()
-    if ext in EXTENSIONS_VIDEO:
-        import subprocess
-        # stdout pipe — frame goes straight into RAM, never to disk
-        proc = subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-                              capture_output=True, timeout=10)
-        if proc.returncode == 0 and proc.stdout:
-            return proc.stdout
-        raise RuntimeError("ffmpeg frame extraction failed")
-    img = Image.open(full)
-    # ponytail: cap memory usage for very large images; decompress bomb protection
-    img.draft('RGB', (300, 300))
-    if img.mode in ('RGBA', 'P', 'LA'):
-        img = img.convert('RGB')
-    # BILINEAR: ~2x faster than LANCZOS at 300px, invisible at thumbnail size
-    img.thumbnail((300, 300), Image.Resampling.BILINEAR)
-    buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=80)
-    return buf.getvalue()
+THUMB_CACHE = os.path.join(DATABASE_DIR, "thumb_cache")
+os.makedirs(THUMB_CACHE, exist_ok=True)
+
+
+def _thumb_cache_path(full):
+    return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + ".jpg")
 
 
 def _cached_thumb(full):
-    st = os.stat(full)
-    return _make_thumb(full, st.st_mtime_ns, st.st_size)
+    """300px JPEG on disk under thumb_cache — survives restarts, nothing in RAM.
+    Keyed by full path only (as the original cache was): an edited file keeps
+    its old thumb until the cache file is deleted. Exceptions aren't cached,
+    so a mid-download read retries next request."""
+    cache_path = _thumb_cache_path(full)
+    if os.path.exists(cache_path):
+        return cache_path
+    ext = os.path.splitext(full)[1].lower()
+    if ext in EXTENSIONS_VIDEO:
+        import subprocess
+        proc = subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+                              capture_output=True, timeout=10)
+        if proc.returncode == 0 and proc.stdout:
+            data = proc.stdout
+        else:
+            raise RuntimeError("ffmpeg frame extraction failed")
+    else:
+        img = Image.open(full)
+        # ponytail: cap memory usage for very large images; decompress bomb protection
+        img.draft('RGB', (300, 300))
+        if img.mode in ('RGBA', 'P', 'LA'):
+            img = img.convert('RGB')
+        # BILINEAR: ~2x faster than LANCZOS at 300px, invisible at thumbnail size
+        img.thumbnail((300, 300), Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=80)
+        data = buf.getvalue()
+    # per-thread tmp + atomic replace: concurrent warmers never read a torn file
+    tmp = f"{cache_path}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, cache_path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return cache_path
 
 
 # gallery page returns, then the browser starts asking for its thumbs —
-# generate them here first (in the background, more workers than the
-# browser's 6 connections) so those requests hit the warm LRU instead of
+# generate them onto disk here first (in the background, more workers than
+# the browser's 6 connections) so those requests hit the cache instead of
 # paying ~100-300ms of PNG decode each. Failures aren't cached, so the
 # browser request still retries.
 _thumb_warm_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="thumbwarm")
@@ -1690,10 +1713,10 @@ def warm_page_thumbs(images):
             _thumb_warm_pool.submit(_warm_thumb, os.path.join(MASTER_FOLDER, fp))
 
 
-def _send_thumb(data):
-    """RAM-served 300px JPEG; the browser keeps it per-URL for a day, so
-    repeat views skip the server entirely."""
-    resp = Response(data, mimetype="image/jpeg")
+def _send_thumb(cache_path):
+    """Serve the disk-cached 300px JPEG; the browser keeps it per-URL for a
+    day, so repeat views skip the server entirely."""
+    resp = send_file(cache_path, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "private, max-age=86400"
     return resp
 
@@ -1709,6 +1732,11 @@ def gallery_thumb(filepath):
     full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
+    # ponytail: cached thumb still beats a broken icon when the source was
+    # deleted outside the app, so the cache is checked before isfile
+    cache_path = _thumb_cache_path(full)
+    if os.path.exists(cache_path):
+        return _send_thumb(cache_path)
     if not os.path.isfile(full):
         return "Image was deleted", 404
 
