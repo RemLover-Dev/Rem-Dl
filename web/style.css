@@ -341,6 +341,7 @@ input:focus, select:focus {
 .v-tag.main { background: linear-gradient(45deg, #e040a0, #ff6ec7); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6ec7; }
 .v-tag.sub { background: linear-gradient(45deg, #0ea5a5, #2dd4bf); border: 1px solid transparent; box-shadow: 0 0 0 1px #2dd4bf; color: #062a30; text-shadow: none; }
 .v-tag.neutral { background: #3b82c4; border: 1px solid transparent; box-shadow: 0 0 0 1px #3b82c4; }
+.v-tag.positive, .v-tag.main, .v-tag.sub { background: #3b82c4; border: 1px solid transparent; box-shadow: 0 0 0 1px #3b82c4; color: white; text-shadow: none; }
 
 /* ===== BUTTONS ===== */
 .action-btn {

@@ -188,13 +188,9 @@ class PixivWorker(BaseDownloader):
         else:
             self.mode = "artworks"
             self.value = self.raw_tag
-        self._artist_resolved = False
-
+        safe_mode = sanitize_path_component(self.mode, fallback="artworks")
         safe_value = sanitize_path_component(self.value, fallback="pixiv")
-        if self.mode == "ranking":
-            self.tag_dir = os.path.join(self.site_root, "ranking", safe_value)
-        else:
-            self.tag_dir = os.path.join(self.site_root, safe_value)
+        self.tag_dir = os.path.join(self.site_root, safe_mode, safe_value)
         safe_ensure_dir(self.tag_dir)
 
     def _api_instance(self):
@@ -234,8 +230,6 @@ class PixivWorker(BaseDownloader):
             if not works:
                 self.log("No more posts found.")
                 break
-            if self.mode == "artworks" and self.value.isdigit() and not self._artist_resolved:
-                self._resolve_artist_dir(works)
             for work in works:
                 if self.stop_event.is_set() or (need and collected >= need):
                     break
@@ -262,25 +256,6 @@ class PixivWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def _resolve_artist_dir(self, works):
-        # ponytail: the artist name rides free in the works payload — no extra API call
-        self._artist_resolved = True
-        name = ""
-        for w in works or []:
-            name = ((w.get("user") or {}).get("name") or "").strip()
-            if name:
-                break
-        old = self.tag_dir
-        if name:
-            safe = sanitize_path_component(name, fallback="artist")
-            self.tag_dir = os.path.join(MASTER_FOLDER, "Artists", safe)
-            self.log(f"Artist: {name}")
-        safe_ensure_dir(self.tag_dir)
-        try:
-            if old != self.tag_dir and os.path.isdir(old) and not os.listdir(old):
-                os.rmdir(old)
-        except Exception:
-            pass
     async def _process_work(self, work):
         work_id = work.get("id")
         if not work_id:
