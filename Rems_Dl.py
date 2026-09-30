@@ -211,7 +211,7 @@ shared.MASTER_FOLDER = MASTER_FOLDER
 
 def socketio_emit(event, data):
     try: socketio.emit(event, data)
-    except Exception: print(f"[SOCKETIO] {event}: {data}")
+    except Exception: print(f"[SOCKETIO] emit failed: {event}")
 
 shared.emit_callback = socketio_emit
 
