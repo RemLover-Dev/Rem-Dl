@@ -31,6 +31,7 @@ import random
 import hashlib
 import io
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import webbrowser
 from PIL import Image
 from datetime import datetime
@@ -166,6 +167,17 @@ else:
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 # ponytail: pin threading mode — gevent (installed) buffers emits from our native worker threads
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+
+from werkzeug.serving import WSGIRequestHandler
+
+
+class _KeepAliveHandler(WSGIRequestHandler):
+    # werkzeug defaults to HTTP/1.0 — every thumbnail response closed the
+    # connection, so a gallery page with hundreds of images paid a TCP
+    # handshake each. HTTP/1.1 keep-alive lets the browser reuse its
+    # 6 connections across all of them.
+    protocol_version = "HTTP/1.1"
 
 @app.before_request
 def restrict_browser_access():
@@ -1529,6 +1541,7 @@ def get_gallery():
     page = min(page, total_pages)
     start = (page - 1) * per_page
     page_imgs = images[start:start + per_page]
+    warm_page_thumbs(page_imgs)
 
     return jsonify({
         "images": page_imgs,
@@ -1648,7 +1661,7 @@ def thumb_by_name(filename):
     return redirect_to_thumb(full)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=4096)
 def _make_thumb(full, mtime_ns, size):
     """300px JPEG bytes in a bounded RAM LRU — nothing ever written to disk.
     mtime/size are part of the key, so an edited file regenerates.
@@ -1677,6 +1690,28 @@ def _make_thumb(full, mtime_ns, size):
 def _cached_thumb(full):
     st = os.stat(full)
     return _make_thumb(full, st.st_mtime_ns, st.st_size)
+
+
+# gallery page returns, then the browser starts asking for its thumbs —
+# generate them here first (in the background, more workers than the
+# browser's 6 connections) so those requests hit the warm LRU instead of
+# paying ~100-300ms of PNG decode each. Failures aren't cached, so the
+# browser request still retries.
+_thumb_warm_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="thumbwarm")
+
+
+def _warm_thumb(full):
+    try:
+        _cached_thumb(full)
+    except Exception:
+        pass
+
+
+def warm_page_thumbs(images):
+    for img in images:
+        fp = img.get("filepath")
+        if fp:
+            _thumb_warm_pool.submit(_warm_thumb, os.path.join(MASTER_FOLDER, fp))
 
 
 def _send_thumb(data):
@@ -2277,7 +2312,7 @@ if __name__ == "__main__":
 
     if is_headless:
         print(f"Starting Rems Dl in headless/server mode on {url} ...")
-        socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
 
     try:
@@ -2286,13 +2321,13 @@ if __name__ == "__main__":
         print("NOTE: pywebview is not installed or GUI libraries are missing.")
         print(f"Starting Rems Dl in web browser mode on {url} ...")
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
 
     print(f"Starting Rems Dl desktop app ({url} on internal loopback) ...")
 
     def start_server():
-        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
 
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
