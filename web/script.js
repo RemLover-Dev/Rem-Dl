@@ -7,10 +7,10 @@ let currentActiveTheme = 'dark';
 // localStorage throws when blocked (private mode / file://) — a crash here kills the whole script
 function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
-// F11 fullscreen in the pywebview desktop shell — plain browsers have no
-// window.pywebview, so we bail out and let their native F11 handle it
+// fullscreen keybind (default F11) in the pywebview desktop shell — plain
+// browsers have no window.pywebview, so we bail out and let their native key handle it
 document.addEventListener("keydown", function (e) {
-    if (e.key !== "F11" || !window.pywebview || !window.pywebview.api) return;
+    if (e.key !== (uiConfig.fullscreen_key || "F11") || !window.pywebview || !window.pywebview.api) return;
     e.preventDefault();
     window.pywebview.api.toggle_fullscreen();
 });
@@ -120,6 +120,8 @@ async function loadUIConfig() {
     try {
         let resp = await fetch("/api/ui_config");
         uiConfig = await resp.json();
+        const fk = document.getElementById("fullscreenKey");
+        if (fk) fk.value = uiConfig.fullscreen_key || "F11";
         await syncBlurSettings();
 
         let radio = document.querySelector(`input[name="themeMode"][value="${uiConfig.theme_mode}"]`);
@@ -134,6 +136,13 @@ async function loadUIConfig() {
         if (window.requestIdleCallback) requestIdleCallback(preloadWallpapers, { timeout: 5000 });
         else setTimeout(preloadWallpapers, 3000);
     } catch(e) { console.error("Error loading UI config", e); }
+}
+
+function saveFullscreenKey() {
+    const sel = document.getElementById("fullscreenKey");
+    if (!sel) return;
+    uiConfig.fullscreen_key = sel.value;
+    fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
 }
 
 function applyRenderTheme(themeStr) {
