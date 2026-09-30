@@ -2435,6 +2435,8 @@ function setNotifDot(n) {
     const d = document.getElementById("notifDot");
     if (d) d.style.display = n > 0 ? "inline-block" : "none";
 }
+// startup: show the dot for unread that arrived before this page load
+fetch("/api/pixiv/notifications").then(r => r.json()).then(d => setNotifDot((d && d.unread) || 0)).catch(() => {});
 
 async function loadNotifications() {
     try {

@@ -59,7 +59,6 @@ class AnimeDlWorker(BaseDownloader):
                     except OSError:
                         pass
                     self.enqueued_count -= 1
-                    self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
                     return False
 
                 self.downloaded_count += 1

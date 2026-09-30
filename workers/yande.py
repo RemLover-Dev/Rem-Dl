@@ -54,7 +54,6 @@ class YandeWorker(BaseWorker):
         # instead of stalling the first run
         uncached = [t for t in tag_names if t not in cache][:150]
         if uncached:
-            self.log(f"Fetching types for {len(uncached)} tags...")
             # ponytail: concurrent like gelbooru/safebooru — sequential
             # per-tag requests stalled every page
             sem = asyncio.Semaphore(4)

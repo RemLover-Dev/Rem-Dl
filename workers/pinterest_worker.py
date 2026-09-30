@@ -185,7 +185,6 @@ class PinterestWorker(BaseWorker):
                         os.remove(path)
                     except OSError:
                         pass
-                    self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
                     continue
 
                 rel = os.path.relpath(str(path), shared.MASTER_FOLDER)

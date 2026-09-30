@@ -154,10 +154,7 @@ class GelbooruWorker(BaseWorker):
                     for t in post.get("tags", "").split():
                         all_tags.add(html.unescape(t.strip()))
             if all_tags:
-                uncached_count = len([t for t in all_tags if t not in self.tag_cache])
-                if uncached_count:
-                    self.log(f"Categorizing {len(all_tags)} tags ({uncached_count} uncached)...")
-                    await self._fetch_tag_types(all_tags)
+                await self._fetch_tag_types(all_tags)
 
             had_valid = False
             for post in posts:

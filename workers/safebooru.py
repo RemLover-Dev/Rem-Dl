@@ -37,7 +37,6 @@ class SafebooruWorker(BaseWorker):
         # instead of stalling the first run
         uncached = [t for t in tag_names if t not in cache][:150]
         if uncached:
-            self.log(f"Fetching types for {len(uncached)} tags...")
             # ponytail: one request per tag SEQUENTIALLY stalled every page
             # for 10-25s — same concurrent pattern as the gelbooru worker
             sem = asyncio.Semaphore(4)
