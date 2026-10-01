@@ -38,10 +38,14 @@ def store(tmp_path, monkeypatch):
     return paths
 
 
-def _post(i, rating="g"):
-    return {"id": i, "rating": rating,
-            "preview_url": f"https://img.example/{i}.jpg",
-            "file_url": f"https://img.example/{i}.jpg"}
+def _post(i, rating="g", created=None):
+    out = {"id": i, "rating": rating,
+           "preview_url": f"https://img.example/{i}.jpg",
+           "file_url": f"https://img.example/{i}.jpg"}
+    if created is not None:
+        out["created_at"] = time.strftime(
+            "%a %b %d %H:%M:%S %z %Y", time.localtime(created))
+    return out
 
 
 def _fake_fetch(pages, calls=None):
@@ -134,6 +138,30 @@ def test_empty_first_check_stays_uninitialized(store):
     assert res["new"] == 0
     w = watchers.list_watchers("gelbooru")[0]
     assert w["initialized"] and w["last_seen_post_id"] == "5"
+
+
+def test_baseline_notifies_posts_newer_than_creation(store):
+    w = _make()
+    w["baseline_at"] = time.time() - 3600  # created an hour ago
+    now = time.time()
+    res = _check({0: [_post(7, created=now - 60),      # after creation
+                      _post(6, created=now - 7200)]},  # before creation
+                 w)
+    assert res["new"] == 1
+    assert [i["external_id"] for i in notifications.items("gelbooru")] == ["7"]
+    w = watchers.list_watchers("gelbooru")[0]
+    assert w["initialized"] and w["last_seen_post_id"] == "7"
+
+
+def test_baseline_without_creation_time_swallows(store):
+    # legacy watcher (no baseline_at): unknown creation time -> no notify
+    w = _make()
+    w["baseline_at"] = None
+    res = _check({0: [_post(5, created=time.time() - 10)]}, w)
+    assert res["new"] == 0
+    w = watchers.list_watchers("gelbooru")[0]
+    assert w["initialized"] and w["last_seen_post_id"] == "5"
+    assert notifications.items("gelbooru") == []
 
 
 def test_new_posts_notified_and_checkpoint_advances(store):

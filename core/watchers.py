@@ -5,7 +5,9 @@ due watcher runs check_watcher() -- a bounded, resumable newest-first
 scan of gelbooru results.
 
 Checkpoint rules:
-  * first check with results = baseline only, zero notifications;
+  * first check with results = baseline: only posts uploaded after the
+    watcher was created/last reconfigured are notified, older ones are
+    pre-existing noise (legacy watchers without baseline_at swallow all);
   * last_seen_post_id only advances after a scan successfully reaches it
     (or exhausts the result set) -- a failed or capped check never skips
     posts silently;
@@ -13,6 +15,7 @@ Checkpoint rules:
     resumes deeper via scan_pid on the next check.
 """
 
+import datetime
 import os
 import threading
 import time
@@ -120,6 +123,7 @@ def create(data):
         "interval_minutes": fields.get("interval_minutes") or 5,
         "enabled": True,
         "initialized": False,
+        "baseline_at": time.time(),
         "last_seen_post_id": None,
         "last_checked_at": 0,
         "scan_pid": 0,
@@ -150,6 +154,7 @@ def update(wid, data):
             # a different result set needs a fresh baseline: no flood of
             # old posts, no stale checkpoint from the old query
             w.update({"initialized": False, "last_seen_post_id": None,
+                      "baseline_at": time.time(),
                       "scan_pid": 0, "scan_newest_id": None, "error": ""})
         _save(raw)
         out = dict(w)
@@ -200,6 +205,15 @@ def _collect(posts, checkpoint, fresh):
     return fresh, False
 
 
+def _post_ts(p):
+    """gelbooru created_at -> epoch; unparseable = pre-baseline (skip)."""
+    try:
+        return datetime.datetime.strptime(
+            p.get("created_at") or "", "%a %b %d %H:%M:%S %z %Y").timestamp()
+    except ValueError:
+        return 0.0
+
+
 def _entries(w, posts):
     title = " \u2022 ".join(w.get("tags") or [])[:120]
     out = []
@@ -241,11 +255,23 @@ def check_watcher(w):
                 _set_runtime(wid, {"last_checked_at": time.time(), "error": ""})
                 return {"new": 0, "error": ""}
             if not w.get("initialized"):
-                # first check = baseline only, zero notifications (spec 11)
+                # baseline: only notify posts uploaded after baseline_at
+                # (creation / last reconfig); older ones are pre-existing
+                # noise. Legacy watchers without baseline_at = unknown
+                # creation time -> conservative swallow-all.
+                # ponytail: window = newest page only (100 posts); a busier
+                # tag offline longer loses the tail -- paginate the
+                # baseline if that ever bites
+                cutoff = float(w.get("baseline_at") or 0)
+                fresh = [p for p in posts
+                         if cutoff > 0 and _post_ts(p) >= cutoff]
+                new_entries = (notifications.ingest(w["source"],
+                                                    _entries(w, fresh))
+                               if fresh else [])
                 _set_runtime(wid, {"initialized": True,
                                    "last_seen_post_id": str(posts[0]["id"]),
                                    "last_checked_at": time.time(), "error": ""})
-                return {"new": 0, "error": ""}
+                return {"new": len(new_entries), "error": ""}
             cycle_newest = str(posts[0]["id"])
             fresh, reached = _collect(posts, checkpoint, fresh)
             pid = 1
