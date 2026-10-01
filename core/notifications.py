@@ -163,6 +163,23 @@ def unread_by_source():
     return counts
 
 
+def summary(source=None):
+    """One load + one pass for API reads: filtered items, global unread,
+    per-source unread counts. items()+unread()+unread_by_source() on the
+    same request would re-parse the whole store three times."""
+    with _lock:
+        raw = _load()
+        out, unread, by = [], 0, {}
+        for i in raw["items"]:
+            if not i.get("read"):
+                unread += 1
+                s = i.get("source") or "?"
+                by[s] = by.get(s, 0) + 1
+            if source is None or i.get("source") == source:
+                out.append(i)
+        return out, unread, by
+
+
 def mark_read(source, keys=None):
     """keys=None → all of that source; otherwise matches item key or bare
     external_id (legacy callers pass work ids). Returns GLOBAL unread."""

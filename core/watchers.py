@@ -247,7 +247,6 @@ def check_watcher(w):
                                    "last_checked_at": time.time(), "error": ""})
                 return {"new": 0, "error": ""}
             cycle_newest = str(posts[0]["id"])
-            _set_runtime(wid, {"scan_newest_id": cycle_newest})
             fresh, reached = _collect(posts, checkpoint, fresh)
             pid = 1
 
@@ -282,8 +281,10 @@ def check_watcher(w):
                                "last_checked_at": time.time(), "error": err})
             return {"new": len(new_entries), "error": err}
         err = "Too many new posts; watcher capped at 1000 results"
-        _set_runtime(wid, {"scan_pid": pid, "last_checked_at": time.time(),
-                           "error": err})
+        # one write per check: scan_newest_id rides along so a resumed
+        # cycle still knows the top of the feed it is paging toward
+        _set_runtime(wid, {"scan_pid": pid, "scan_newest_id": cycle_newest,
+                           "last_checked_at": time.time(), "error": err})
         return {"new": len(new_entries), "error": err}
     except Exception as e:  # watcher failures must never take anything down
         err = str(e)[:300]
@@ -324,9 +325,9 @@ def _emit(w, new_count):
     if not _emit_fn:
         return
     try:
+        _, unread, by = notifications.summary()
         _emit_fn({"source": w["source"], "new": new_count,
-                  "unread": notifications.unread(),
-                  "unread_by_source": notifications.unread_by_source()})
+                  "unread": unread, "unread_by_source": by})
     except Exception:
         pass
 

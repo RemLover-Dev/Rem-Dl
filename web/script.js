@@ -2747,6 +2747,10 @@ function gelbooruNotifCard(n, idx) {
             </div>`, "Populate the Gelbooru downloader with this watcher's tags");
 }
 
+// ponytail: newest 100 cards only — 1000 <img> cards is a DOM stall;
+// counts/status stay exact, flashNotif idx stays valid (slice from 0)
+const NOTIF_RENDER_CAP = 100;
+
 function renderNotifications() {
     const box = document.getElementById("notifList");
     if (!box) return;
@@ -2755,10 +2759,14 @@ function renderNotifications() {
         box.innerHTML = `<div style="opacity:0.6; font-size:13px;">${escapeHtml((src && src.empty) || "No notifications yet.")}</div>`;
         return;
     }
-    box.innerHTML = notifItems.map((n, idx) => {
+    const shown = notifItems.slice(0, NOTIF_RENDER_CAP);
+    const hidden = notifItems.length - shown.length;
+    box.innerHTML = shown.map((n, idx) => {
         const s = NOTIF_SOURCES[n.source];
         return (s && s.card ? s.card : pixivNotifCard)(n, idx);
-    }).join("");
+    }).join("") + (hidden
+        ? `<div style="opacity:0.6; font-size:12px; margin-top:8px;">${hidden} older notification${hidden === 1 ? "" : "s"} not shown</div>`
+        : "");
 }
 
 function flashNotif(idx) {

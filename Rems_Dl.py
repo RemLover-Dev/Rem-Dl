@@ -1997,12 +1997,13 @@ NOTIF_STATUS = {
 @app.route("/api/notifications", methods=["GET"])
 def notifications_get():
     source = request.args.get("source") or None
+    items, unread, by = notifications.summary(source)
     return jsonify({
         # items only when a page asks for them — the startup dot fetch
         # just wants the counts
-        "items": notifications.items(source) if source else [],
-        "unread": notifications.unread(),
-        "unread_by_source": notifications.unread_by_source(),
+        "items": items if source else [],
+        "unread": unread,
+        "unread_by_source": by,
         "status": (NOTIF_STATUS.get(source) or (lambda: {}))(),
     })
 

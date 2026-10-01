@@ -175,6 +175,7 @@ def test_cap_hit_error_keeps_checkpoint_and_resumes(store):
     w = watchers.list_watchers("gelbooru")[0]
     assert w["last_seen_post_id"] == "1"  # checkpoint untouched
     assert w["scan_pid"] == 10
+    assert w["scan_newest_id"] == "10000"  # cap write carries resume cursor
     assert notifications.items("gelbooru")  # collected posts were notified
 
     before = len(notifications.items("gelbooru"))
@@ -194,6 +195,18 @@ def test_api_error_preserves_checkpoint(store):
     assert "429" in res["error"]
     w = watchers.list_watchers("gelbooru")[0]
     assert w["last_seen_post_id"] == "10" and w["scan_pid"] == 0
+
+
+def test_check_persists_runtime_exactly_once(store, monkeypatch):
+    w = _make()
+    _check({0: [_post(5)]}, w)  # baseline @5, real persistence
+    w = watchers.list_watchers("gelbooru")[0]
+    saves = []
+    monkeypatch.setattr(watchers, "_save", lambda raw: saves.append(1))
+    # paginated new-post check: no mid-scan write, end-of-check only
+    _check({0: [_post(10), _post(9)],
+            1: [_post(8), _post(7), _post(5)]}, w)
+    assert len(saves) == 1
 
 
 def test_two_watchers_same_post_two_notifications(store):
@@ -239,6 +252,16 @@ def test_emit_payload(store):
 
 
 # ---------- notification store semantics ----------
+
+def test_summary_one_pass_matches_components(store):
+    notifications.ingest("gelbooru", [{"external_id": "1", "watcher_id": "w"}])
+    notifications.ingest("rule34", [{"external_id": "9"}])
+    out, unread, by = notifications.summary("gelbooru")
+    assert out == notifications.items("gelbooru")
+    assert unread == notifications.unread() == 2
+    assert by == notifications.unread_by_source() == {"gelbooru": 1, "rule34": 1}
+    assert notifications.summary()[0] == notifications.items()
+
 
 def test_source_filter_global_unread_and_mark_read(store):
     notifications.ingest("gelbooru", [{"external_id": "1", "watcher_id": "w1"},
