@@ -513,17 +513,20 @@ function appendLogCard(cb, card) {
         cb.appendChild(card);
         capConsole(cb);
         cb.scrollTop = cb.scrollHeight;
-        return;
+    } else {
+        // capping trims the head while you read — pin the first visible card so
+        // a flood of new downloads can't drag what you're looking at upward
+        const viewTop = cb.getBoundingClientRect().top;
+        let ref = cb.firstElementChild;
+        while (ref && ref.getBoundingClientRect().bottom <= viewTop) ref = ref.nextElementSibling;
+        const before = ref ? ref.getBoundingClientRect().top : null;
+        cb.appendChild(card);
+        capConsole(cb);
+        if (ref && ref.parentElement === cb && before !== null) cb.scrollTop += ref.getBoundingClientRect().top - before;
     }
-    // capping trims the head while you read — pin the first visible card so
-    // a flood of new downloads can't drag what you're looking at upward
-    const viewTop = cb.getBoundingClientRect().top;
-    let ref = cb.firstElementChild;
-    while (ref && ref.getBoundingClientRect().bottom <= viewTop) ref = ref.nextElementSibling;
-    const before = ref ? ref.getBoundingClientRect().top : null;
-    cb.appendChild(card);
-    capConsole(cb);
-    if (ref && ref.parentElement === cb && before !== null) cb.scrollTop += ref.getBoundingClientRect().top - before;
+    // a new card may have joined the box the open viewer walks — update now so
+    // the next/prev arrows appear without reopening the image
+    refreshViewerSingleList();
 }
 function logToConsole(tabID, msg) {
     let boxMap = CONSOLE_BOX_MAP;
@@ -4645,7 +4648,7 @@ function openFullImage(filepath, filename, el) {
         if (idx >= 0) list = imgs.map(i => i.dataset.ofi);
     }
     // always use the in-app viewer — new tabs don't exist in the desktop app
-    openViewerSingle(url, filename || "image", list, idx);
+    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null);
 }
 
 let viewerSingle = false;
@@ -4653,6 +4656,9 @@ let viewerSingleList = [];
 let viewerSingleIdx = -1;
 let viewerSingleUrl = "";
 let viewerSingleFilename = "";
+// log/history box the viewer was opened from — lets steps re-read the live
+// DOM so images downloaded after open stay reachable
+let viewerSingleBoxId = null;
 // Viewer resource: the loaded raster image is the single source of truth for
 // both display and Copy — one fetch produces one Blob, shown via an object
 // URL and reused by the clipboard. Videos keep their direct-URL <video> path.
@@ -4706,11 +4712,12 @@ function loadViewerRaster(url, filename) {
     p.catch(() => {});
     return p;
 }
-function openViewerSingle(url, filename, list, idx) {
+function openViewerSingle(url, filename, list, idx, boxId) {
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
     viewerSingle = true;
+    viewerSingleBoxId = boxId || null;
     viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
     viewerSingleIdx = viewerSingleList.length ? idx : -1;
     viewerSingleUrl = url;
@@ -4859,10 +4866,24 @@ function _setFsIconHandler(fn) {
         document.addEventListener('webkitfullscreenchange', fn);
     }
 }
-function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function refreshViewerSingleList() {
+    // re-read the origin box so images downloaded after the viewer opened are
+    // reachable, and flip has-list on when the count crosses to 2
+    if (!viewerSingle || !viewerSingleBoxId) return;
+    const box = document.getElementById(viewerSingleBoxId);
+    if (!box) return;
+    const fresh = [...box.querySelectorAll('img[data-ofi]')].map(i => i.dataset.ofi);
+    const at = fresh.indexOf(viewerSingleList[viewerSingleIdx]);
+    if (at < 0) return; // current card left the log (cleared/capped) — keep snapshot
+    viewerSingleList = fresh;
+    viewerSingleIdx = at;
+    document.getElementById("galleryViewer").classList.toggle("has-list", fresh.length > 1);
+}
 function viewerNav(dir) {
     if (viewerSingle) {
         // log previews carry their sibling list — walk it like the gallery
+        refreshViewerSingleList();
         if (!viewerSingleList.length) return;
         const n = viewerSingleIdx + dir;
         if (n < 0) return;
@@ -4870,7 +4891,7 @@ function viewerNav(dir) {
         const p = viewerSingleList[n];
         let clean = p; try { clean = decodeURIComponent(p); } catch (e) {}
         const fn = (clean.split('/').pop() || "image");
-        openViewerSingle(fullImageUrl(p, fn), fn, viewerSingleList, n);
+        openViewerSingle(fullImageUrl(p, fn), fn, viewerSingleList, n, viewerSingleBoxId);
         return;
     }
     const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
