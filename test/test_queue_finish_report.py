@@ -31,7 +31,9 @@ def test_batch_aggregates_and_reports_once(monkeypatch):
     p3 = shared.finish_report("gelbooru", 3, 2, 0, False, logs.append)
     assert not p3["more"] and p3["jobs"] == 3
     assert (p3["downloaded"], p3["failed"], p3["duplicates"]) == (18, 3, 1)
-    assert logs[-1] == "--- Queue finished: 3 tasks, 18 downloaded, 3 failed (1 duplicates removed)! ---"
+    # batch report is box-only (worker_finished) — it must not reach the logs
+    assert len(logs) == 2
+    assert not any("Queue finished" in line for line in logs)
     assert "gelbooru" not in shared._BATCH_STATS
 
 
@@ -57,3 +59,17 @@ def test_interim_line_keeps_progress_bars_alive(monkeypatch):
     line = logs[0]
     for pat in ("downloads completed successfully", "Task finished", "No new", "No posts", "Queue finished"):
         assert pat not in line, pat
+
+
+def test_queue_final_reaches_ui_only_via_payload(monkeypatch):
+    # the box renders from worker_finished — its counts/jobs must be complete
+    # even though nothing was logged
+    _reset()
+    pending = [True, False]
+    monkeypatch.setattr(shared, "queue_has_more", lambda site: pending.pop(0))
+    logs = []
+    shared.finish_report("gelbooru", 6, 1, 0, False, logs.append)
+    p = shared.finish_report("gelbooru", 4, 0, 2, False, logs.append)
+    assert logs == ["--- Tag finished: 6 downloaded, 1 failed — next queued job starting ---"]
+    assert p == {"worker": "gelbooru", "downloaded": 10, "failed": 1, "duplicates": 2,
+                 "stopped": False, "jobs": 2, "more": False}

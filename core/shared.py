@@ -38,7 +38,8 @@ queue_has_more = None  # (site) -> bool, set by Rems_Dl (avoids circular import)
 _BATCH_STATS = {}
 
 def finish_report(site, downloaded, failed, duplicates, stopped, log):
-    """Accumulate per-site batch stats, log the finish line, build worker_finished payload."""
+    """Accumulate per-site batch stats, log the finish line (batch final is
+    box-only), build the worker_finished payload."""
     b = _BATCH_STATS.setdefault(site, {"jobs": 0, "downloaded": 0, "failed": 0, "duplicates": 0})
     b["jobs"] += 1
     b["downloaded"] += downloaded
@@ -54,21 +55,15 @@ def finish_report(site, downloaded, failed, duplicates, stopped, log):
     elif more:
         # keep the bars alive — the next queued job rebuilds them with Phase 1
         log(f"--- Tag finished: {downloaded} downloaded, {failed} failed — next queued job starting ---")
-    elif b["jobs"] > 1:
-        bd = f" ({b['duplicates']} duplicates removed)" if b["duplicates"] else ""
-        if b["downloaded"] > 0 and b["failed"] > 0:
-            log(f"--- Queue finished: {b['jobs']} tasks, {b['downloaded']} downloaded, {b['failed']} failed{bd}! ---")
-        elif b["downloaded"] > 0:
-            log(f"--- Queue finished: {b['jobs']} tasks, {b['downloaded']} downloaded{bd}! ---")
-        else:
-            log(f"--- Queue finished: {b['jobs']} tasks, no new images{bd} ---")
-    else:
+    elif b["jobs"] == 1:
         if downloaded > 0 and failed > 0:
             log(f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---")
         elif downloaded > 0:
             log(f"--- All {downloaded} downloads completed successfully!{dup_note} ---")
-        elif not stopped:
+        else:
             log(f"Task finished. No new images to download{dup_note}.")
+    # batch final (jobs > 1): the report lives in the progress box via
+    # worker_finished — deliberately not logged to the console
     payload = {"worker": site, "downloaded": b["downloaded"], "failed": b["failed"], "duplicates": b["duplicates"], "stopped": stopped, "jobs": b["jobs"], "more": more}
     if not more:
         _BATCH_STATS.pop(site, None)
