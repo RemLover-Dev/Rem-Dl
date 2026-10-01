@@ -3771,8 +3771,10 @@ function renderImageHistory() {
     }
     ui.innerHTML = htmlStr;
     if (scroller) scroller.scrollTop = currentScroll;
-    // if the rendered list still doesn't fill the view, keep loading
-    if (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.scrollHeight <= scroller.clientHeight + 400) {
+    // if the rendered list still doesn't fill the view, keep loading —
+    // ponytail: never while hidden (clientHeight 0), or the startup render
+    // walks the whole history; the scroll listener pages from there
+    if (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
         imageHistoryVisible += 30;
         renderImageHistory();
     }
