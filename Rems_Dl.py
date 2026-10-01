@@ -2070,33 +2070,47 @@ def watchers_check_now():
     return jsonify({"started": watchers.check_now(data.get("source"))})
 
 
-_PIXIV_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
+_NOTIF_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
 
-@app.route("/api/pixiv/notif_thumb")
-def pixiv_notif_thumb():
-    # pximg hotlink-blocks foreign referers, so the browser cannot fetch
-    # these directly; fetch server-side with a pixiv referer instead
+
+def _notif_thumb(url, referer, allow_host):
+    """Fetch a hotlink-protected thumbnail server-side (shared by sources)."""
     from urllib.parse import urlparse
-    url = request.args.get("url", "")
     host = urlparse(url).hostname or ""
-    if host != "i.pximg.net" and not host.endswith(".pximg.net"):
+    if host != allow_host and not host.endswith("." + allow_host):
         return jsonify({"error": "bad host"}), 400
-    cached = _PIXIV_THUMB_CACHE.get(url)
+    cached = _NOTIF_THUMB_CACHE.get(url)
     if cached:
         return Response(cached[0], mimetype=cached[1])
     try:
         r = requests.get(url, timeout=15, headers={
-            "Referer": "https://www.pixiv.net/",
+            "Referer": referer,
             "User-Agent": "Mozilla/5.0",
         })
         r.raise_for_status()
     except Exception:
         return jsonify({"error": "thumbnail fetch failed"}), 502
-    if len(_PIXIV_THUMB_CACHE) >= 200:
-        _PIXIV_THUMB_CACHE.pop(next(iter(_PIXIV_THUMB_CACHE)))
+    if len(_NOTIF_THUMB_CACHE) >= 200:
+        _NOTIF_THUMB_CACHE.pop(next(iter(_NOTIF_THUMB_CACHE)))
     ctype = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0]
-    _PIXIV_THUMB_CACHE[url] = (r.content, ctype)
+    _NOTIF_THUMB_CACHE[url] = (r.content, ctype)
     return Response(r.content, mimetype=ctype)
+
+
+@app.route("/api/pixiv/notif_thumb")
+def pixiv_notif_thumb():
+    # pximg hotlink-blocks foreign referers, so the browser cannot fetch
+    # these directly; fetch server-side with a pixiv referer instead
+    return _notif_thumb(request.args.get("url", ""),
+                        "https://www.pixiv.net/", "pximg.net")
+
+
+@app.route("/api/gelbooru/notif_thumb")
+def gelbooru_notif_thumb():
+    # img*.gelbooru.com 302s to an HTML hotlink page without a gelbooru
+    # referer, which the browser cannot spoof -> fetch server-side
+    return _notif_thumb(request.args.get("url", ""),
+                        "https://gelbooru.com/", "gelbooru.com")
 
 
 # ==========================================

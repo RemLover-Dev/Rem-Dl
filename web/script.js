@@ -2747,7 +2747,7 @@ function gelbooruNotifCard(n, idx) {
     const title = escapeHtml(n.title || "New matching Gelbooru post");
     const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
     const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
-    const thumb = n.thumb ? escapeHtml(n.thumb) : "";
+    const thumb = n.thumb ? `/api/gelbooru/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
     return notifCardShell(n, idx, `
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
                 <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">

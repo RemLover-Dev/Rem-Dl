@@ -436,6 +436,13 @@ def test_watchers_endpoints(store):
         watchers._manual_lock.release()
 
 
+def test_notif_thumb_rejects_foreign_hosts(store):
+    c = _client()
+    assert c.get("/api/gelbooru/notif_thumb?url=https://evil.example/x.jpg"
+                 ).status_code == 400
+    assert c.get("/api/gelbooru/notif_thumb?url=notaurl").status_code == 400
+
+
 # ---------- shared query builder ----------
 
 def test_build_query_and_and_negation():
