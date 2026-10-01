@@ -2610,7 +2610,6 @@ function openTab(tabName, btn) {
     // must refetch too, or favourites toggled in the gallery stay stale here
     if (tabName === "History") loadTagsData();
     if (tabName === "Notifications") loadNotifications();
-    if (tabName === "Gelbooru") loadGelWatchers();
 }
 
 // --- Multi-source notifications ---
@@ -2629,6 +2628,7 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
         flash: n => gelbooruGotoFlash(n),
         card: (n, idx) => gelbooruNotifCard(n, idx),
+        watcherPanel: true, // watcher management lives in this source's page
     },
     pixiv: {
         name: "Pixiv",
@@ -2679,6 +2679,9 @@ async function loadNotifications() {
         const src = NOTIF_SOURCES[source];
         const controls = document.getElementById("notifPixivControls");
         if (controls) controls.style.display = (src && src.controls) ? "inline-flex" : "none";
+        const wpanel = document.getElementById("gelWatcherPanel");
+        if (wpanel) wpanel.style.display = (src && src.watcherPanel) ? "block" : "none";
+        if (src && src.watcherPanel) loadGelWatchers();
         const status = data.status || {};
         const iv = document.getElementById("notifInterval");
         if (iv && document.activeElement !== iv && status.interval_minutes) iv.value = status.interval_minutes;
