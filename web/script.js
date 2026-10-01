@@ -4884,6 +4884,14 @@ function viewerNav(dir) {
     if (viewerSingle) {
         // log previews carry their sibling list — walk it like the gallery
         refreshViewerSingleList();
+        // stepping past the last rendered archive card pulls the next page in
+        if (dir > 0 && viewerSingleBoxId === "imageHistoryUI"
+                && viewerSingleIdx >= viewerSingleList.length - 1
+                && imageHistoryVisible < imgHistFiltered.length) {
+            imageHistoryVisible += 30;
+            renderImageHistory();
+            refreshViewerSingleList();
+        }
         if (!viewerSingleList.length) return;
         const n = viewerSingleIdx + dir;
         if (n < 0) return;
