@@ -2157,6 +2157,9 @@ def handle_disconnect():
 ACTIVE_JOBS = {}      # site -> running job
 DOWNLOAD_QUEUES = {}  # site -> [waiting jobs]
 QUEUE_LOCK = threading.Lock()
+# finish_report needs to know whether a site's queue continues (shared can't
+# import us — attribute callback avoids the circular import)
+shared.queue_has_more = lambda site: bool(DOWNLOAD_QUEUES.get(site))
 
 def _safe_int(value, default=0):
     try:

@@ -32,6 +32,48 @@ STOP_EVENTS = {}
 
 WAIFU_TAG_MAP = {}
 
+# queue batch reporting — the app registers a callback telling us whether more
+# jobs are waiting for a site, so a queued run reports its totals once
+queue_has_more = None  # (site) -> bool, set by Rems_Dl (avoids circular import)
+_BATCH_STATS = {}
+
+def finish_report(site, downloaded, failed, duplicates, stopped, log):
+    """Accumulate per-site batch stats, log the finish line, build worker_finished payload."""
+    b = _BATCH_STATS.setdefault(site, {"jobs": 0, "downloaded": 0, "failed": 0, "duplicates": 0})
+    b["jobs"] += 1
+    b["downloaded"] += downloaded
+    b["failed"] += failed
+    b["duplicates"] += duplicates
+    dup_note = f" ({duplicates} duplicates removed)" if duplicates else ""
+    more = (not stopped) and bool(queue_has_more and queue_has_more(site))
+    if stopped:
+        if downloaded > 0 and failed > 0:
+            log(f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---")
+        elif downloaded > 0:
+            log(f"--- All {downloaded} downloads completed successfully!{dup_note} ---")
+    elif more:
+        # keep the bars alive — the next queued job rebuilds them with Phase 1
+        log(f"--- Tag finished: {downloaded} downloaded, {failed} failed — next queued job starting ---")
+    elif b["jobs"] > 1:
+        bd = f" ({b['duplicates']} duplicates removed)" if b["duplicates"] else ""
+        if b["downloaded"] > 0 and b["failed"] > 0:
+            log(f"--- Queue finished: {b['jobs']} tasks, {b['downloaded']} downloaded, {b['failed']} failed{bd}! ---")
+        elif b["downloaded"] > 0:
+            log(f"--- Queue finished: {b['jobs']} tasks, {b['downloaded']} downloaded{bd}! ---")
+        else:
+            log(f"--- Queue finished: {b['jobs']} tasks, no new images{bd} ---")
+    else:
+        if downloaded > 0 and failed > 0:
+            log(f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---")
+        elif downloaded > 0:
+            log(f"--- All {downloaded} downloads completed successfully!{dup_note} ---")
+        elif not stopped:
+            log(f"Task finished. No new images to download{dup_note}.")
+    payload = {"worker": site, "downloaded": b["downloaded"], "failed": b["failed"], "duplicates": b["duplicates"], "stopped": stopped, "jobs": b["jobs"], "more": more}
+    if not more:
+        _BATCH_STATS.pop(site, None)
+    return payload
+
 # --- LOGGING & TAG SYSTEM ---
 def default_logger(worker_name, msg): print(f"[{worker_name.upper()}] {msg}")
 log_callback = default_logger
@@ -709,17 +751,11 @@ class BaseDownloader:
                 await self.download_queue.join()
             for t in download_tasks: t.cancel()
 
-            z = self.duplicate_count
-            dup_note = f" ({z} duplicates removed)" if z else ""
-            if self.downloaded_count > 0 and self.failed_count > 0:
-                self.log(f"--- Task finished: {self.downloaded_count} downloaded successfully, {self.failed_count} failed to download{dup_note}! ---")
-            elif self.downloaded_count > 0:
-                self.log(f"--- All {self.downloaded_count} downloads completed successfully!{dup_note} ---")
-            elif not self.stop_event.is_set():
-                self.log(f"Task finished. No new images to download{dup_note}.")
             # ponytail: dedicated finish signal — log parsing alone is too fragile to drive UI state
             try:
-                socketio_emit("worker_finished", {"worker": self.name, "downloaded": self.downloaded_count, "failed": self.failed_count, "duplicates": z, "stopped": bool(self.stop_event.is_set())})
+                socketio_emit("worker_finished", finish_report(
+                    self.name, self.downloaded_count, self.failed_count,
+                    self.duplicate_count, bool(self.stop_event.is_set()), self.log))
             except Exception:
                 pass
         except Exception as critical_e:

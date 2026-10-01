@@ -440,6 +440,15 @@ function updateProgressBar(worker, msg) {
     if (!container) return;
 
     // 1. نمایش پیام پایانی بزرگ و زیبا و حذف نوارها
+    if (msg.includes("Queue finished")) {
+        workerRunning[worker] = false; renderRunBtn(worker);
+        const m = msg.match(/Queue finished: (\d+) tasks(?:, (\d+) downloaded)?(?:, (\d+) failed)?/);
+        const jobs = m ? m[1] : "", d = m && m[2] ? m[2] : "0", f = m && m[3] ? m[3] : "0";
+        let t = `✅ Queue finished: ${jobs} tasks — ${d} downloaded`;
+        if (f !== "0") t += `, <span style="color: #e74c3c;">${f} failed</span>`;
+        container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: #2ecc71; text-shadow: 0 0 10px rgba(46, 204, 113, 0.5);">${t}</div>`;
+        return;
+    }
     if (msg.includes("downloads completed successfully") || msg.includes("Task finished") || msg.includes("No new") || msg.includes("No posts")) {
         workerRunning[worker] = false; renderRunBtn(worker);
         let match = msg.match(/All (\d+) downloads/);
@@ -2163,9 +2172,16 @@ socket.on("python_log", function (data) {
 
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
-    if (!data || data.stopped) return;
+    if (!data || data.stopped || data.more) return;
     const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
     const dup = z ? ` (${z} duplicates removed)` : "";
+    const jobs = data.jobs || 1;
+    if (jobs > 1) {
+        if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded, ${f} failed${dup}! ---`);
+        else if (d > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded${dup}! ---`);
+        else updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, no new images${dup} ---`);
+        return;
+    }
     if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Task finished: ${d} downloaded successfully, ${f} failed to download${dup}! ---`);
     else if (d > 0) updateProgressBar(data.worker, `--- All ${d} downloads completed successfully!${dup} ---`);
     else updateProgressBar(data.worker, `Task finished. No new images to download${dup}.`);
