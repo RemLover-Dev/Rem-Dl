@@ -812,7 +812,7 @@ function renderGelWatcherList() {
             </div>
             <button class="action-btn" onclick="editGelWatcher('${w.watcher_id}')">Edit</button>
             <button class="action-btn" onclick="toggleGelWatcher('${w.watcher_id}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
-            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')">✕</button>
+            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')" title="Delete watcher">×</button>
         </div>`;
     }).join("");
 }
