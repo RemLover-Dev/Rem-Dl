@@ -1048,6 +1048,9 @@ body.blur-nsfw .hist-item.is-nsfw:hover .hist-tag {
 .gallery-viewer.single .gallery-viewer-nav { display: none !important; }
 /* ...except log previews, which carry their siblings and navigate like the gallery */
 .gallery-viewer.single.has-list .gallery-viewer-nav { display: flex !important; }
+/* boundary: no prev on the first image, no next on the last one */
+.gallery-viewer.at-start .gallery-viewer-nav.prev { display: none !important; }
+.gallery-viewer.at-end .gallery-viewer-nav.next { display: none !important; }
 
 /* ===== CUSTOM CONFIRM MODAL (theme-aware) ===== */
 .custom-confirm-overlay {

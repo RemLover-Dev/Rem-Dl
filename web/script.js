@@ -4765,6 +4765,7 @@ function openViewerSingle(url, filename, list, idx, boxId) {
         document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
     }
     viewer.style.display = 'flex';
+    updateViewerNav();
 }
 function viewerMetaHtml(img, tagsClickable) {
     let tagsHtml = renderCategorizedTags(img.tags || {}, tagsClickable);
@@ -4869,6 +4870,7 @@ function showViewerImage() {
     }
 
     viewer.style.display = 'flex';
+    updateViewerNav();
 }
 // one fullscreenchange listener at a time: fsIcon is a fresh closure per
 // video shown, so plain addEventListener leaked one listener per image view
@@ -4885,7 +4887,23 @@ function _setFsIconHandler(fn) {
         document.addEventListener('webkitfullscreenchange', fn);
     }
 }
-function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function updateViewerNav() {
+    // boundary buttons: no prev on the first image, no next on the last one
+    const v = document.getElementById("galleryViewer");
+    if (!v) return;
+    if (viewerSingle) {
+        const moreHistory = viewerSingleBoxId === "imageHistoryUI"
+            && imageHistoryVisible < imgHistFiltered.length;
+        v.classList.toggle("at-start", viewerSingleIdx <= 0);
+        v.classList.toggle("at-end", viewerSingleList.length > 0
+            && viewerSingleIdx >= viewerSingleList.length - 1 && !moreHistory);
+    } else {
+        v.classList.toggle("at-start", currentGalleryPage <= 1 && viewerIndex <= 0);
+        v.classList.toggle("at-end", currentGalleryPage >= (galleryState.total_pages || 1)
+            && viewerIndex >= galleryState.images.length - 1);
+    }
+}
 function refreshViewerSingleList() {
     // re-read the origin box so images downloaded after the viewer opened are
     // reachable, and flip has-list on when the count crosses to 2
@@ -4898,6 +4916,7 @@ function refreshViewerSingleList() {
     viewerSingleList = fresh;
     viewerSingleIdx = at;
     document.getElementById("galleryViewer").classList.toggle("has-list", fresh.length > 1);
+    updateViewerNav();
 }
 function viewerNav(dir) {
     if (viewerSingle) {
