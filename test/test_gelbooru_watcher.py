@@ -251,6 +251,42 @@ def test_emit_payload(store):
     assert events[0]["unread_by_source"].get("gelbooru") >= 1
 
 
+# ---------- manual check-now ----------
+
+def test_check_now_busy_guard(store):
+    assert watchers._manual_lock.acquire(blocking=False)
+    try:
+        assert watchers.check_now() is False
+    finally:
+        watchers._manual_lock.release()
+
+
+def test_check_now_runs_enabled_watchers_immediately(store):
+    w = _make()
+    _check({0: [_post(5)]}, w)  # baseline @5
+    off = _make(tags=["landscape"])
+    watchers.update(off["watcher_id"], {"enabled": False})
+    events = []
+    watchers._emit_fn = lambda p: events.append(p)
+    orig = watchers._fetch_posts
+    watchers._fetch_posts = _fake_fetch({0: [_post(9), _post(5)]})
+    try:
+        assert watchers.check_now("gelbooru") is True
+        deadline = time.time() + 5
+        # wait for the run AND its lock release — a leaked lock would
+        # poison the next test's busy guard
+        while time.time() < deadline and (not events or watchers._manual_lock.locked()):
+            time.sleep(0.01)
+    finally:
+        watchers._fetch_posts = orig
+        watchers._emit_fn = None
+    assert events and events[0]["new"] == 1
+    w = watchers.list_watchers("gelbooru")[0]
+    assert w["last_seen_post_id"] == "9"
+    by_tag = {tuple(x["tags"]): x for x in watchers.list_watchers("gelbooru")}
+    assert by_tag[("landscape",)]["last_checked_at"] == 0  # disabled = skipped
+
+
 # ---------- notification store semantics ----------
 
 def test_summary_one_pass_matches_components(store):
@@ -363,6 +399,13 @@ def test_watchers_endpoints(store):
     assert c.delete("/api/watchers/w_nope").status_code == 404
     assert c.delete(f"/api/watchers/{wid}").get_json()["success"] is True
     assert c.get("/api/watchers").get_json()["watchers"] == []
+
+    # check-now: busy lock -> started:false, no thread spawned
+    assert watchers._manual_lock.acquire(blocking=False)
+    try:
+        assert c.post("/api/watchers/check_now", json={}).get_json() == {"started": False}
+    finally:
+        watchers._manual_lock.release()
 
 
 # ---------- shared query builder ----------

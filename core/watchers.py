@@ -294,6 +294,34 @@ def check_watcher(w):
 
 # ---------- scheduler ----------
 
+_manual_lock = threading.Lock()  # one manual run at a time
+
+
+def check_now(source=None):
+    """Manual 'Check now' from the UI: run the source's enabled watchers
+    right away, bypassing due timers (each stamps its own
+    last_checked_at, so the interval resets like a scheduled check).
+    Returns False if a manual run is already going."""
+    if not _manual_lock.acquire(blocking=False):
+        return False
+
+    def _run():
+        try:
+            for w in list_watchers(source):
+                if not w.get("enabled"):
+                    continue
+                res = check_watcher(w)
+                if res.get("error"):
+                    _log(f"[{w['source']}] {res['error']}")
+                if res.get("new"):
+                    _emit(w, res["new"])
+        finally:
+            _manual_lock.release()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 def _due_at(w):
     return (float(w.get("last_checked_at") or 0)
             + float(w.get("interval_minutes") or 5) * 60)

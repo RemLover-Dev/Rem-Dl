@@ -773,7 +773,10 @@
                     <div id="notifStatus" style="font-size: 12px; opacity: 0.7; margin-bottom: 12px;"></div>
                     <div id="notifList" class="notif-list"></div>
                     <div id="gelWatcherPanel" style="display:none; margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border-color);">
-                        <h3 style="font-size: 15px; margin-bottom: 8px;">Gelbooru Tag Watcher</h3>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <h3 style="font-size: 15px; margin-bottom: 0;">Gelbooru Tag Watcher</h3>
+                            <button class="action-btn" onclick="checkGelWatchersNow()">Check now</button>
+                        </div>
                         <div class="input-group" style="align-items: flex-start; margin-bottom: 6px;">
                             <label style="padding-top: 9px;">Watch tags:</label>
                             <div style="flex:1; display:flex; flex-direction:column; gap:4px;">

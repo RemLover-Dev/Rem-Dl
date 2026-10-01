@@ -2064,6 +2064,12 @@ def watchers_delete(wid):
     return jsonify({"success": True})
 
 
+@app.route("/api/watchers/check_now", methods=["POST"])
+def watchers_check_now():
+    data = request.json or {}
+    return jsonify({"started": watchers.check_now(data.get("source"))})
+
+
 _PIXIV_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
 
 @app.route("/api/pixiv/notif_thumb")

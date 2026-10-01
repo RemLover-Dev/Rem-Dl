@@ -882,6 +882,17 @@ async function deleteGelWatcher(id) {
     await loadGelWatchers();
 }
 
+function checkGelWatchersNow() {
+    fetch("/api/watchers/check_now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "gelbooru" }) })
+        .then(r => r.json())
+        .then(d => {
+            if (d.started) showToast("Checking watchers…");
+            else showToast("A check is already running", { warn: true });
+            setTimeout(loadGelWatchers, 6000);
+        })
+        .catch(() => {});
+}
+
 // --- E-Shuushuu interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
 let currentEshuushuuTags = [];
 let eshuushuuSubTags = new Set();
