@@ -126,6 +126,12 @@ def test_scraper_survives_gallery_dl_page2_failure(tmp_path, monkeypatch):
     assert "No more posts available from gallery-dl" not in joined
     assert "No more posts available." in joined
 
+    # One merged per-page line: engine, fetched count, enqueued count.
+    assert "posts (gallery-dl)" not in joined
+    assert "posts (built-in JSON API)" not in joined
+    assert "Page 1 (gallery-dl): fetched 7, enqueued 7 new (total: 7)" in joined
+    assert "Page 1 (json): fetched 30, enqueued 23 new (total: 30)" in joined
+
 
 def test_scraper_reports_api_failure_not_end_of_data(tmp_path, monkeypatch):
     w, logs = _worker(tmp_path, monkeypatch)

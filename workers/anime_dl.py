@@ -30,7 +30,10 @@ class AnimeDlWorker(BaseDownloader):
 
         for attempt in range(self.dl_retries):
             try:
-                self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
+                # first attempt stays quiet — [SUCCESS]/[FAILED] report the
+                # outcome; only retries earn a log line
+                if attempt:
+                    self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
                 # ponytail: flat 600s cap; switch to streaming + stall detection if bigger files crawl
                 resp = await asyncio.to_thread(
                     self.curl_session.get, 

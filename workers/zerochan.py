@@ -541,7 +541,6 @@ class ZerochanWorker(BaseDownloader):
                 seen.add(pid)
                 posts.append(kwdict)
 
-            self.log(f"Page {page}: {len(posts)} posts (gallery-dl)")
             return posts, True
 
         except FileNotFoundError:
@@ -601,7 +600,6 @@ class ZerochanWorker(BaseDownloader):
                 self.log(f"JSON listing page {page}: bad JSON ({e}).")
                 return [], False
             items = data.get("items", []) if isinstance(data, dict) else []
-            self.log(f"Page {page}: {len(items)} posts (built-in JSON API)")
             return items, True
         except Exception as e:
             self.log(f"JSON listing page {page} failed: {e}")
@@ -798,7 +796,10 @@ class ZerochanWorker(BaseDownloader):
             try:
                 if self.stop_event.is_set():
                     break
-                self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
+                # first attempt stays quiet — [SUCCESS]/[FAILED] report the
+                # outcome; only retries earn a log line
+                if attempt:
+                    self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
 
                 def _do_download():
                     session = self._ensure_curl_session()
@@ -981,7 +982,9 @@ class ZerochanWorker(BaseDownloader):
                     enqueued_this_page += 1
                 await asyncio.sleep(self.anti_ban_pause)
 
-            self.log(f"Page {page}: enqueued {enqueued_this_page} new images "
+            engine = "gallery-dl" if use_gallery_dl else "json"
+            self.log(f"Page {page} ({engine}): fetched {len(posts)}, "
+                     f"enqueued {enqueued_this_page} new "
                      f"(total: {collected_count})")
             page += 1
             if not self.stop_event.is_set() and (self.amount <= 0 or collected_count < self.amount):
