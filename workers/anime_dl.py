@@ -99,6 +99,7 @@ class AnimeDlWorker(BaseDownloader):
                         pass
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
+                    self._remember_filename(filename)
                     return False
 
                 self.downloaded_count += 1

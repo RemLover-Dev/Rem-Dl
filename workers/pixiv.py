@@ -403,6 +403,7 @@ class PixivWorker(BaseDownloader):
                 except OSError:
                     pass
                 self.duplicate_count += 1
+                self._remember_filename(gif_name)
                 return False
 
             self.downloaded_count += 1

@@ -556,6 +556,17 @@ class BaseDownloader:
 
     def log(self, msg): log_msg(self.name, msg)
 
+    def _remember_filename(self, filename):
+        # park the name in dl_history so the next run's enqueue/download skips
+        # it — phash kills used to leave no trace, so the same file was fetched
+        # again just to be hash-killed again. batched like successes (rewriting
+        # the whole history file per hit is O(history) each time)
+        self.dl_history.add(filename)
+        self._history_dirty += 1
+        if self._history_dirty >= 10:
+            save_history(self.site_root, self.dl_history)
+            self._history_dirty = 0
+
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         if artists is None: artists = []
         
@@ -681,6 +692,7 @@ class BaseDownloader:
                         pass
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
+                    self._remember_filename(filename)
                     return False
 
                 self.downloaded_count += 1
