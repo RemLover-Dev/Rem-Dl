@@ -1,0 +1,129 @@
+﻿# ========================
+# Downloaded Content & User Data (NEVER UPLOAD)
+# ========================
+Rems Dl/
+Rem God/
+Safebooru/
+Rule34/
+Zerochan/
+Waifu.im/
+Nekos.best/
+user_wallpapers/
+
+# Partial / in-progress downloads
+*.part
+
+# User History and Favorites Databases
+tag_history.json
+fav_tags.json
+image_history.json
+database/dedup.sqlite3
+
+# ========================
+# Personal Wallpapers Filter
+# ========================
+# هر عکسی که در این پوشه فرعی بگذاری آپلود نخواهد شد
+web/wallpaper/personal/
+web/wallpaper/new/
+
+# ========================
+# Python & Virtual Environments
+# ========================
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+.env
+!.env.example
+
+# ========================
+# Build & Executable Files
+# ========================
+# NOTE: Rems_Dl.spec is the build recipe and MUST be committed --
+# only the outputs below are ignored.
+build/
+dist/
+dist_installer/
+dist_linux/
+dependencies/
+*.spec
+!Rems_Dl.spec
+
+# Locally-made release archives (CI attaches these to GitHub Releases)
+Rems_Dl-*.zip
+Rems_Dl-*.tar.gz
+Rems-Dl-*.zip
+Rems-Dl-*.tar.gz
+Rems-Dl-*.exe
+*.sha256
+
+# Logs & debug dumps
+*.log
+*.backup.json
+
+# Local agent instructions, folders & memory (keep local only)
+.github/instructions/
+.agents/
+.agent/
+agents/
+.claude/
+
+# ========================
+# Test & Tool Caches
+# ========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Gallery DB & thumb cache
+database/gallery.json
+database/tag_history.json
+database/image_history.json
+database/fav_tags.json
+database/user_learned_tags.json
+database/extensions.json
+database/*_tag_names.json
+database/*_tags.json
+!database/waifu.im_tags.json
+database/thumb_cache/
+database/.gsbooru_tags_state.json
+database/*.sqlite3
+database/*.sqlite3-shm
+database/*.sqlite3-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Extensions & Addons (downloaded locally at runtime)
+extensions/
+
+# Do not upload multi agent and gemini dump
+multi_agent.py
+Gemini_Dump.txt
+
+# Graphify output
+graphify-out/
+
+# OpenCode / AI editor workspace files
+.opencode/
+opencode.json
+opencode.jsonc
+
+# Cosplay downloader
+cosplay/
+cosplay_server.log
+downloaded_urls.json
+
+# ========================
+# Android Studio
+# ========================
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+*.hprof
+image_phashes.json
