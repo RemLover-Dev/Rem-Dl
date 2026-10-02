@@ -56,13 +56,14 @@ class GelbooruWorker(BaseWorker):
     async def _fetch_tag_types(self, tag_names):
         api_key = os.getenv("GELBOORU_API_KEY", "")
         user_id = os.getenv("GELBOORU_USER_ID", "")
-        # ponytail: cap per run — v1 cache migration drops thousands of
-        # unverified "tag" entries; heal a few hundred at a time instead of
-        # stalling the first run for minutes
-        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
+        # ponytail: fetch EVERY uncached tag of this page. The old [:150] cap
+        # (v1-migration era) silently left the rest uncategorized — and that
+        # state got frozen into image metadata, image_history and the gallery
+        # at download time, so later cache heals never repaired those files
+        uncached = [t for t in tag_names if t not in self.tag_cache]
         if not uncached:
             return
-        sem = asyncio.Semaphore(1000)
+        sem = asyncio.Semaphore(32)
         async def query_one(tag_name):
             async with sem:
                 params = {"page": "dapi", "s": "tag", "q": "index", "name": tag_name, "json": 1, "limit": 50}
@@ -93,6 +94,10 @@ class GelbooruWorker(BaseWorker):
                 # caching a failure would mislabel it forever; next run retries
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
+        still = [t for t in uncached if t not in self.tag_cache]
+        if still:
+            self.log(f"⚠️ {len(still)} tag(s) still uncategorized after 3 retries "
+                     f"— downloads this run will store them as general tags.")
         # ponytail: two concurrent gelbooru workers can overwrite each other's
         # save — worst case those tags refetch on a later run
         DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
