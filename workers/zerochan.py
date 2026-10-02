@@ -193,7 +193,7 @@ def _derive_img_url(item):
 
 
 _CF_MARKERS = ("just a moment", "cf-challenge", "attention required",
-               "checking your browser", "cf_chl")
+               "checking your browser", "checking browser", "cf_chl")
 
 
 # Windows forbids the characters below (plus control chars) in file/dir
@@ -561,8 +561,10 @@ class ZerochanWorker(BaseDownloader):
         """List posts via https://www.zerochan.net/{tag}?json=1&l=N&p=M.
 
         Same endpoint family the patched gallery-dl extractor uses.
-        Returns (posts, engine_ok); each post has id/full/tags?. `next`
-        truthiness decides pagination.
+        Returns (posts, engine_ok): engine_ok False means CF/HTTP/parse
+        failure — the caller must NOT treat that as end-of-data. The API
+        exposes no `next` flag, so an empty list with engine_ok True is
+        the real end of the tag (advance p until a page comes back empty).
         """
         params = {"json": "1", "l": per_page, "p": page}
         try:
@@ -573,7 +575,11 @@ class ZerochanWorker(BaseDownloader):
             def _do():
                 return session.get(url, timeout=30, allow_redirects=True,
                                    headers={"Referer": "https://www.zerochan.net/",
-                                            "Accept": "application/json"},
+                                            "Accept": "application/json",
+                                            # zerochan allows gallery-dl clients
+                                            # through; a browser UA gets the
+                                            # "Checking browser..." interstitial
+                                            "User-Agent": "gallery-dl"},
                                    verify=self._verify_flag())
 
             resp = await asyncio.to_thread(_do)
@@ -584,7 +590,7 @@ class ZerochanWorker(BaseDownloader):
                 return [], False
             if status != 200 or not raw:
                 self.log(f"JSON listing page {page} failed: HTTP {status}.")
-                return [], True
+                return [], False
             try:
                 text = raw.decode("utf-8", "ignore")
                 # Strip ad-script inserts like the patched extractor does
@@ -593,11 +599,10 @@ class ZerochanWorker(BaseDownloader):
                 data = _json.loads(text)
             except Exception as e:
                 self.log(f"JSON listing page {page}: bad JSON ({e}).")
-                return [], True
+                return [], False
             items = data.get("items", []) if isinstance(data, dict) else []
-            has_next = bool(isinstance(data, dict) and data.get("next"))
             self.log(f"Page {page}: {len(items)} posts (built-in JSON API)")
-            return items, has_next
+            return items, True
         except Exception as e:
             self.log(f"JSON listing page {page} failed: {e}")
             return [], False
@@ -912,24 +917,31 @@ class ZerochanWorker(BaseDownloader):
             if use_gallery_dl:
                 posts, engine_ok = await asyncio.to_thread(
                     self._gallery_dl_enumerate, self.encoded_tag, page, PAGE_SIZE)
-                if not engine_ok:
+                if not engine_ok or not posts:
+                    if not engine_ok:
+                        if page == 1:
+                            self.log("gallery-dl engine unavailable — "
+                                     "switching to built-in Zerochan JSON API.")
+                        else:
+                            self.log("gallery-dl engine failed — "
+                                     "switching to built-in Zerochan JSON API.")
+                    else:
+                        self.log("gallery-dl returned no posts — cross-checking "
+                                 "with the built-in Zerochan JSON API.")
                     use_gallery_dl = False
-                    if page == 1 and not posts:
-                        self.log("gallery-dl engine unavailable — "
-                                 "switching to built-in Zerochan JSON API.")
-                    else:
-                        self.log("gallery-dl engine failed — "
-                                 "switching to built-in Zerochan JSON API.")
-                elif not posts:
-                    if page == 1:
-                        self.log(f"No posts found for '{self.original_tag}'. "
-                                 "Check the tag spelling.")
-                    else:
-                        self.log("No more posts available from gallery-dl.")
-                    break
+                    # gallery-dl re-reads the full listing on every call and
+                    # never advances p past its l=200 cap, so an empty page
+                    # from it is NOT proof of end-of-data. Resume JSON at the
+                    # listing slot gallery-dl reached; the filename dedupe
+                    # absorbs the overlap.
+                    page = (page - 1) * PAGE_SIZE // json_per_page + 1
 
             if not use_gallery_dl:
-                items, has_next = await self._curl_json_enumerate(page=page, per_page=json_per_page)
+                items, engine_ok = await self._curl_json_enumerate(page=page, per_page=json_per_page)
+                if not engine_ok:
+                    self.log("Zerochan JSON API failed (Cloudflare/network) — "
+                             "stopping enumeration; this is NOT the end of the tag.")
+                    break
                 if not items:
                     if page == 1:
                         self.log(f"No posts found for '{self.original_tag}'. "
