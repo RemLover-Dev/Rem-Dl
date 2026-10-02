@@ -2245,8 +2245,12 @@ socket.on("dl_progress", function (data) {
 });
 
 let openQueueSite = null; // worker whose pill list is open (survives re-renders)
+// ponytail: a locally stopped site stays server-active while its thread winds
+// down (in-flight awaits ignore stop_event) — suppress that ghost in the pill
+// until the server's real clear arrives
+let stoppedWorker = {};
 function renderQueueChip(data) {
-    const actives = (data && data.active) || [];
+    const actives = ((data && data.active) || []).filter(a => !stoppedWorker[a.site]);
     const queued = (data && data.queue) || [];
     // one pill per worker — a pill's list never mixes in another worker's jobs
     const bySite = {};
@@ -2271,7 +2275,7 @@ function renderQueueChip(data) {
         x.className = "queue-x";
         x.title = "Stop this download";
         x.textContent = "✕";
-        x.onclick = e => { e.stopPropagation(); socket.emit("stop_worker", { worker: site }); };
+        x.onclick = e => { e.stopPropagation(); stoppedWorker[site] = true; socket.emit("stop_worker", { worker: site }); };
         return x;
     };
     sites.forEach(site => {
@@ -2450,6 +2454,8 @@ socket.on("dl_queue", function (data) {
         const c = document.getElementById("dualProgress_" + key);
         if (c) c.style.display = "none";
     });
+    // drop the stop marker once the server agrees the job is gone
+    Object.keys(stoppedWorker).forEach(w => { if (!activeSites.has(w)) delete stoppedWorker[w]; });
     renderQueueChip(data);
 });
 
@@ -3047,6 +3053,7 @@ function clearSubmittedTags(workerName) {
 }
 
 function startWorker(workerName) {
+    delete stoppedWorker[workerName];
     if (queuedCounts[workerName]) {
         // jobs are already waiting — START kicks off the head of the queue
         socket.emit("start_worker", { worker: workerName });
@@ -3076,12 +3083,14 @@ function startWorker(workerName) {
 function addWorkerToQueue(workerName) {
     const payload = buildWorkerPayload(workerName);
     if (!payload) return false;
+    delete stoppedWorker[workerName];
     socket.emit("queue_add", payload);
     clearSubmittedTags(workerName);
     return true;
 }
 
 function stopWorker(workerName) {
+    stoppedWorker[workerName] = true;
     socket.emit("stop_worker", { worker: workerName });
     workerRunning[workerName] = false; renderRunBtn(workerName);
     let key = WORKER_TO_TAB[workerName];
