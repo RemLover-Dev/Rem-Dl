@@ -1,5 +1,7 @@
 import os
 import asyncio
+import threading
+import time
 from curl_cffi import requests as curl_requests
 from core.shared import (
     BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
@@ -9,6 +11,40 @@ from core.shared import (
 
 API = "https://api.anime-pictures.net/api/v3"
 PER_PAGE = 80
+
+
+class _RateLimiter:
+    """Space callers at per_sec; thread-safe (requests run in to_thread)."""
+    def __init__(self, per_sec):
+        self.interval = 1.0 / per_sec
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self.interval
+        delay = slot - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+# ponytail: shared by every AnimeDlWorker — anime-pictures rate-limits per
+# origin, and detail fan-out (sem 6) + 4 download workers outran 4 req/s
+_SITE_RATE = _RateLimiter(4)
+
+
+def _rate_limit_session(session, rate=_SITE_RATE):
+    """Wrap session.get so every request this worker makes passes the limiter."""
+    raw_get = session.get
+
+    def get(*args, **kwargs):
+        rate.wait()
+        return raw_get(*args, **kwargs)
+
+    session.get = get
+    return session
 
 class AnimeDlWorker(BaseDownloader):
     def __init__(self, tag, amount, net_config):
@@ -132,7 +168,7 @@ class AnimeDlWorker(BaseDownloader):
             s.proxies = {"http": p, "https": p}
         s.cookies.set("time_zone", "UTC", domain=".anime-pictures.net")
         s.cookies.set("sitelang", "en", domain=".anime-pictures.net")
-        self.curl_session = s
+        self.curl_session = _rate_limit_session(s)
 
         # ponytail: list child sub-tags once so the user can search them
         # standalone — same pattern as the zerochan worker
