@@ -2204,6 +2204,7 @@ let _histReloadTimer = null;
 socket.on("update_history", function () {
     // ponytail: downloads fire this per file — coalesce history reloads or
     // the tab re-fetches and re-renders dozens of times per run
+    viewerMetaMisses.clear();  // a row may have landed since the viewer's fetch
     if (_histReloadTimer) return;
     _histReloadTimer = setTimeout(() => {
         _histReloadTimer = null;
@@ -3198,6 +3199,8 @@ async function saveAllSettings() {
 let historyTags = [];
 let favoriteTags = [];
 let imageHistory = [];
+// filenames whose imageHistory lookup missed — refetch once, not per click
+const viewerMetaMisses = new Set();
 let historyQuery = "";
 let historyDateFilter = null;  // calendar filter {y,mo,d,h,mm}, kept out of the search box
 let galleryDateFilter = null;  // same shape, for the Gallery tab
@@ -4761,10 +4764,24 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     }
     const metaPanel = document.getElementById("galleryViewerMeta");
     if (metaPanel) {
-        const entry = (typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === filename) : null)
-        || { filename: filename, filepath: "", site: "", tags: {} };
-        metaPanel.innerHTML = viewerMetaHtml(entry, true);
-        document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
+        const emptyEntry = { filename: filename, filepath: "", site: "", tags: {} };
+        const fillMeta = (entry) => {
+            metaPanel.innerHTML = viewerMetaHtml(entry, true);
+            document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
+        };
+        const lookup = () => (typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === filename) : null);
+        const found = lookup();
+        if (found) fillMeta(found);
+        else if (viewerMetaMisses.has(filename)) fillMeta(emptyEntry);
+        else {
+            // freshly downloaded: imageHistory can lag the download (update_history
+            // is coalesced) — refetch once so the tag box fills on first open
+            viewerMetaMisses.add(filename);
+            fetch("/api/image_history").then(r => r.json()).then(h => {
+                if (Array.isArray(h)) imageHistory = h;
+                fillMeta(lookup() || emptyEntry);
+            }).catch(() => fillMeta(emptyEntry));
+        }
     }
     viewer.style.display = 'flex';
     updateViewerNav();
