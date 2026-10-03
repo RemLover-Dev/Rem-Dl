@@ -124,3 +124,10 @@ android/.idea/
 *.iml
 *.hprof
 image_phashes.json
+
+# Local runtime state (added later)
+database/notifications.json
+database/watchers.json
+database/*.json.migrated
+database/*.sqlite3.bak-*
+database/*_tag_types.json
