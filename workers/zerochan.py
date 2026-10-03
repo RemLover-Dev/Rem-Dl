@@ -862,13 +862,15 @@ class ZerochanWorker(BaseDownloader):
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits)
 
-                write_image_metadata(filepath, tags_list, artists, self.name,
+                # send_tags first: history row must exist before the image is
+                # clickable in the viewer (its tag box reads imageHistory)
+                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path,
+                          characters, copyrights, metadata_tags, outfits)
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name,
                                      characters, copyrights, metadata_tags, outfits)
                 add_to_gallery(self.name, filename, rel_path, tags_list, artists,
                                characters, copyrights, metadata_tags, outfits)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-                send_tags(self.name, filename, tags_list, artists, rel_path,
-                          characters, copyrights, metadata_tags, outfits)
                 return True
 
             except Exception as e:
