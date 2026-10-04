@@ -4606,6 +4606,22 @@ document.addEventListener('keydown', function(e) {
     updateSelectBar();
 }, true);
 
+// Del key: same action as the gallery toolbar Delete button
+// (the image viewer wires its own Del while open — skip here to avoid doubles)
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Delete') return;
+    const gal = document.getElementById('Gallery');
+    if (!gal || gal.style.display === 'none') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    const viewer = document.getElementById('galleryViewer');
+    if (viewer && viewer.style.display === 'flex') return;
+    if (document.querySelector('.custom-confirm-overlay')) return;
+    if (!gallerySelectMode || !gallerySelected.size) return;
+    e.preventDefault();
+    selectDelete();
+}, true);
+
 function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once
     let clean = filepath || "";
