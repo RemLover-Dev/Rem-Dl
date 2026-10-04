@@ -73,7 +73,7 @@ function normalizeTags(tagsInput) {
     return result;
 }
 
-function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()); }
+function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
 function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
@@ -317,7 +317,6 @@ function _drainWpWaiters(url) {
 let _wpLayerA = null;
 let _wpLayerB = null;
 let _wpFrontIsA = true;
-let _wpFadeTimer = null;
 let _wpGen = 0;
 
 function _ensureWpLayers() {
@@ -430,7 +429,7 @@ const WORKER_TO_TAB = {
     "neko": "neko", "nekos_life": "nekos_life", "zero": "zero", "waifu": "waifu",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
-    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia", "wallhaven": "wallhaven"
+    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
 };
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
@@ -512,7 +511,7 @@ function capConsole(cb, max) {
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia", "wallhaven": "consoleLog_wallhaven" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -581,8 +580,6 @@ function logToConsole(tabID, msg) {
         }
         let fnMatch = raw.match(/Downloaded ([^\s]+)/);
         let fn = fnMatch ? fnMatch[1] : "image";
-        let countMatch = raw.match(/\((\d+)\/\d+\)/);
-        let countNum = countMatch ? countMatch[1] : "1";
 
         let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn).replace(/'/g, "%27");
 
@@ -643,7 +640,6 @@ function logToConsole(tabID, msg) {
         <div class="img-card-tags">${tagsHtml}</div>
         ${ratingHtml}
         </div>
-        <div class="img-card-number">${countNum}</div>
         `;
         appendLogCard(cb, card);
         return;
@@ -675,7 +671,7 @@ function logToConsole(tabID, msg) {
     // e.g. the pixiv auth steps and "Auth error: ..." are silently dropped
     let plain = document.createElement("div");
     plain.className = "log-item system";
-    plain.innerHTML = `<span style="flex:1;">${escapeHtml(raw)}</span>`;
+    plain.innerHTML = `<span style="flex:1;">${escapeHtml(raw).replace(/⚠️?/g, WARN_ICON)}</span>`;
     appendLogCard(cb, plain);
 }
 
@@ -2474,6 +2470,7 @@ window.onload = async function () {
             document.getElementById("retryWait").value = config.retry_wait || 5;
             document.getElementById("antiBanPause").value = config.anti_ban_pause || 3;
             document.getElementById("downloadRetries").value = config.download_retries || 3;
+            document.getElementById("reqRateLimit").value = config.req_rate_limit || 4;
             if (document.getElementById("dedupEnabled")) document.getElementById("dedupEnabled").checked = config.dedup_enabled !== false;
         }
     } catch (e) { console.error("Config error:", e); }
@@ -2944,7 +2941,7 @@ function buildWorkerPayload(workerName) {
     else if (workerName === 'kona') { payload.tag = currentKonaTags.join(' '); payload.limit = document.getElementById('konaLimit').value; payload.rating = document.getElementById('konaRating').value; let format = document.getElementById('konaFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('konaExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
     else if (workerName === 'rule34') { payload.tag = currentRule34Tags.join(' '); payload.limit = document.getElementById('rule34Limit').value; payload.method = document.getElementById('rule34Method').value; payload.sort_type = document.getElementById('rule34SortType').value; payload.sort_order = document.getElementById('rule34SortOrder').value; let format = document.getElementById('rule34Format').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'gifs') { ex.push('-video'); ex.push('-image'); } else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('exGif').checked) ex.push('-gif'); if (document.getElementById('exComic').checked) ex.push('-comic'); if (document.getElementById('ex3D').checked) ex.push('-3d'); payload.exclusions = ex; payload.exclude_ai = document.getElementById('rule34-exclude-ai').checked; }
     else if (workerName === 'sankaku') { payload.tag = currentSankakuTags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; }
-    else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join('&&'); payload.limit = document.getElementById('animeDlLimit').value; }
+    else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join(' '); payload.limit = document.getElementById('animeDlLimit').value; }
     else if (workerName === 'pinterest') { payload.tag = document.getElementById('pinterestTag').value; payload.limit = document.getElementById('pinterestLimit').value; payload.is_search = document.getElementById('pinterestMode').value === 'search'; payload.min_w = parseInt(document.getElementById('pinterestMinW').value) || 0; payload.min_h = parseInt(document.getElementById('pinterestMinH').value) || 0; }
     else if (workerName === 'pixiv') {
         let mode = document.getElementById('pixivMode').value;
@@ -2978,20 +2975,6 @@ function buildWorkerPayload(workerName) {
         payload.limit = document.getElementById('nekosiaLimit').value;
         payload.rating = document.getElementById('nekosiaRating').value;
     }
-    else if (workerName === 'wallhaven') {
-        const rawTagInput = document.getElementById('wallhavenTag').value.trim();
-        payload.tag = [...new Set(currentWallhavenTags.concat(rawTagInput ? rawTagInput.split(/[\s,]+/) : []))].join(' ');
-        // empty tag = latest feed, but the queue gate wants a truthy payload key
-        if (!payload.tag) payload.category = 'latest';
-        payload.limit = document.getElementById('wallhavenLimit').value;
-        payload.purity = document.getElementById('wallhavenPurity').value;
-        payload.sorting = document.getElementById('wallhavenSort').value;
-        payload.order = document.getElementById('wallhavenOrder').value;
-        // history/blur only understand single canon ratings — strongest purity wins,
-        // All (nothing selected) falls back to explicit like danbooru-style unfiltered
-        const pSel = payload.purity.split(' ').filter(Boolean);
-        payload.rating = pSel.includes('nsfw') ? 'explicit' : pSel.includes('sketchy') ? 'questionable' : pSel.includes('sfw') ? 'safe' : 'explicit';
-    }
 
     // ponytail: don't fire a worker with no query — it scans nothing and
     // the empty limit box (now possible) already defaults server-side
@@ -3010,35 +2993,8 @@ function buildWorkerPayload(workerName) {
     return payload;
 }
 
-let currentWallhavenTags = [];
-function addWallhavenTag() {
-    let input = document.getElementById("wallhavenTag");
-    if (!input) return;
-    let parts = input.value.trim().split(/[\s,]+/).filter(Boolean);
-    let added = false;
-    parts.forEach(function(t) { if (!currentWallhavenTags.includes(t)) { currentWallhavenTags.push(t); added = true; } });
-    if (added) { input.value = ""; renderWallhavenTags(); }
-}
-function removeWallhavenTag(tag) {
-    currentWallhavenTags = currentWallhavenTags.filter(function(t) { return t !== tag; });
-    renderWallhavenTags();
-}
-function renderWallhavenTags() {
-    let container = document.getElementById("wallhavenTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentWallhavenTags.map(function(t) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : 'neutral';
-        let icon = isNeg ? '− ' : ZERO_CHECK_ICON;
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeWallhavenTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
-    }).join('');
-}
-
 function clearSubmittedTags(workerName) {
     // ponytail: submitted combo clears so the box is fresh for the next search
-    if (workerName === 'wallhaven') { currentWallhavenTags = []; renderWallhavenTags(); document.getElementById('wallhavenTag').value = ''; }
     if (workerName === 'zero') { currentZerochanTags = []; zerochanSubTags.clear(); renderZerochanTags(); document.getElementById('zeroTag').value = ''; }
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
@@ -3110,7 +3066,6 @@ async function loadApiSettings() {
     document.getElementById("gelKey").value = settings.gelbooru_api_key || "";
     document.getElementById("gelUid").value = settings.gelbooru_user_id || "";
     document.getElementById("gsApiKey").value = settings.gsbooru_api_key || "";
-    document.getElementById("wallhavenApikey").value = settings.wallhaven_api_key || "";
     document.getElementById("konaLogin").value = settings.konachan_login || "";
     document.getElementById("konaPassword").value = settings.konachan_password || "";
     document.getElementById("sankaLogin").value = settings.sanka_login || "";
@@ -3133,7 +3088,6 @@ async function saveApiSettings() {
         gelbooru_api_key: document.getElementById("gelKey").value.trim(),
         gelbooru_user_id: document.getElementById("gelUid").value.trim(),
         gsbooru_api_key: document.getElementById("gsApiKey").value.trim(),
-        wallhaven_api_key: document.getElementById("wallhavenApikey").value.trim(),
         konachan_login: document.getElementById("konaLogin").value.trim(),
         konachan_password: document.getElementById("konaPassword").value.trim(),
         sanka_login: document.getElementById("sankaLogin").value.trim(),
@@ -3193,6 +3147,7 @@ async function saveDownloadSettings() {
     globalNetConfig.retry_wait = document.getElementById("retryWait").value;
     globalNetConfig.anti_ban_pause = document.getElementById("antiBanPause").value;
     globalNetConfig.download_retries = document.getElementById("downloadRetries").value;
+    globalNetConfig.req_rate_limit = document.getElementById("reqRateLimit").value;
     if (document.getElementById("dedupEnabled")) globalNetConfig.dedup_enabled = document.getElementById("dedupEnabled").checked;
     await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
     return "Saved!";
@@ -3394,7 +3349,6 @@ function renderHistoryPicker() {
         const today = d === now.getDate() && s.vm === now.getMonth() && s.vy === now.getFullYear();
         days += `<span onclick="hpPickDay(${d})" style="text-align:center; padding:4px 0; border-radius:4px; cursor:pointer; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}">${d}</span>`;
     }
-    const pad = (n) => String(n).padStart(2, "0");
     const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
     const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
     const selStyle = "appearance: none; -webkit-appearance: none; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px; width: 44px; text-align: center; flex: none;";
@@ -3566,7 +3520,7 @@ function renderHistory() {
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
                 timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item${_nsfw ? ' is-nsfw' : ''}" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item${_nsfw ? ' is-nsfw' : ''}" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -3582,7 +3536,7 @@ function renderFavorites() {
         return;
     }
     favoriteTags.forEach(item => {
-        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(item.site)}]</span><span>${escapeHtml(cleanTagDisplay(item.tag))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
+        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(item.site)}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
     });
 }
 
@@ -3603,7 +3557,7 @@ async function toggleFavorite(site, tag) {
 async function removeFromHistory(site, tag, rating) { await fetch("/api/history/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ site: site, tag: tag, rating: rating || "" }) }); await loadTagsData(); }
 async function clearHistory() { if(await customConfirm("Are you sure you want to delete all search history?", "Delete")) { await fetch("/api/history/clear", { method: "POST" }); await loadTagsData(); } }
 
-function jumpToSite(site, tag, rating) {
+function jumpToSite(site, tag, rating, excludeAI) {
     // ponytail: pill-based tabs take separate tags, not one joined string
     if (site === "zero") {
         currentZerochanTags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
@@ -3614,12 +3568,15 @@ function jumpToSite(site, tag, rating) {
     } else if (site === "rule34") {
         currentRule34Tags = String(tag || "").split(/\s+/).filter(Boolean);
         renderRule34Tags();
+        const exAI34 = document.getElementById('rule34-exclude-ai');
+        if (exAI34) exAI34.checked = excludeAI === true;
     } else if (site === "gelbooru") {
-        currentGelbooruTags = String(tag || "").split(/\s+/).filter(Boolean);
+        // the saved tag carries the AI exclusion — map it to the checkbox, never a pill
+        const hadAI = /\s*-ai[_ ]generated\b/i.test(tag || "");
+        currentGelbooruTags = String(tag || "").replace(/\s*-ai[_ ]generated\b/gi, "").trim().split(/\s+/).filter(Boolean);
         renderGelbooruTags();
-        // the saved tag carries the AI exclusion — reflect it in the checkbox too
         const gelNoAI = document.getElementById('gelNoAI');
-        if (gelNoAI) gelNoAI.checked = currentGelbooruTags.includes('-ai_generated');
+        if (gelNoAI) gelNoAI.checked = hadAI;
     } else if (site === "eshuushuu") {
         currentEshuushuuTags = String(tag || "").split(/\s+/).filter(Boolean);
         renderEshuushuuTags();
@@ -3662,17 +3619,16 @@ function jumpToSite(site, tag, rating) {
         } else if (input) {
             input.value = tag || "";
         }
-    } else if (site === "wallhaven") {
-        currentWallhavenTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
-        renderWallhavenTags();
+        const pixExAI = document.getElementById('pixiv-exclude-ai');
+        if (pixExAI) pixExAI.checked = excludeAI === true;
     }
-    let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" }, "wallhaven": { tab: "Wallhaven", input: "wallhavenTag" } };
+    let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
     // ponytail: match the button's openTab target, not its label —
     // labels like "e-shuushuu" never contain the key "eshuushuu"
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
-    if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv" && site !== "wallhaven") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
+    if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
     if (rating) {
         const rsId = RATING_INPUT_BY_WORKER[site];
         if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) setSelectValue(rsEl, rating); }
@@ -3910,7 +3866,6 @@ const SOURCE_RATINGS = {
     rule34: ['explicit'],
     nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'],
     nekosia: ['safe', 'sensitive'],
-    wallhaven: ['safe', 'questionable', 'explicit'],
     'waifu.im': ['safe', 'explicit'],
     pinterest: ['safe'],
     pixiv: ['safe', 'explicit'],
@@ -3960,7 +3915,6 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
     else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
     else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
-    else if (menu.id === 'wallhavenPurityDropdown') onWallhavenPurityChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -3988,18 +3942,6 @@ function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaR
 function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
 function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
 function onSankakuRatingChange() { onMultiRatingChange('sankakuRatingDropdown', 'sankakuRating'); }
-function onWallhavenPurityChange() {
-    const menu = document.getElementById('wallhavenPurityDropdown');
-    const hidden = document.getElementById('wallhavenPurity');
-    if (!menu || !hidden) return;
-    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
-    const checkedItems = itemChecks.filter(c => c.checked);
-    const allCheck = menu.querySelector('input[value=""]');
-    if (checkedItems.length === 0 && allCheck) allCheck.checked = true;
-    hidden.value = checkedItems.map(c => c.value).join(' ');
-    const btn = document.querySelector('[onclick="toggleDropdown(\'wallhavenPurityDropdown\')"]');
-    if (btn) btn.textContent = getMultiLabel('wallhavenPurityDropdown', 'All Ratings') + ' ▾';
-}
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
@@ -4423,8 +4365,8 @@ function reanchorGalleryViewer(prevId) {
     viewerIndex = at >= 0 ? at : Math.min(viewerIndex, galleryState.images.length - 1);
 }
 let viewerZoom = 1;
-function openGalleryViewer(id) {
-    if (gallerySelectMode) {
+function openGalleryViewer(id, force) {
+    if (gallerySelectMode && !force) {
         if (_dragSuppressClick) {
             _dragSuppressClick = false;
             return;
@@ -4500,6 +4442,7 @@ function toggleGallerySelected(id) { setGallerySelected(id, !gallerySelected.has
 
 function galleryCardContextmenu(e, id) {
     e.preventDefault();
+    if (gallerySelectMode) { openGalleryViewer(id, true); return; }
     gallerySelectMode = true;
     toggleGallerySelected(id);
 }
@@ -4579,7 +4522,6 @@ document.addEventListener('keydown', function(e) {
     const viewer = document.getElementById('galleryViewer');
     if (viewer && viewer.style.display === 'flex') return;
     if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
-    if (gallerySelectMode) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     let page = null;

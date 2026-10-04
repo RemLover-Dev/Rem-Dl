@@ -123,8 +123,6 @@ class NekosiaWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_nekosia(tag, amount, rating, net_config):
     NekosiaWorker(tag, amount, rating, net_config).run()

@@ -68,8 +68,6 @@ class NekosBestWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_nekos_best(category, amount, net_config):
     worker = NekosBestWorker(category, amount, net_config)

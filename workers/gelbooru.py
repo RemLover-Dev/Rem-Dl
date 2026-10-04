@@ -100,18 +100,7 @@ class GelbooruWorker(BaseWorker):
                      f"— downloads this run will store them as general tags.")
         # ponytail: two concurrent gelbooru workers can overwrite each other's
         # save — worst case those tags refetch on a later run
-        DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
-
-    def _categorize_tags(self, tag_names):
-        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-        for t in tag_names:
-            cat = self.tag_cache.get(t, "tag")
-            if cat == "artist": artists.append(t)
-            elif cat == "character": characters.append(t)
-            elif cat == "copyright": copyrights.append(t)
-            elif cat == "metadata": metadata_tags.append(t)
-            else: general.append(t)
-        return general, artists, characters, copyrights, metadata_tags
+        await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
 
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
@@ -122,6 +111,7 @@ class GelbooruWorker(BaseWorker):
         pid = 0
 
         consecutive_errors = 0
+        made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
@@ -194,7 +184,9 @@ class GelbooruWorker(BaseWorker):
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(raw_tags)
 
                 rating_dir = os.path.join(self.tag_dir, rating_label, "images")
-                safe_ensure_dir(rating_dir)
+                if rating_dir not in made_dirs:
+                    safe_ensure_dir(rating_dir)
+                    made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
                 if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
@@ -214,8 +206,6 @@ class GelbooruWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_gelbooru(tag, amount, rating, exclusions, net_config):
     worker = GelbooruWorker(tag, amount, rating, exclusions, net_config)

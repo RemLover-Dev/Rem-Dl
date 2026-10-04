@@ -73,18 +73,7 @@ class KonachanWorker(BaseWorker):
         await asyncio.gather(*[query_one(t) for t in uncached])
         # ponytail: concurrent workers may overwrite each other's save —
         # worst case those tags refetch on a later run
-        DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
-
-    def _categorize_tags(self, tag_names):
-        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-        for t in tag_names:
-            cat = self.tag_cache.get(t, "tag")
-            if cat == "artist": artists.append(t)
-            elif cat == "character": characters.append(t)
-            elif cat == "copyright": copyrights.append(t)
-            elif cat == "metadata": metadata_tags.append(t)
-            else: general.append(t)
-        return general, artists, characters, copyrights, metadata_tags
+        await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
 
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
@@ -174,7 +163,8 @@ class KonachanWorker(BaseWorker):
                 if self.rating_allowed and post_rating not in self.rating_allowed:
                     continue
 
-                url = post.get("file_url") or post.get("large_file_url")
+                # the original only — never a sample variant
+                url = post.get("file_url")
                 if not url:
                     continue
 
@@ -215,8 +205,6 @@ class KonachanWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_konachan(tag, amount, rating, exclusions, net_config):
     worker = KonachanWorker(tag, amount, rating, exclusions, net_config)

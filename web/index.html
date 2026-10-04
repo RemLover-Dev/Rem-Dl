@@ -42,7 +42,6 @@
                 <button class="tab-btn" onclick="openTab('Safe', this)">Safebooru</button>
                 <button class="tab-btn" onclick="openTab('Sankaku', this)">Sankaku</button>
                 <button class="tab-btn" onclick="openTab('Waifu', this)">Waifu.im</button>
-                <button class="tab-btn" onclick="openTab('Wallhaven', this)">Wallhaven</button>
                 <button class="tab-btn" onclick="openTab('Yande', this)">Yande.re</button>
                 <button class="tab-btn" onclick="openTab('Zero', this)">Zerochan</button>
             </div>
@@ -612,64 +611,32 @@
 
                     <div class="settings-cards-grid">
                         <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Rule34 Credentials</h3>
-                            <div class="field-row"><label>API Key:</label><input type="password" id="r34Key" placeholder="Rule34 API Key" style="flex:1;"></div>
-                            <div class="field-row"><label>User ID:</label><input type="text" id="r34Uid" placeholder="Rule34 User ID" style="flex:1;"></div>
-                        </div>
-
-                        <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Danbooru Credentials</h3>
                             <div class="field-row"><label>Username:</label><input type="text" id="danLogin" placeholder="Danbooru Username" style="flex:1;"></div>
                             <div class="field-row"><label>API Key:</label><input type="password" id="danApiKey" placeholder="Danbooru API Key" style="flex:1;"></div>
                             <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">danbooru.donmai.us → My Account → API Key. Note: free Member accounts still cap at 2 search tags.</div>
                         </div>
-
-                        
-                        
-                        
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Gelbooru Credentials</h3>
                             <div class="field-row"><label>API Key:</label><input type="password" id="gelKey" placeholder="Gelbooru API Key" style="flex:1;"></div>
                             <div class="field-row"><label>User ID:</label><input type="text" id="gelUid" placeholder="Gelbooru User ID" style="flex:1;"></div>
                         </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Gsbooru Credentials</h3>
                             <div class="field-row"><label>API Key:</label><input type="password" id="gsApiKey" placeholder="Gsbooru API Key" style="flex:1;"></div>
                             <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">gsbooru.org → account settings → API Keys (shown once at creation). Required for scanning via the official JSON API.</div>
                         </div>
-
-                        <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Wallhaven API Key</h3>
-                            <div class="field-row"><label>API Key:</label><input type="password" id="wallhavenApikey" placeholder="Wallhaven API Key" style="flex:1;"></div>
-                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">wallhaven.cc &rarr; Settings &rarr; API Key. Required for NSFW / API searches (401 without it).</div>
-                        </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Konachan Credentials</h3>
                             <div class="field-row"><label>Username:</label><input type="text" id="konaLogin" placeholder="Konachan Username" style="flex:1;"></div>
                             <div class="field-row"><label>Password:</label><input type="password" id="konaPassword" placeholder="Password" style="flex:1;"></div>
                         </div>
-
-                        <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Sankaku Credentials</h3>
-                            <div class="field-row"><label>Login:</label><input type="text" id="sankaLogin" placeholder="Email / Username" style="flex:1;"></div>
-                            <div class="field-row"><label>Password:</label><input type="password" id="sankaPassword" placeholder="Password" style="flex:1;"></div>
-                        </div>
-
-                        <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Zerochan Credentials</h3>
-                            <div class="field-row"><label>Username:</label><input type="text" id="zeroLogin" placeholder="Zerochan Username" style="flex:1;"></div>
-                            <div class="field-row"><label>Password:</label><input type="password" id="zeroPassword" placeholder="Zerochan Password" style="flex:1;"></div>
-                        </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Pinterest Login</h3>
                             <div class="field-row"><label>Cookies:</label><input type="text" id="pinterestCookies" placeholder="Cookies file path (optional)" style="flex:1;"></div>
                             <div class="field-row"><label>Email:</label><input type="email" id="pinterestEmail" placeholder="Email (fallback)" style="flex:1;"></div>
                             <div class="field-row"><label>Password:</label><input type="password" id="pinterestPassword" placeholder="Password" style="flex:1;"></div>
                         </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Pixiv Credentials</h3>
                             <div class="field-row"><label>Refresh Token:</label><input type="password" id="pixivToken" placeholder="PIXIV_REFRESH_TOKEN" style="flex:1;"></div>
@@ -687,8 +654,24 @@
                                 Alternative: paste your <code>PHPSESSID</code> cookie instead of a code (uses your proxy only if "Use Proxy" is on).
                             </div>
                         </div>
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Rule34 Credentials</h3>
+                            <div class="field-row"><label>API Key:</label><input type="password" id="r34Key" placeholder="Rule34 API Key" style="flex:1;"></div>
+                            <div class="field-row"><label>User ID:</label><input type="text" id="r34Uid" placeholder="Rule34 User ID" style="flex:1;"></div>
+                        </div>
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Sankaku Credentials</h3>
+                            <div class="field-row"><label>Login:</label><input type="text" id="sankaLogin" placeholder="Email / Username" style="flex:1;"></div>
+                            <div class="field-row"><label>Password:</label><input type="password" id="sankaPassword" placeholder="Password" style="flex:1;"></div>
+                        </div>
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Zerochan Credentials</h3>
+                            <div class="field-row"><label>Username:</label><input type="text" id="zeroLogin" placeholder="Zerochan Username" style="flex:1;"></div>
+                            <div class="field-row"><label>Password:</label><input type="password" id="zeroPassword" placeholder="Zerochan Password" style="flex:1;"></div>
+                        </div>
 
-                        <div class="settings-card" style="grid-column: 1 / -1;">
+
+<div class="settings-card" style="grid-column: 1 / -1;">
                             <h3>Blur Ratings</h3>
                             <div style="font-size: 13px; opacity: 0.85; margin-bottom: 10px;">Pick which ratings get blurred in Gallery, History and download logs, then press Save Settings. Hover an item to reveal it.</div>
                             <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px;">
@@ -706,11 +689,12 @@
 
                         <div class="settings-card" style="grid-column: 1 / -1;">
                             <h3><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M18.98 2.458c0.805 -0.423 2.358 -0.958 5.02 -0.958s4.215 0.535 5.022 0.958c0.612 0.32 0.97 0.83 1.174 1.256 0.29 0.605 0.925 1.97 1.48 3.449a18.483 18.483 0 0 1 3.063 1.771c1.56 -0.26 3.061 -0.39 3.731 -0.443 0.47 -0.036 1.09 0.02 1.675 0.39 0.77 0.486 2.01 1.563 3.34 3.869 1.332 2.306 1.644 3.918 1.681 4.828 0.029 0.69 -0.233 1.255 -0.5 1.645a44.816 44.816 0 0 1 -2.25 3.01 18.738 18.738 0 0 1 0 3.534 44.867 44.867 0 0 1 2.25 3.01c0.267 0.39 0.529 0.954 0.5 1.645 -0.037 0.91 -0.35 2.522 -1.68 4.828 -1.332 2.306 -2.572 3.383 -3.341 3.87 -0.584 0.37 -1.204 0.425 -1.675 0.389a44.829 44.829 0 0 1 -3.731 -0.443 18.478 18.478 0 0 1 -3.063 1.771 44.816 44.816 0 0 1 -1.48 3.449c-0.204 0.426 -0.562 0.935 -1.174 1.256 -0.807 0.422 -2.36 0.958 -5.022 0.958 -2.662 0 -4.215 -0.535 -5.022 -0.958 -0.612 -0.32 -0.97 -0.83 -1.174 -1.256 -0.29 -0.605 -0.925 -1.97 -1.48 -3.449a18.48 18.48 0 0 1 -3.063 -1.771c-1.56 0.26 -3.062 0.39 -3.732 0.443 -0.47 0.036 -1.09 -0.02 -1.674 -0.39 -0.77 -0.486 -2.01 -1.563 -3.34 -3.869 -1.332 -2.306 -1.645 -3.918 -1.682 -4.828 -0.028 -0.69 0.234 -1.255 0.5 -1.645a44.84 44.84 0 0 1 2.25 -3.01 18.727 18.727 0 0 1 0 -3.534 44.844 44.844 0 0 1 -2.25 -3.01c-0.266 -0.39 -0.528 -0.954 -0.5 -1.645 0.038 -0.91 0.35 -2.522 1.681 -4.828 1.331 -2.306 2.572 -3.383 3.341 -3.87 0.584 -0.37 1.204 -0.425 1.675 -0.389 0.67 0.052 2.17 0.184 3.73 0.443a18.48 18.48 0 0 1 3.064 -1.771 44.852 44.852 0 0 1 1.48 -3.449c0.204 -0.426 0.562 -0.935 1.174 -1.256ZM32 24a8 8 0 1 1 -16 0 8 8 0 0 1 16 0Z"/></svg> Download Parameters</h3>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 12px;">
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">API Timeout (s)</label><input type="number" id="apiTimeout" value="10" style="width: 100%;"></div>
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Retry Wait (s)</label><input type="number" id="retryWait" value="5" style="width: 100%;"></div>
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Anti-Ban Pause (s)</label><input type="number" id="antiBanPause" value="3" step="0.5" style="width: 100%;"></div>
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Download Retries</label><input type="number" id="downloadRetries" value="3" min="1" style="width: 100%;"></div>
+                                <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Request Limit (req/s)</label><input type="number" id="reqRateLimit" value="4" min="1" max="100" style="width: 100%;"></div>
                             </div>
                             <div class="field-row" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 10px;">
                                 <input type="checkbox" id="dedupEnabled" checked style="width: 18px; height: 18px; cursor: pointer;">
@@ -1044,51 +1028,6 @@
                 <div class="console-wrapper">
                     <button class="clear-log-btn" onclick="clearLog('yande')">Clear</button>
                     <div id="consoleLog_yande" class="console-log"></div>
-                </div>
-            </div>
-
-            <div id="Wallhaven" class="tab-content" style="display: none;">
-                <h2>Wallhaven Downloader</h2>
-                <div class="input-group" style="align-items: flex-start;">
-                    <label style="padding-top: 8px;">Search:</label>
-                    <div style="flex:1;">
-                        <input style="width:100%;" autocomplete="off" type="text" id="wallhavenTag" placeholder="e.g. kafka" onkeydown="if(event.key==='Enter'){event.preventDefault(); addWallhavenTag();}">
-                        <div id="wallhavenTagsContainer" class="tag-visualizer" style="margin-top: 4px;"></div>
-                    </div>
-                    <label style="padding-top: 8px;">Limit:</label>
-                    <input type="number" id="wallhavenLimit" value="50" min="0" style="width: 80px;">
-                    <div class="gallery-dropdown" style="margin-right: 6px;">
-                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('wallhavenPurityDropdown')">All Ratings ▾</button>
-                        <div id="wallhavenPurityDropdown" class="gallery-dropdown-menu">
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>safe</span><input type="checkbox" value="sfw"></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>questionable</span><input type="checkbox" value="sketchy"></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="nsfw"></div>
-                        </div>
-                        <input type="hidden" id="wallhavenPurity" value="">
-                    </div>
-                    <select id="wallhavenSort" style="width: 110px;">
-                        <option value="date_added">Latest</option>
-                        <option value="relevance">Relevance</option>
-                        <option value="random">Random</option>
-                        <option value="views">Views</option>
-                        <option value="favorites">Favorites</option>
-                        <option value="toplist">Toplist</option>
-                    </select>
-                    <select id="wallhavenOrder" style="width: 90px;">
-                        <option value="desc">Desc</option>
-                        <option value="asc">Asc</option>
-                    </select>
-                    <button id="runBtn_wallhaven" class="action-btn" onclick="toggleWorker('wallhaven')">START</button>
-                </div>
-                <div class="dual-progress-container" id="dualProgress_wallhaven" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
-
-                    <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:5px;"><span><svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="m6.54699 10.2633 -2.8103 -2.81029c0.30897 -0.5174 0.61681 -1.05238 0.92246 -1.58357l0.00001 -0.00002c1.01621 -1.76605 2.0083 -3.49017 2.93771 -4.38696C10.1208 -1.04151 13.578 0.421966 13.578 0.421966s1.4635 3.457194 -1.0605 5.981154c-0.8894 0.92177 -2.58638 1.89901 -4.33893 2.90824l-0.00002 0 -0.00005 0.00003 -0.00004 0.00003c-0.54602 0.31442 -1.09742 0.63196 -1.63147 0.95188Zm2.14057 -6.53255c0 -0.87355 0.70815 -1.5817 1.58174 -1.5817 0.8735 0 1.5817 0.70815 1.5817 1.5817 0 0.87355 -0.7082 1.58171 -1.5817 1.58171 -0.87359 0 -1.58174 -0.70816 -1.58174 -1.58171Zm-4.0909 -0.23186c-1.41788 -0.37731 -2.74833 0.32133 -3.928816 1.40414 -0.237448 0.21781 -0.187858 0.59878 0.088141 0.76505L2.66123 6.81582l0.0022 -0.00371c0.27484 -0.46023 0.58205 -0.99335 0.89331 -1.53347l0.00003 -0.00005 0.00005 -0.0001 0.00001 -0.00001 0 -0.00001 0.00005 -0.00007c0.35541 -0.61676 0.71608 -1.24263 1.03978 -1.77951ZM7.1842 11.3387l1.14775 1.9052c0.16627 0.276 0.54725 0.3256 0.76505 0.0882 1.0832 -1.1809 1.7819 -2.5118 1.4038 -3.93024 -0.52137 0.3142 -1.0696 0.63054 -1.61266 0.94334l-0.08286 0.0477c-0.54854 0.3159 -1.09139 0.6285 -1.61594 0.9427l-0.00514 0.0031ZM2.62213 9.3429c0.26854 -0.00474 0.53528 0.04466 0.78432 0.14525 0.24903 0.10059 0.47526 0.25031 0.66517 0.44023 0.18992 0.18992 0.33964 0.41612 0.44023 0.66522 0.10059 0.249 0.14999 0.5157 0.14525 0.7843 -0.00474 0.2685 -0.06352 0.5333 -0.17283 0.7787 -0.10875 0.2441 -0.2653 0.4639 -0.4604 0.6464 -0.22177 0.2124 -0.56879 0.3785 -0.89051 0.5063 -0.34303 0.1364 -0.73445 0.2582 -1.0999 0.3579 -0.36667 0.1001 -0.71688 0.1806 -0.98135 0.2331 -0.131335 0.026 -0.247189 0.0463 -0.335989 0.0584 -0.042627 0.0058 -0.08971 0.0112 -0.133167 0.0131 -0.0197 0.0009 -0.055308 0.002 -0.096026 -0.0019 -0.019518 -0.0019 -0.057305 -0.0064 -0.102242 -0.0198 -0.029662 -0.0089 -0.144888 -0.044 -0.240883 -0.156 -0.082221 -0.0959 -0.1046054 -0.196 -0.1099979 -0.2201l-0.0000982 -0.0005c-0.0086444 -0.0386 -0.0111888 -0.0708 -0.0121888 -0.0882 -0.0020745 -0.036 -0.000506 -0.0679 0.0007215 -0.0869 0.0026628 -0.0411 0.0083355 -0.0864 0.0145069 -0.1288 0.0127737 -0.0879 0.0335265 -0.2028 0.0601107 -0.3338 0.0534708 -0.2635 0.1346528 -0.6121 0.2352338 -0.9772 0.10023 -0.3639 0.222304 -0.7535 0.358782 -1.0951 0.128082 -0.3206 0.294153 -0.6661 0.506147 -0.88738 0.18254 -0.19509 0.40233 -0.35164 0.6464 -0.46039 0.24533 -0.10931 0.51017 -0.16809 0.77871 -0.17283Z"/></svg> Downloading...</span></div>
-                    <div class="progress-bar-bg"><div class="progress-bar-fill dl-fill" id="dlBar_wallhaven"></div></div>
-                </div>
-                <div class="console-wrapper">
-                    <button class="clear-log-btn" onclick="clearLog('wallhaven')">Clear</button>
-                    <div id="consoleLog_wallhaven" class="console-log"></div>
                 </div>
             </div>
 

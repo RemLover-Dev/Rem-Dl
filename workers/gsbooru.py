@@ -63,14 +63,14 @@ class GsbooruWorker(BaseWorker):
             self.filter_words = set()
         self.rating_display = ", ".join(self.rating_label_map[code_word[c]] for c in codes)
 
-        self.api_tag = self.original_tag
+        # live-verified: gsbooru's tags param has no '-' exclusion
+        # ("1girl -bogus_xyz" -> 0 posts) — send positives only and drop
+        # excluded tags per-post in the scrape loop
+        parts = self.original_tag.split()
+        self.exclude_tags = [t[1:] for t in parts if t.startswith("-") and t[1:]]
+        self.api_tag = " ".join(t for t in parts if not t.startswith("-"))
 
-        clean_tag = " ".join(
-            t for t in self.original_tag.split()
-            if not t.startswith("-")
-        )
-
-        self.safe_tag_name = sanitize_path_component(clean_tag, fallback="all")
+        self.safe_tag_name = sanitize_path_component(self.api_tag, fallback="all")
 
         self.tag_dir = os.path.join(
             self.site_root,
@@ -146,7 +146,7 @@ class GsbooruWorker(BaseWorker):
             # ponytail: save even partial fetches (impl bails on API failure);
             # skip the write when nothing new landed
             if len(self.tag_cache) > had:
-                DatabaseManager.save_json(TAG_TYPES_FILE, self.tag_cache)
+                await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
 
     async def _fetch_tag_types_impl(self, tag_names):
         """Categorize tags via batched prefix lookups on /api/tags (the server
@@ -197,16 +197,8 @@ class GsbooruWorker(BaseWorker):
                 if match is not None:
                     self.tag_cache[name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
 
-    def _categorize_tags(self, tag_names):
-        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-        for t in tag_names:
-            cat = self.tag_cache.get(t, "tag")
-            if cat == "artist": artists.append(t)
-            elif cat == "character": characters.append(t)
-            elif cat == "copyright": copyrights.append(t)
-            elif cat == "metadata": metadata_tags.append(t)
-            else: general.append(t)
-        return general, artists, characters, copyrights, metadata_tags
+    def _excluded(self, tag_names):
+        return any(t in self.exclude_tags for t in tag_names)
 
     async def scraper_task(self):
 
@@ -363,6 +355,8 @@ class GsbooruWorker(BaseWorker):
                     for t in str(post.get("tag_string", "")).split()
                     if t
                 ]
+                if self._excluded(tag_names):
+                    continue
                 await self._fetch_tag_types(tag_names)
                 (tags_list, artists, characters,
                  copyrights, metadata_tags) = self._categorize_tags(tag_names)
@@ -422,12 +416,6 @@ class GsbooruWorker(BaseWorker):
                 actual
             )
 
-    def run(self):
-        asyncio.run(
-            self.run_async_loop(
-                self.scraper_task
-            )
-        )
 
 
 

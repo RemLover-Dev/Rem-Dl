@@ -127,6 +127,7 @@ image_phashes.json
 
 # Local runtime state (added later)
 database/notifications.json
+extensions/
 database/watchers.json
 database/*.json.migrated
 database/*.sqlite3.bak-*

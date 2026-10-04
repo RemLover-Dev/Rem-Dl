@@ -23,6 +23,7 @@ from core.shared import (
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
+    pace_session,
 )
 from core.gallery_dl_interop import ensure_zerochan_page_html
 
@@ -204,67 +205,11 @@ _CF_MARKERS = ("just a moment", "cf-challenge", "attention required",
 _UNSAFE_PATH_CHARS_RE = re.compile('[<>:"/\\\\|?*\\x00-\\x1f]')
 
 
-def _sanitize_path_part(name, fallback="misc"):
-    """Make a tag/filename safe for Windows + POSIX filesystems."""
-    return sanitize_path_component(name, fallback=fallback)
-
-
 def _looks_like_cf_challenge(status_code, text):
     if status_code in (403, 503):
         lowered = (text or "")[:4000].lower()
         return any(m in lowered for m in _CF_MARKERS)
     return False
-
-
-_POST_ID_RE = re.compile(r'href="/(\d+)(?:\?[^"]*)?"')
-_OG_IMAGE_RE = re.compile(
-    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-    re.IGNORECASE)
-_STATIC_FILE_RE = re.compile(
-    r'https?://static\.zerochan\.net/[^\s"\'<>]+?\.(?:jpg|jpeg|png|webp|gif|mp4|webm)(?:\?[^\s"\'<>]*)?',
-    re.IGNORECASE)
-
-
-def _extract_post_ids(search_html):
-    """Return ordered unique post IDs found on a Zerochan listing page."""
-    seen = set()
-    ordered = []
-    try:
-        for m in _POST_ID_RE.finditer(search_html or ""):
-            pid = m.group(1)
-            if pid not in seen:
-                seen.add(pid)
-                ordered.append(pid)
-    except Exception:
-        pass
-    return ordered
-
-
-def _extract_full_image(post_html):
-    """Best-effort full-resolution image URL from a Zerochan post page."""
-    if not post_html:
-        return None
-    try:
-        m = _OG_IMAGE_RE.search(post_html)
-        if m:
-            url = m.group(1).strip()
-            if url.startswith("//"):
-                url = "https:" + url
-            if urllib.parse.urlparse(url).hostname == "static.zerochan.net":
-                return url
-    except Exception:
-        pass
-    try:
-        for m in _STATIC_FILE_RE.finditer(post_html):
-            url = m.group(0)
-            if ".thumb." in url:
-                continue
-            if "preview" in url.lower() and "full" not in url.lower():
-                continue
-            return url
-    except Exception:
-        pass
-    return None
 
 
 class _DummyAsyncSession:
@@ -308,7 +253,7 @@ class ZerochanWorker(BaseDownloader):
         self.original_tag_lower = self.original_tag.lower()
 
         clean_tag = " ".join(t for t in self.original_tag_lower.split() if not t.startswith('-'))
-        self.safe_tag = _sanitize_path_part(clean_tag, fallback="misc")
+        self.safe_tag = sanitize_path_component(clean_tag, fallback="misc")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         try:
             os.makedirs(self.tag_dir, exist_ok=True)
@@ -356,8 +301,9 @@ class ZerochanWorker(BaseDownloader):
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.zerochan.net/",
         })
-        self.curl_session = s
-        return s
+        # every curl request (search, probe, download) joins the global ISP pace
+        self.curl_session = pace_session(s)
+        return self.curl_session
 
     async def _create_session(self):
         """Override: create curl_cffi session instead of aiohttp."""
@@ -819,7 +765,7 @@ class ZerochanWorker(BaseDownloader):
                 os.replace(part_path, filepath)
 
                 # persistent perceptual-hash dedup (see core/shared.py)
-                dup = check_duplicate(filepath, self.name)
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)
@@ -833,7 +779,7 @@ class ZerochanWorker(BaseDownloader):
                 self.downloaded_count += 1
                 self.downloaded_bytes += downloaded
                 self.dl_history.add(filename)
-                save_history(self.site_root, self.dl_history)
+                await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 
                 if self.is_scanning and self.amount > 0:
                     target_total = max(self.amount, self.enqueued_count)
@@ -852,7 +798,7 @@ class ZerochanWorker(BaseDownloader):
                           characters, copyrights, metadata_tags, outfits)
                 await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name,
                                      characters, copyrights, metadata_tags, outfits)
-                add_to_gallery(self.name, filename, rel_path, tags_list, artists,
+                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists,
                                characters, copyrights, metadata_tags, outfits)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
                 return True
@@ -945,7 +891,6 @@ class ZerochanWorker(BaseDownloader):
                 self.log("No more posts available.")
                 break
 
-            enqueued_this_page = 0
             for post in posts:
                 if self.stop_event.is_set():
                     break
@@ -953,12 +898,7 @@ class ZerochanWorker(BaseDownloader):
                     break
                 if await self._enqueue_post_dict(post):
                     collected_count += 1
-                    enqueued_this_page += 1
 
-            engine = "gallery-dl" if use_gallery_dl else "json"
-            self.log(f"Page {page} ({engine}): fetched {len(posts)}, "
-                     f"enqueued {enqueued_this_page} new "
-                     f"(total: {collected_count})")
             page += 1
 
         # collected_count already counts everything enqueued this run — adding
@@ -971,8 +911,6 @@ class ZerochanWorker(BaseDownloader):
                      f"{'s' if actual != 1 else ''}. "
                      "Completing downloads in the background...")
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 
 def worker_zerochan(tag, amount, net_config):

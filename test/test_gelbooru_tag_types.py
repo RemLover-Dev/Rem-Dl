@@ -72,3 +72,63 @@ def test_tag_fetch_permanent_failure_stays_uncached(tmp_path, monkeypatch):
 
     assert "uof" not in w.tag_cache
     assert w.session.calls.count("uof") == 3
+
+
+def test_pace_spaces_request_starts_under_isp_limit(monkeypatch):
+    """Every worker shares one rate budget (Settings → req_rate_limit,
+    default 4 req/s) — the old 32-way tag fan-out burst exceeded the ISP
+    cap and the failures left tags uncategorized after 3 retries."""
+    import core.shared as shared
+
+    monkeypatch.setenv("REQ_RATE_LIMIT", "4")
+
+    async def _fast(_delay):
+        return None
+
+    monkeypatch.setattr(shared.asyncio, "sleep", _fast)
+
+    async def run():
+        await shared._pace_on_request_start(None, None, None)  # prime: move slot into the future
+        before = shared._pace_next
+        for _ in range(5):
+            await shared._pace_on_request_start(None, None, None)
+        return shared._pace_next - before
+
+    assert abs(asyncio.run(run()) - 5 * 0.25) < 1e-6
+
+
+def test_pace_session_paces_request_funnel(monkeypatch):
+    """Sync workers (rule34 lib, eshuushuu, pixiv, pinterest-dl) pace via
+    session.request — every verb funnels through it, once."""
+    import core.shared as shared
+
+    monkeypatch.setenv("REQ_RATE_LIMIT", "4")
+    monkeypatch.setattr(shared.time, "sleep", lambda _s: None)
+
+    class _S:
+        def request(self, *a, **k):
+            return "ok"
+
+    s = shared.pace_session(_S())
+    assert s.request("GET", "prime") == "ok"  # first slot lands on `now`
+    before = shared._pace_next
+    assert s.request("POST", "u") == "ok"
+    assert s.request("GET", "u") == "ok"
+    assert abs((shared._pace_next - before) - 0.5) < 1e-3
+    assert shared.pace_session(s) is s  # idempotent — no double pace
+
+
+def test_base_session_wires_rate_pace(tmp_path, monkeypatch):
+    """The aiohttp trace hook is what paces tag fetches, page scans and
+    downloads — one insertion covers every worker session."""
+    w = _worker(tmp_path, monkeypatch)
+
+    async def _mk():
+        s = await w._create_session()
+        cfgs = list(s._trace_configs)
+        await s.close()
+        return cfgs
+
+    cfgs = asyncio.run(_mk())
+    assert cfgs
+    assert len(cfgs[0].on_request_start) == 1

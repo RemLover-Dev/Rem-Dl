@@ -69,6 +69,7 @@ class DanbooruWorker(BaseWorker):
         page = 1
 
         consecutive_errors = 0
+        made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -126,7 +127,8 @@ class DanbooruWorker(BaseWorker):
                 if self.rating_allowed and post_rating not in self.rating_allowed:
                     continue
 
-                url = post.get("file_url") or post.get("large_file_url")
+                # the original only — large_file_url is a 1280px sample
+                url = post.get("file_url")
                 if not url:
                     continue
 
@@ -144,7 +146,9 @@ class DanbooruWorker(BaseWorker):
                 is_video = ext in self.video_exts
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 rating_dir = os.path.join(self.tag_dir, rating_label, "video" if is_video else "images")
-                safe_ensure_dir(rating_dir)
+                if rating_dir not in made_dirs:
+                    safe_ensure_dir(rating_dir)
+                    made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
                 tags_raw = post.get("tag_string", "")
@@ -178,8 +182,6 @@ class DanbooruWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_danbooru(tag, amount, rating, exclusions, net_config):
     worker = DanbooruWorker(tag, amount, rating, exclusions, net_config)

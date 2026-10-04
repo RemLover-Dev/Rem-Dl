@@ -1,6 +1,7 @@
 import os, random
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from core.shared import pace_requests
 
 # Safeguard importlib.metadata in frozen bundles (e.g. PyInstaller standalone / portable builds)
 try:
@@ -124,6 +125,7 @@ class Rule34Worker(BaseWorker):
 
             for attempt in range(max_retries):
                 try:
+                    await pace_requests()
                     results = await asyncio.to_thread(self.client.search, self.api_tags, page_id=page, limit=chunk_limit, exclude_ai=self.exclude_ai)
                     break
                 except TypeError as e:
@@ -214,8 +216,6 @@ class Rule34Worker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_rule34(tag, amount, method, sort_type, sort_order, exclusions, net_config, exclude_ai=False):
     worker = Rule34Worker(tag, amount, method, sort_type, sort_order, exclusions, net_config, exclude_ai)

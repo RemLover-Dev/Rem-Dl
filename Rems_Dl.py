@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import html
+import signal
 import threading
 import requests
 import urllib3
@@ -165,6 +166,13 @@ else:
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 # ponytail: pin threading mode — gevent (installed) buffers emits from our native worker threads
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+from core.extensions import get_extension_manager
+extension_mgr = get_extension_manager(app, socketio)
+try:
+    extension_mgr.load_all_enabled()
+except Exception as _ext_err:
+    print(f"[EXTENSIONS] Startup load error: {_ext_err}", flush=True)
 
 
 from werkzeug.serving import WSGIRequestHandler
@@ -397,6 +405,7 @@ def folder_manager():
         MASTER_FOLDER = candidate
         shared.MASTER_FOLDER = MASTER_FOLDER
         _invalidate_fp_cache()
+        _TS_CACHE.clear()
     return jsonify({"folder": MASTER_FOLDER})
 
 def _safe_dialog_start_path(start: str) -> str:
@@ -541,6 +550,7 @@ def browse_folder():
     MASTER_FOLDER = path
     shared.MASTER_FOLDER = path
     _invalidate_fp_cache()
+    _TS_CACHE.clear()
     return jsonify({"folder": path})
 
 @app.route("/api/clipboard", methods=["POST"])
@@ -1297,10 +1307,18 @@ def get_image_history():
     for h in hist:
         if not h.get("downloaded_at"):
             fp = h.get("filepath")
-            try:
-                h["downloaded_at"] = os.path.getmtime(os.path.join(MASTER_FOLDER, fp)) if fp else 0
-            except OSError:
+            if not fp:
                 h["downloaded_at"] = 0
+                continue
+            key = ("hist", fp, h.get("filename"))
+            ts = _TS_CACHE.get(key)
+            if ts is None:
+                try:
+                    ts = os.path.getmtime(os.path.join(MASTER_FOLDER, fp))
+                except OSError:
+                    ts = 0
+                _TS_CACHE[key] = ts
+            h["downloaded_at"] = ts
     return jsonify(hist)
 
 @app.route("/api/image_history/clear", methods=["POST"])
@@ -1342,19 +1360,30 @@ def _build_filepath_cache(force=False):
     _fp_cache["at"] = now
     return cache
 
+# ponytail: precomputed sort keys — stale if a file's mtime changes (or the
+# master folder switches), only ever used for ordering, never for display
+_TS_CACHE = {}
+
 def _image_timestamp(img):
-    ts = img.get("downloaded_at", "")
-    if ts:
+    key = (img.get("filepath", ""), img.get("downloaded_at", ""))
+    ts = _TS_CACHE.get(key)
+    if ts is not None:
+        return ts
+    dt = img.get("downloaded_at", "")
+    if dt:
         try:
-            return datetime.fromisoformat(ts).timestamp()
+            ts = datetime.fromisoformat(dt).timestamp()
         except Exception:
-            return 0
-    fp = img.get("filepath", "")
-    if fp:
-        full = os.path.join(MASTER_FOLDER, fp)
-        if os.path.exists(full):
-            return os.path.getmtime(full)
-    return 0
+            ts = 0
+    else:
+        ts = 0
+        fp = img.get("filepath", "")
+        if fp:
+            full = os.path.join(MASTER_FOLDER, fp)
+            if os.path.exists(full):
+                ts = os.path.getmtime(full)
+    _TS_CACHE[key] = ts
+    return ts
 
 
 def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=None):
@@ -1401,7 +1430,6 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             "rule34": {"explicit"},
             "nekosapi": {"safe", "sensitive", "questionable", "explicit"},
             "nekosia": {"safe", "sensitive"},
-            "wallhaven": {"safe", "questionable", "explicit"},
             "waifu.im": {"safe", "explicit"},
             "pixiv": {"safe", "explicit"},
             "zerochan": {"safe"},
@@ -1424,26 +1452,22 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             # ponytail: rule34 is all-explicit with no rating in path or tags
             if site == "rule34" and "explicit" in rating_filters:
                 return True
+            # lowered once per image — the nested rating loops reuse these
+            fpl = img.get("filepath", "").lower()
+            all_tags_l = [t.lower() for t in _get_all_tags(img)]
             # Safe-only / SFW imageboards and sources:
             is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
             if is_inherently_safe and "safe" in rating_filters:
-                fpl = img.get("filepath", "").lower()
-                all_tags = [t.lower() for t in _get_all_tags(img)]
-                if not any(exp in fpl or any(exp in t for t in all_tags) for exp in ("explicit", "nsfw", "rating:e", "r18")):
+                if not any(exp in fpl or any(exp in t for t in all_tags_l) for exp in ("explicit", "nsfw", "rating:e", "r18")):
                     return True
-            fpl = img.get("filepath", "").lower()
-            all_tags = _get_all_tags(img)
+            supported = SUPPORTED_RATINGS.get(site)
+            if supported is None:
+                return False
             for rf in rating_filters:
-                supported = SUPPORTED_RATINGS.get(site)
-                if supported is None:
-                    continue
                 if rf not in supported:
                     continue
-                patterns = rating_aliases.get(rf, [rf])
-                for p in patterns:
-                    if any(p in t.lower() for t in all_tags):
-                        return True
-                    if p in fpl:
+                for p in rating_aliases.get(rf, [rf]):
+                    if any(p in t for t in all_tags_l) or p in fpl:
                         return True
             return False
         images = [i for i in images if matches_any_rating(i)]
@@ -1548,6 +1572,89 @@ def toggle_gallery_fav_batch():
             shared.save_gallery(gallery)
     return jsonify({"success": True, "flipped": flipped})
 
+# --- Extensions & Addons Management API ---
+@app.route("/api/extensions", methods=["GET"])
+def get_extensions_catalog():
+    try:
+        mgr = get_extension_manager(app, socketio)
+        catalog = mgr.get_catalog()
+        contributions = mgr.get_ui_contributions()
+        return jsonify({
+            "success": True,
+            "extensions": catalog,
+            "contributions": contributions
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/install", methods=["POST"])
+def install_extension():
+    try:
+        from core.extension_downloader import install_from_github, install_from_local_path
+        data = request.json or {}
+        repo = (data.get("repo") or "").strip()
+        ext_id = (data.get("id") or "").strip()
+        local_path = (data.get("local_path") or "").strip()
+
+        if local_path:
+            ok, msg = install_from_local_path(local_path, ext_id or os.path.basename(local_path))
+        elif repo:
+            ok, msg = install_from_github(repo, ext_id or None)
+        else:
+            return jsonify({"success": False, "error": "Missing 'repo' or 'local_path'"}), 400
+
+        return jsonify({"success": ok, "message": msg})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/toggle", methods=["POST"])
+def toggle_extension():
+    try:
+        data = request.json or {}
+        ext_id = (data.get("id") or "").strip()
+        enabled = bool(data.get("enabled", True))
+        if not ext_id:
+            return jsonify({"success": False, "error": "Missing extension ID"}), 400
+
+        mgr = get_extension_manager(app, socketio)
+        if enabled:
+            ok = mgr.enable_extension(ext_id)
+        else:
+            ok = mgr.disable_extension(ext_id)
+
+        return jsonify({"success": ok, "enabled": enabled, "is_active": ext_id in mgr.active_plugins})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/uninstall", methods=["POST"])
+def uninstall_extension():
+    try:
+        data = request.json or {}
+        ext_id = (data.get("id") or "").strip()
+        if not ext_id:
+            return jsonify({"success": False, "error": "Missing extension ID"}), 400
+
+        mgr = get_extension_manager(app, socketio)
+        ok = mgr.uninstall_extension(ext_id)
+        return jsonify({"success": ok, "message": f"Extension '{ext_id}' uninstalled successfully."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/check_update", methods=["POST"])
+def check_extension_update():
+    try:
+        from core.extension_downloader import check_for_updates
+        data = request.json or {}
+        ext_id = (data.get("id") or "").strip()
+        repo = (data.get("repo") or "").strip()
+        if not ext_id or not repo:
+            return jsonify({"success": False, "error": "Missing extension ID or repository"}), 400
+
+        res = check_for_updates(ext_id, repo)
+        return jsonify({"success": True, "update_info": res})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route("/api/gallery/favourite_by_name", methods=["POST"])
 def toggle_gallery_fav_by_name():
     fn = (request.json or {}).get("filename", "")
@@ -1593,22 +1700,6 @@ def delete_gallery_image_by_name():
         dedup_warning = True
         print("Dedup cleanup error:", e)
     return jsonify({"success": True, "dedup_warning": dedup_warning})
-
-@app.route("/api/gallery/tags", methods=["GET"])
-def get_gallery_tags():
-    gallery = shared.load_gallery()
-    tags = set()
-    for img in gallery.get("images", []):
-        img_tags = img.get("tags", {})
-        if isinstance(img_tags, dict):
-            for v in img_tags.values():
-                if isinstance(v, list):
-                    for t in v:
-                        tags.add(t)
-        elif isinstance(img_tags, list):
-            for t in img_tags:
-                tags.add(t)
-    return jsonify(sorted(tags))
 
 @app.route("/api/gallery/file/<path:filepath>")
 def gallery_file(filepath):
@@ -1749,6 +1840,20 @@ def gallery_thumb(filepath):
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         return send_file(full)
 
+def _gallery_stamp(images):
+    # coarse change signal for route memos: size + total tags + fav count
+    n_tags = n_favs = 0
+    for i in images:
+        t = i.get("tags", {})
+        if isinstance(t, dict):
+            n_tags += sum(len(v) for v in t.values() if isinstance(v, list))
+        elif isinstance(t, list):
+            n_tags += len(t)
+        n_favs += bool(i.get("favourite"))
+    return (len(images), n_tags, n_favs)
+
+_sources_cache = {"key": None, "at": 0.0, "data": None}
+
 @app.route("/api/gallery/sources", methods=["GET"])
 def get_gallery_sources():
     search = request.args.get("search", "").lower().strip()
@@ -1757,12 +1862,22 @@ def get_gallery_sources():
     type_filters = [t.strip() for t in type_filter_raw.split(",") if t.strip()] if type_filter_raw and type_filter_raw != "all" else []
     rating_filter_raw = request.args.get("rating", "").lower().strip()
     rating_filters = [r.strip() for r in rating_filter_raw.split(",") if r.strip()] if rating_filter_raw else []
+    ts_range = _parse_ts_range()
     images = shared.load_gallery().get("images", [])
-    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters, ts_range=_parse_ts_range())
+    # ponytail: full pass over every image per poll — memoize per query for
+    # _FP_CACHE_TTL, invalidated by the coarse gallery stamp
+    key = (search, fav_only, tuple(type_filters), tuple(rating_filters), ts_range, _gallery_stamp(images))
+    now = time.time()
+    if _sources_cache["key"] == key and now - _sources_cache["at"] < _FP_CACHE_TTL:
+        return jsonify(_sources_cache["data"])
+    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters, ts_range=ts_range)
     counts = {}
     for img in images:
         s = shared.normalize_site(img.get("site", "unknown"))
         counts[s] = counts.get(s, 0) + 1
+    _sources_cache["key"] = key
+    _sources_cache["at"] = now
+    _sources_cache["data"] = counts
     return jsonify(counts)
 
 @app.route("/api/gallery/delete", methods=["POST"])
@@ -1802,55 +1917,104 @@ def delete_gallery_image():
         print("Dedup cleanup error:", e)
     return jsonify({"success": True, "dedup_warning": dedup_warning})
 
+def _tags_from_file(full):
+    """The tags the file itself carries (embedded when it was downloaded).
+
+    The embedded copy is the durable one: gallery.json can lose a record —
+    batched write plus a hard kill, a corrupt file quarantined on load — while
+    the file keeps every tag. Restoring from it is local, free, and works for
+    sites with no md5 API. Falls back to the folder name (a hint, never a
+    substitute) when the file carries nothing.
+    """
+    meta = shared.read_image_metadata(full)
+    if not meta:
+        return {"tag": []}
+    try:
+        from backfill_tags import parse_meta
+        _site, tags = parse_meta(meta)
+    except Exception:
+        return {"tag": []}
+    return tags if shared.count_tags(tags) else {"tag": []}
+
+
 def _scan_and_merge_gallery():
     """Walk MASTER_FOLDER and merge files into the gallery.
 
     Shared by the /rescan endpoint and startup_rescan. Returns
-    (gallery, count_added, count_fixed).
+    (gallery, count_added, count_fixed, count_checked): count_checked is
+    files whose embedded tags we read this pass — the caller must save when
+    it is non-zero, or every launch pays for the same reads again.
     """
     gallery = shared.load_gallery()
     by_fn = {i["filename"]: i for i in gallery["images"]}
     count_added = 0
     count_fixed = 0
+    count_checked = 0
     for root, dirs, files in os.walk(MASTER_FOLDER):
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
             if ext not in EXTENSIONS_IMAGE and ext not in EXTENSIONS_VIDEO:
                 continue
             full = os.path.join(root, fn)
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
             rel = os.path.relpath(full, MASTER_FOLDER)
             parts = rel.replace('\\', '/').split('/')
             site = parts[0] if len(parts) > 1 else "unknown"
 
             tag = parts[1] if len(parts) > 2 else ""
-            tags = {"tag": [tag]} if tag else {"tag": []}
             if fn in by_fn:
                 existing = by_fn[fn]
                 if not existing.get("filepath"):
                     existing["filepath"] = rel
                     count_fixed += 1
-                if not existing.get("tags"):
-                    existing["tags"] = tags
-                    count_fixed += 1
+                # read a file's own tags at most once per file version: most
+                # bare files carry nothing, and re-reading gigabytes of them
+                # on every launch is not a scan, it's a benchmark
+                if (shared.count_tags(existing.get("tags")) <= 1
+                        and existing.get("meta_mtime") != mtime):
+                    existing["meta_mtime"] = mtime
+                    count_checked += 1
+                    file_tags = _tags_from_file(full)
+                    if shared.count_tags(file_tags) > shared.count_tags(existing.get("tags")):
+                        existing["tags"] = file_tags
+                        count_fixed += 1
             else:
-                gallery["images"].append({
+                tags = _tags_from_file(full)
+                if not shared.count_tags(tags) and tag:
+                    tags = {"tag": [tag]}
+                entry = {
                     "id": hashlib.sha256(fn.encode()).hexdigest()[:12],
                     "filename": fn, "filepath": rel, "site": site,
                     "tags": tags, "favourite": False,
-                    "downloaded_at": datetime.fromtimestamp(os.path.getmtime(full)).isoformat()
-                })
-                by_fn[fn] = gallery["images"][-1]
+                    "downloaded_at": datetime.fromtimestamp(mtime).isoformat()
+                }
+                if shared.count_tags(tags) <= 1:
+                    entry["meta_mtime"] = mtime
+                gallery["images"].append(entry)
+                by_fn[fn] = entry
                 count_added += 1
-    # drop duplicate filenames (a download landing mid-scan can double-add)
-    seen = set()
+    # drop duplicate filenames (a download landing mid-scan can double-add) —
+    # keep the twin carrying the tags, never the empty rebuild
+    seen = {}
     unique = []
     for img in gallery["images"]:
-        if img.get("filename") in seen:
-            continue
-        seen.add(img.get("filename"))
-        unique.append(img)
+        fn = img.get("filename")
+        prev = seen.get(fn)
+        if prev is None:
+            seen[fn] = img
+            unique.append(img)
+        else:
+            if shared.count_tags(img.get("tags")) > shared.count_tags(prev.get("tags")):
+                prev["tags"] = img["tags"]
+            if not prev.get("filepath") and img.get("filepath"):
+                prev["filepath"] = img["filepath"]
+            if img.get("favourite"):
+                prev["favourite"] = True
     gallery["images"] = unique
-    return gallery, count_added, count_fixed
+    return gallery, count_added, count_fixed, count_checked
 
 def _hash_missing_dedup(gallery):
     """Backfill dedup records for gallery images that were never hashed
@@ -1880,7 +2044,7 @@ def rescan_gallery():
     # announce completion over the existing socket
     def _rescan():
         try:
-            gallery, count_added, count_fixed = _scan_and_merge_gallery()
+            gallery, count_added, count_fixed, _checked = _scan_and_merge_gallery()
             _invalidate_fp_cache()
             try:
                 from core.dedup_store import get_store
@@ -1890,6 +2054,7 @@ def rescan_gallery():
                 count_removed_records = 0
             hashed = _hash_missing_dedup(gallery)
             shared.save_gallery(gallery)
+            _heal_bare_gallery_tags()
             socketio.emit("gallery_rescan_done", {
                 "success": True, "added": count_added, "fixed": count_fixed,
                 "removed_entries": 0,
@@ -2138,6 +2303,10 @@ def handle_disconnect():
             shared.flush_gallery()
         except Exception:
             pass
+        try:
+            DatabaseManager.flush_image_history()
+        except Exception:
+            pass
         os._exit(0)
 
     # cancel the previous timer: without this a quick reconnect+disconnect
@@ -2146,6 +2315,24 @@ def handle_disconnect():
         shutdown_timer.cancel()
     shutdown_timer = threading.Timer(3.0, shutdown_server)
     shutdown_timer.start()
+
+def _flush_before_sigterm(signum, frame):
+    # SIGTERM (systemctl stop, kill) skips atexit: flush the batched writes
+    # or the next scan rebuilds those records from the folder name alone
+    try:
+        shared.flush_gallery()
+    except Exception:
+        pass
+    try:
+        DatabaseManager.flush_image_history()
+    except Exception:
+        pass
+    os._exit(128 + signum)
+
+try:
+    signal.signal(signal.SIGTERM, _flush_before_sigterm)
+except (ValueError, OSError, AttributeError, RuntimeError):
+    pass  # not the main thread — leave the default disposition alone
 
 # ==========================================
 
@@ -2187,6 +2374,14 @@ def _run_job(job):
     except Exception as e:
         print(f"Worker error ({job.get('worker')}): {e}", flush=True)
     finally:
+        # heal old images: this run may have fetched categories the earlier
+        # download-time lookup failed (or the v1 cap skipped) — re-sort their tags
+        try:
+            g, h = shared.recategorize_all()
+            if g or h:
+                print(f"Tag recategorize: {g} gallery, {h} history entries fixed", flush=True)
+        except Exception as e:
+            print(f"Tag recategorize failed: {e}", flush=True)
         nxt = None
         with QUEUE_LOCK:
             # only hand off if we're still that site's active job — a
@@ -2212,10 +2407,12 @@ def _dispatch_worker(data):
 
     if tag:
         try:
-            DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "")
+            DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "",
+                                            bool(data.get("exclude_ai", False)))
             # Learn searched tags into local smart cache
             for single_tag in tag.replace(",", " ").split():
-                if len(single_tag.strip()) >= 2:
+                # -ai_generated is gelbooru's exclusion marker, not a tag
+                if len(single_tag.strip()) >= 2 and single_tag.strip() != "-ai_generated":
                     DatabaseManager.add_learned_tag(worker, single_tag.strip())
         except Exception as e:
             print("History Save Error:", e)
@@ -2256,19 +2453,6 @@ def _dispatch_worker(data):
             worker_nekosia(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config)
         except ImportError:
             pass # در صورتی که بعدا خواستی فایل nekosia.py رو بسازی ارور نده
-
-    elif worker == "wallhaven":
-        from workers.wallhaven import worker_wallhaven
-        net_config["wallhaven_apikey"] = os.getenv("WALLHAVEN_API_KEY", "")
-        worker_wallhaven(
-            data.get("tag", ""),
-            _safe_int(data.get("limit", 50), 50),
-            data.get("purity", ""),
-            data.get("categories", ""),
-            data.get("sorting", "date_added"),
-            data.get("order", "desc"),
-            net_config,
-        )
 
 @socketio.on("get_queue")
 def handle_get_queue():
@@ -2382,8 +2566,52 @@ def handle_queue_bump(data):
         _start_job_thread(promoted)
     _emit_queue_state()
 
+def _heal_bare_gallery_tags():
+    """Rescanned files arrive carrying only their folder name — refetch the
+    real tags by md5 in the background.
+
+    Runs after every scan: a file can reach disk without a download-time
+    gallery record (pre-tracking downloads, a hard kill before the batched
+    gallery flush, a pruned-then-restored entry), and the scan can only ever
+    know its path. Idempotent and rate-limited, so a re-run is free when
+    nothing is bare or the network is down.
+    """
+    from core import md5_refetch
+    gallery = shared.load_gallery().get("images", [])
+    md5_refetch.clear_stale_md5_misses(gallery)
+    # unsupported sites and posts the API already denied are not work — and
+    # counting them would print this line on every launch for the rest of time
+    todo = [i for i in gallery if md5_refetch.worth_trying(i)]
+    if not todo:
+        return
+    # the counts survive a shutdown mid-run: they are read from the gallery,
+    # so the next launch says how much is already done instead of starting
+    # the story over
+    bare = [i for i in gallery if md5_refetch.is_bare(i)]
+    no_api = sum(1 for i in bare if not md5_refetch.supports(i.get("site", "")))
+    checked = sum(1 for i in bare
+                  if md5_refetch.miss_count(i) >= md5_refetch.MISS_LIMIT)
+    print(f"Recovering tags for {len(todo)} gallery images that only know their folder "
+          f"({len(bare)} bare: {no_api} no md5 API, {checked} checked absent)")
+
+    def _run():
+        try:
+            stats = md5_refetch.refetch_gallery_bare(entries=todo, progress=print)
+        except Exception as e:
+            print("md5 tag recovery error:", e)
+            return
+        if stats.get("refetched"):
+            _invalidate_fp_cache()
+        print(f"Recovered tags for {stats.get('refetched', 0)} images "
+              f"(not found: {stats.get('not_found', 0)}, "
+              f"unsupported site: {stats.get('unsupported', 0)}, "
+              f"failed: {stats.get('failed', 0)})")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def startup_rescan():
-    gallery, count, _fixed = _scan_and_merge_gallery()
+    gallery, count, _fixed, checked = _scan_and_merge_gallery()
     _invalidate_fp_cache()
     if count:
         print(f"Rescanned {count} new images into gallery")
@@ -2396,7 +2624,9 @@ def startup_rescan():
         gallery["images"] = kept
         print(f"Pruned {removed} dead gallery entries")
 
-    if count or removed:
+    # _fixed/checked are entry mutations too — skipping the save would throw
+    # the restored tags (and every read marker) away until the next rescan
+    if count or removed or _fixed or checked:
         shared.save_gallery(gallery)
 
     # sweep dedup records whose files are gone (background thread only)
@@ -2409,6 +2639,7 @@ def startup_rescan():
         print(f"Dedup sweep error: {e}")
 
     _hash_missing_dedup(gallery)
+    _heal_bare_gallery_tags()
 
 if __name__ == "__main__":
     def _pick_loopback_port():
@@ -2514,6 +2745,10 @@ if __name__ == "__main__":
             pass
         try:
             shared.flush_gallery()
+        except Exception:
+            pass
+        try:
+            DatabaseManager.flush_image_history()
         except Exception:
             pass
 

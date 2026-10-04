@@ -526,15 +526,6 @@ input:focus, select:focus {
     margin-top: 8px;
     width: fit-content;
 }
-.img-card-number {
-    position: absolute;
-    bottom: 12px;
-    right: 12px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-color);
-    opacity: 0.5;
-}
 @keyframes slideIn { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
 
 .log-item.system {

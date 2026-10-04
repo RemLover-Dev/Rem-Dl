@@ -100,8 +100,6 @@ class NekosApiWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_nekosapi(tags, amount, rating, net_config):
     NekosApiWorker(tags, amount, rating, net_config).run()

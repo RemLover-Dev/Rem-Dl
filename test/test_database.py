@@ -53,6 +53,20 @@ class TestDatabaseManager:
         DatabaseManager.remove_tag_history("zero", "other_tag")
         assert len(DatabaseManager.load_tag_history()) == 0
 
+    def test_tag_history_exclude_ai_flag(self, db_env):
+        DatabaseManager.add_tag_history("rule34", "rem")
+        assert DatabaseManager.load_tag_history()[0]["exclude_ai"] is False
+
+        DatabaseManager.add_tag_history("rule34", "rem", "", True)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 1
+        assert hist[0]["exclude_ai"] is True
+
+        DatabaseManager.add_tag_history("rule34", "rem", "", False)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 1
+        assert hist[0]["exclude_ai"] is False
+
     def test_favorites_operations(self, db_env):
         # Add to favorites
         DatabaseManager.toggle_favorite("safe", "cute")

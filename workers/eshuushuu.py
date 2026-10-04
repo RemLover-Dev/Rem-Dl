@@ -1,6 +1,6 @@
 import os, re, asyncio, json
 import requests
-from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_session
 
 class EShuushuuWorker(BaseDownloader):
     def __init__(self, tag, amount, exclusions, user_id, net_config):
@@ -18,6 +18,9 @@ class EShuushuuWorker(BaseDownloader):
                 self.log(f"Could not resolve username '{self.user_id}' from DB")
                 
         self.tag_names = [t for t in self.original_tag.split() if not t.startswith('-')]
+        # site search has no negation (live: tags=-ID still serves the plain
+        # feed) — dashed tokens are filtered client-side instead
+        self.exclude_names = [t[1:] for t in self.original_tag.split() if t.startswith('-') and len(t) > 1]
         self.tag_ids, self.unknown_tags = self._resolve_many(self.tag_names)
         self.tag_id = ",".join(self.tag_ids)
 
@@ -53,13 +56,20 @@ class EShuushuuWorker(BaseDownloader):
                 i += 1
         return ids, unknown
 
+    def _excluded(self, titles):
+        if not self.exclude_names:
+            return False
+        ex = {re.sub(r"[_\s]+", " ", n).strip().lower() for n in self.exclude_names}
+        return any(re.sub(r"[_\s]+", " ", t).strip().lower() in ex for t in titles)
+
     def _http_session(self):
         s = requests.Session()
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             s.proxies = {"http": p, "https": p}
         s.verify = self.net_config.get("verify_tls", False)
-        return s
+        # tag-resolve + page scans share the global ISP pace
+        return pace_session(s)
 
     def _resolve_tag_id(self, tag_name):
         # ponytail: exclusions/underscores are input syntax, not tag titles
@@ -179,14 +189,35 @@ class EShuushuuWorker(BaseDownloader):
                 continue
 
             consecutive_errors = 0
-            for img_id in thumb_ids:
-                if self.stop_event.is_set() or (self.amount > 0 and collected >= self.amount): break
-                try:
-                    post_url = f"https://e-shuushuu.net/images/{img_id}"
-                    resp = await asyncio.to_thread(req_session.get, post_url, timeout=15)
-                    resp.raise_for_status()
-                    ph = resp.text
+            # batch the per-image page GETs — one gather per page, up to 4
+            # concurrent (the global ISP pace still applies inside to_thread)
+            if self.stop_event.is_set():
+                break
+            sem = asyncio.Semaphore(4)
 
+            async def fetch_post(img_id):
+                if self.stop_event.is_set():
+                    return None
+                async with sem:
+                    if self.stop_event.is_set():
+                        return None
+                    try:
+                        resp = await asyncio.to_thread(
+                            req_session.get,
+                            f"https://e-shuushuu.net/images/{img_id}", timeout=15)
+                        resp.raise_for_status()
+                        return resp.text
+                    except Exception as e:
+                        self.log(f"Image {img_id} error: {e}")
+                        return None
+
+            # gather preserves thumb_ids order → same append order as the loop
+            pages = await asyncio.gather(*(fetch_post(i) for i in thumb_ids))
+
+            for img_id, ph in zip(thumb_ids, pages):
+                if self.stop_event.is_set() or (self.amount > 0 and collected >= self.amount): break
+                if not ph: continue
+                try:
                     m = re.search(r'image:\{(.*?)user:\{', ph, re.DOTALL)
                     if not m: continue
                     raw = m.group(1)
@@ -206,6 +237,8 @@ class EShuushuuWorker(BaseDownloader):
                     if ext == "gif" and "-gif" in self.exclusions: continue
 
                     tags_raw = re.findall(r'\{tag_id:\d+,title:"([^"]+)",type:(\d+),', ph)
+                    if self._excluded([title for title, _ in tags_raw]):
+                        continue
                     artists, characters, copyrights, general = [], [], [], []
                     for title, ttype in tags_raw:
                         if ttype == "3": artists.append(title)
@@ -246,8 +279,6 @@ class EShuushuuWorker(BaseDownloader):
         m = re.search(rf'{key}:"([^"]+)"', raw)
         return m.group(1) if m else ""
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_eshuushuu(tag, amount, exclusions, user_id, net_config):
     EShuushuuWorker(tag, amount, exclusions, user_id, net_config).run()

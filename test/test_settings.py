@@ -20,6 +20,20 @@ class TestSettingsManager:
         assert settings_env.get("anti_ban_pause") == 3.0
         assert settings_env.get("download_retries") == 3
 
+    def test_rate_limit_defaults_to_four(self, tmp_path, monkeypatch):
+        # each ISP has a different cap — user-editable, default 4 req/s
+        monkeypatch.delenv("REQ_RATE_LIMIT", raising=False)
+        assert SettingsManager(str(tmp_path)).get("req_rate_limit") == 4
+
+    def test_rate_limit_updates_live_and_persists(self, settings_env, monkeypatch):
+        monkeypatch.setenv("REQ_RATE_LIMIT", "4")
+        settings_env.update({"req_rate_limit": "7"})
+        settings_env.save_config()
+        # applied live (no restart) and written to .env for the next boot
+        assert os.environ["REQ_RATE_LIMIT"] == "7"
+        with open(settings_env._env_path(), encoding="utf-8") as f:
+            assert "REQ_RATE_LIMIT=7" in f.read()
+
     def test_update_config(self, settings_env):
         settings_env.update({"api_timeout": 20})
         assert settings_env.get("api_timeout") == 20
