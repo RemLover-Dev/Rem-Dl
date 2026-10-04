@@ -143,6 +143,22 @@ Entering credentials in the **Settings** tab unlocks higher API limits and restr
 - **Persistent Settings** -- Proxy, API keys, and download settings saved in `.env`
 
 
+### 🔍 Gallery Search Syntax
+
+The Gallery tab search box understands:
+
+| You type | Meaning |
+|---|---|
+| `kafka, honkai` | Both tags required (comma separates tags) |
+| `kafka (arknights)` | One multi-word tag — spaces belong to the tag, no underscores needed |
+| `hoshimachi_suisei` | Underscores still work (treated the same as spaces) |
+| `"bra"` or `'bra'` | Exact tag only — finds `bra` but **not** `braid` |
+| `-kafka` | Exclude every image tagged `kafka` |
+| `-"bra"` | Exclude images whose tag is exactly `bra` |
+
+Without quotes, a term matches anywhere inside a tag (substring), so `bra` also finds `braid` and `long_bra`. Mix freely: `kafka, "braid", -ai_generated`.
+
+
 ## Project Structure
 
 Source code only (docs, build output, downloads, and per-user data are not listed):
