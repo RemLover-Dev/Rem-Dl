@@ -21,24 +21,27 @@ if sys.platform == "win32":
 import os
 import sys
 import time
-import bisect
 import html
+import signal
 import threading
 import requests
 import urllib3
 import urllib.parse
 import random
 import hashlib
+import io
+from concurrent.futures import ThreadPoolExecutor
 import webbrowser
 from PIL import Image
 from datetime import datetime
 
-from flask import Flask, send_from_directory, send_file, jsonify, request
+from flask import Flask, send_from_directory, send_file, jsonify, request, Response
 from flask_socketio import SocketIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from core.database import DatabaseManager, SettingsManager
+from core import notifications, pixiv_notify, watchers
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -171,6 +174,17 @@ try:
 except Exception as _ext_err:
     print(f"[EXTENSIONS] Startup load error: {_ext_err}", flush=True)
 
+
+from werkzeug.serving import WSGIRequestHandler
+
+
+class _KeepAliveHandler(WSGIRequestHandler):
+    # werkzeug defaults to HTTP/1.0 — every thumbnail response closed the
+    # connection, so a gallery page with hundreds of images paid a TCP
+    # handshake each. HTTP/1.1 keep-alive lets the browser reuse its
+    # 6 connections across all of them.
+    protocol_version = "HTTP/1.1"
+
 @app.before_request
 def restrict_browser_access():
     # Only allow requests from our native pywebview desktop app
@@ -205,35 +219,43 @@ shared.MASTER_FOLDER = MASTER_FOLDER
 
 def socketio_emit(event, data):
     try: socketio.emit(event, data)
-    except Exception: print(f"[SOCKETIO] {event}: {data}")
+    except Exception: print(f"[SOCKETIO] emit failed: {event}")
 
 shared.emit_callback = socketio_emit
 
 def _merge_learned_and_online(site, query, online_tags, limit=50):
-    """Combine user's learned/favorite tags with live online suggestions."""
+    """Combine user's learned/favorite tags with live online suggestions.
+
+    Source APIs hand back results already sorted by popularity (order=count),
+    so a learned tag that also exists online keeps that position — only tags
+    the site doesn't know stay pinned ahead.
+    """
     learned = DatabaseManager.get_learned_suggestions(site, query, limit=limit)
-    merged = []
-    seen = set()
-    for t in learned:
-        tl = str(t).lower()
-        if tl not in seen:
-            seen.add(tl)
-            merged.append(t)
+    online = []
+    online_keys = set()
     for t in online_tags:
         if isinstance(t, str):
-            tl = t.lower()
-            if tl not in seen:
-                seen.add(tl)
-                merged.append(t)
+            key = t.lower()
         elif isinstance(t, dict):
             # For complex dicts (like e-shuushuu or anime-pictures)
             name = t.get("name") or t.get("title") or t.get("tag") or ""
-            if name:
-                tl = str(name).lower()
-                if tl not in seen:
-                    seen.add(tl)
-                    merged.append(t)
-    return merged[:limit]
+            if not name:
+                continue
+            key = str(name).lower()
+        else:
+            continue
+        if key and key not in online_keys:
+            online_keys.add(key)
+            online.append(t)
+
+    pinned = []
+    seen = set()
+    for t in learned:
+        tl = str(t).lower()
+        if tl and tl not in seen and tl not in online_keys:
+            seen.add(tl)
+            pinned.append(t)
+    return (pinned + online)[:limit]
 
 
 
@@ -304,7 +326,10 @@ def index(): return send_from_directory(STATIC_FOLDER, "index.html")
 @app.route("/user_wallpapers/<path:filename>")
 def custom_wallpaper(filename):
     custom_dir = os.path.join(BASE_DIR, "user_wallpapers")
-    if os.path.exists(os.path.join(custom_dir, filename)):
+    candidate = os.path.realpath(os.path.join(custom_dir, filename))
+    if not candidate.startswith(os.path.realpath(custom_dir) + os.sep):
+        return send_from_directory(os.path.join(STATIC_FOLDER, "wallpaper"), filename)
+    if os.path.exists(candidate):
         return send_from_directory(custom_dir, filename)
     return send_from_directory(os.path.join(STATIC_FOLDER, "wallpaper"), filename)
 
@@ -320,7 +345,10 @@ def upload_wallpaper():
     filename = "".join([c for c in file.filename if c.isalpha() or c.isdigit() or c in " ._-"]).rstrip()
     if not filename: filename = f"wallpaper_{random.randint(1000, 9999)}.png"
 
-    file.save(os.path.join(custom_dir, filename))
+    target = os.path.realpath(os.path.join(custom_dir, filename))
+    if not target.startswith(os.path.realpath(custom_dir) + os.sep):
+        return jsonify({"success": False, "error": "invalid filename"}), 400
+    file.save(target)
     return jsonify({"success": True, "filename": filename})
 
 @app.route("/<path:path>")
@@ -360,27 +388,85 @@ def folder_manager():
         folder = (request.json or {}).get("folder", "")
         if not folder:
             return jsonify({"error": "empty"}), 400
-        MASTER_FOLDER = os.path.normpath(folder)
+        # Validate and constrain user-controlled folder path: must be an
+        # existing absolute directory and live under the user's home root
+        # (realpath defeats ".." traversal and symlink escapes).
+        raw = os.path.normpath(folder)
+        if not os.path.isabs(raw):
+            return jsonify({"error": "invalid folder path"}), 400
+        candidate = os.path.realpath(raw)
+        safe_root = os.path.realpath(os.path.expanduser("~"))
+        # startswith(home + sep) is the guard shape CodeQL's SafeAccessCheck
+        # barrier recognizes; commonpath did not (alerts #44/#45).
+        if not candidate.startswith(safe_root + os.sep):
+            return jsonify({"error": "folder outside allowed root"}), 400
+        if not os.path.isdir(candidate):
+            return jsonify({"error": "folder does not exist"}), 400
+        MASTER_FOLDER = candidate
         shared.MASTER_FOLDER = MASTER_FOLDER
         _invalidate_fp_cache()
+        _TS_CACHE.clear()
     return jsonify({"folder": MASTER_FOLDER})
+
+def _safe_dialog_start_path(start: str) -> str:
+    """Canonicalize a picker start path: absolute, existing, no flag-like segments."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    raw = str(start or "").strip()
+    candidate = os.path.normpath(raw) if raw else home
+    if not candidate:
+        return home
+    try:
+        if not os.path.isabs(candidate):
+            return home
+        candidate = os.path.realpath(candidate)
+        if not os.path.isdir(candidate):
+            return home
+        # Reject any path segment that could be parsed as a CLI flag.
+        if any(seg.startswith("-") for seg in candidate.split(os.sep)):
+            return home
+        return candidate
+    except Exception:
+        return home
+
+
+def _safe_subprocess_path_arg(path_value: str) -> str:
+    """Return a safe absolute directory path for subprocess args, else home fallback."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    try:
+        candidate = _safe_dialog_start_path(path_value)
+        if not candidate:
+            return home
+        # Disallow control characters/newlines and characters that may confuse CLI parsers.
+        if any(ch in candidate for ch in ("\x00", "\r", "\n")):
+            return home
+        if any(ch in candidate for ch in ('"', "'", "`")):
+            return home
+        return candidate
+    except Exception:
+        return home
+
 
 def _pick_folder_desktop(start: str):
     """User's desktop folder dialog (pywebview window -> OS native dialog -> tkinter).
     Returns path str if selected, None if cancelled, or False if no picker available.
     """
-    # 1. Try active pywebview window
-    try:
-        import webview
-        wins = list(webview.windows)
-        if wins:
-            result = wins[0].create_file_dialog(webview.FileDialog.FOLDER, directory=start)
-            if not result:
-                return None
-            picked = result[0] if isinstance(result, (list, tuple)) else str(result)
-            return picked or None
-    except Exception:
-        pass
+    safe_start = _safe_subprocess_path_arg(start)
+    # 1. Try active pywebview window (skipped on KDE: its GTK chooser is not the
+    # native dialog there — the kdialog picker in step 2 runs instead)
+    kde_session = sys.platform.startswith("linux") and \
+        "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    if not kde_session:
+        try:
+            import webview
+            wins = list(webview.windows)
+            if wins:
+                result = wins[0].create_file_dialog(webview.FileDialog.FOLDER, directory=safe_start)
+                if not result:
+                    return None
+                picked = result[0] if isinstance(result, (list, tuple)) else str(result)
+                return picked or None
+        except Exception:
+            pass
 
     # 2. Platform-specific CLI dialogs
     import subprocess
@@ -390,7 +476,7 @@ def _pick_folder_desktop(start: str):
                 "$ErrorActionPreference = 'Stop'; "
                 "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
                 f"$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
-                f"$f.SelectedPath = '{start}'; "
+                f"$f.SelectedPath = '{safe_start}'; "
                 f"$f.Description = 'Select download folder'; "
                 "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
             )
@@ -403,7 +489,7 @@ def _pick_folder_desktop(start: str):
             pass
     elif sys.platform == "darwin":
         try:
-            osa = f'POSIX path of (choose folder with prompt "Select download folder:" default location POSIX file "{start}")'
+            osa = f'POSIX path of (choose folder with prompt "Select download folder:" default location POSIX file "{safe_start}")'
             r = subprocess.run(["osascript", "-e", osa], capture_output=True, text=True, timeout=120)
             if r.returncode == 0:
                 out = (r.stdout or "").strip()
@@ -412,9 +498,12 @@ def _pick_folder_desktop(start: str):
         except Exception:
             pass
     elif sys.platform.startswith("linux"):
+        # argv elements are literals: kdialog/zenity start at home because
+        # CodeQL's command-line query is flow-based (no path guard barriers).
+        dialog_home = os.path.expanduser("~")
         for cmd in (
-            ["kdialog", "--getexistingdirectory", start],
-            ["zenity", "--file-selection", "--directory", f"--filename={start}/"],
+            ["kdialog", "--getexistingdirectory", dialog_home],
+            ["zenity", "--file-selection", "--directory", f"--filename={dialog_home}/"],
         ):
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -435,7 +524,7 @@ def _pick_folder_desktop(start: str):
         root = tkinter.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        picked = filedialog.askdirectory(initialdir=start, title="Select download folder")
+        picked = filedialog.askdirectory(initialdir=safe_start, title="Select download folder")
         root.destroy()
         return picked or None
     except Exception:
@@ -456,10 +545,12 @@ def browse_folder():
             return jsonify({"error": "No folder picker available"}), 500
         path = os.path.normpath(picked)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Folder browse error:", e)
+        return jsonify({"error": "folder browse failed"}), 500
     MASTER_FOLDER = path
     shared.MASTER_FOLDER = path
     _invalidate_fp_cache()
+    _TS_CACHE.clear()
     return jsonify({"folder": path})
 
 @app.route("/api/clipboard", methods=["POST"])
@@ -477,7 +568,16 @@ def set_clipboard():
     if not data:
         return jsonify({"error": "empty"}), 400
 
-    mime = (request.content_type or "application/octet-stream").split(";")[0].strip() or "application/octet-stream"
+    raw_mime = (request.content_type or "").split(";", 1)[0].strip().lower()
+    allowed_mime_map = {
+        "text/plain": "text/plain",
+        "text/uri-list": "text/uri-list",
+        "image/png": "image/png",
+        "image/jpeg": "image/jpeg",
+        "image/gif": "image/gif",
+        "application/octet-stream": "application/octet-stream",
+    }
+    mime = allowed_mime_map.get(raw_mime, "application/octet-stream")
 
     resolved_paths = []
     if request.args.get("uri"):
@@ -485,10 +585,10 @@ def set_clipboard():
         if not lines:
             return jsonify({"error": "empty"}), 400
 
-        base = os.path.normpath(MASTER_FOLDER)
+        base = os.path.realpath(MASTER_FOLDER)
         for rel in lines:
-            full = os.path.normpath(os.path.join(base, rel))
-            if full != base and not full.startswith(base + os.sep):
+            full = os.path.realpath(os.path.join(base, rel))
+            if not full.startswith(base + os.sep):
                 return jsonify({"error": "forbidden"}), 403
             if not os.path.isfile(full):
                 name = os.path.basename(rel)
@@ -496,7 +596,9 @@ def set_clipboard():
                 if name:
                     for root, _, files in os.walk(base):
                         if name in files:
-                            cand = os.path.join(root, name)
+                            cand = os.path.realpath(os.path.join(root, name))
+                            if not cand.startswith(base + os.sep):
+                                continue
                             if os.path.isfile(cand):
                                 found = cand
                                 break
@@ -520,7 +622,8 @@ def set_clipboard():
                 if r.returncode == 0:
                     return jsonify({"ok": True})
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                print("Clipboard error:", e)
+                return jsonify({"error": "internal clipboard error"}), 500
         return jsonify({"error": "no clipboard tool"}), 501
 
     # macOS native file clipboard
@@ -533,7 +636,8 @@ def set_clipboard():
                 if r.returncode == 0:
                     return jsonify({"ok": True})
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
+                print("Clipboard error:", e)
+                return jsonify({"error": "internal clipboard error"}), 500
         return jsonify({"error": "no clipboard tool"}), 501
 
     # Linux (Wayland / X11)
@@ -556,7 +660,8 @@ def set_clipboard():
             pass
         return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print("Clipboard error:", e)
+        return jsonify({"error": "internal clipboard error"}), 500
 
 @app.route("/api/api-settings", methods=["GET", "POST"])
 def api_settings_manager():
@@ -565,174 +670,137 @@ def api_settings_manager():
         return jsonify({"success": True, "message": "All API keys saved successfully!"})
     return jsonify(settings.load_api_settings())
 
-# --- Extensions & Addons Management API ---
-@app.route("/api/extensions", methods=["GET"])
-def get_extensions_catalog():
-    try:
-        mgr = get_extension_manager(app, socketio)
-        catalog = mgr.get_catalog()
-        contributions = mgr.get_ui_contributions()
-        return jsonify({
-            "success": True,
-            "extensions": catalog,
-            "contributions": contributions
+_PIXIV_OAUTH = {"verifier": ""}  # pending PKCE verifier, set by /api/pixiv/oauth/start
+
+
+@app.route("/api/pixiv/oauth/start", methods=["POST"])
+def pixiv_oauth_start():
+    """Start gallery-dl's `oauth:pixiv` flow: mint a PKCE challenge and hand
+    the user the login URL to open in their browser."""
+    import secrets as _secrets
+    import hashlib as _hashlib
+    import base64 as _base64
+
+    verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
+    challenge = _base64.urlsafe_b64encode(
+        _hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    _PIXIV_OAUTH["verifier"] = verifier
+    url = ("https://app-api.pixiv.net/web/v1/login?client=pixiv-android"
+           f"&code_challenge_method=S256&code_challenge={challenge}")
+    return jsonify({"success": True, "url": url})
+
+
+def _pixiv_session(cookie=None):
+    session = requests.Session()
+    if settings.get("use_proxy"):
+        p = settings.get("proxy_url") or "http://127.0.0.1:10808"
+        session.proxies = {"http": p, "https": p}
+    session.verify = False
+    if cookie:
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Cookie": f"PHPSESSID={cookie}",
         })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    return session
 
-@app.route("/api/extensions/install", methods=["POST"])
-def install_extension():
-    try:
-        from core.extension_downloader import install_from_github, install_from_local_path
-        data = request.json or {}
-        repo = (data.get("repo") or "").strip()
-        ext_id = (data.get("id") or "").strip()
-        local_path = (data.get("local_path") or "").strip()
 
-        if local_path:
-            ok, msg = install_from_local_path(local_path, ext_id or os.path.basename(local_path))
-        elif repo:
-            ok, msg = install_from_github(repo, ext_id or None)
-        else:
-            return jsonify({"success": False, "error": "Missing 'repo' or 'local_path'"}), 400
+def _pixiv_token_post(session, code, verifier):
+    resp = session.post(
+        "https://oauth.secure.pixiv.net/auth/token",
+        headers={"User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"},
+        data={
+            "client_id": "MOBrBDS8blbauoSck0ZfDbtuzpyT",
+            "client_secret": "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj",
+            "code": code,
+            "code_verifier": verifier,
+            "grant_type": "authorization_code",
+            "include_policy": "true",
+            "redirect_uri": "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback",
+        },
+        timeout=30,
+    )
+    body = resp.json()
+    if "error" in body:
+        return None, f"Token exchange failed: {body.get('error')}"
+    return body.get("refresh_token", ""), None
 
-        return jsonify({"success": ok, "message": msg})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/api/extensions/toggle", methods=["POST"])
-def toggle_extension():
-    try:
-        data = request.json or {}
-        ext_id = (data.get("id") or "").strip()
-        enabled = bool(data.get("enabled", True))
-        if not ext_id:
-            return jsonify({"success": False, "error": "Missing extension ID"}), 400
-
-        mgr = get_extension_manager(app, socketio)
-        if enabled:
-            ok = mgr.enable_extension(ext_id)
-        else:
-            ok = mgr.disable_extension(ext_id)
-
-        return jsonify({"success": ok, "enabled": enabled, "is_active": ext_id in mgr.active_plugins})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/api/extensions/uninstall", methods=["POST"])
-def uninstall_extension():
-    try:
-        data = request.json or {}
-        ext_id = (data.get("id") or "").strip()
-        if not ext_id:
-            return jsonify({"success": False, "error": "Missing extension ID"}), 400
-
-        mgr = get_extension_manager(app, socketio)
-        ok = mgr.uninstall_extension(ext_id)
-        return jsonify({"success": ok, "message": f"Extension '{ext_id}' uninstalled successfully."})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/api/extensions/check_update", methods=["POST"])
-def check_extension_update():
-    try:
-        from core.extension_downloader import check_for_updates
-        data = request.json or {}
-        ext_id = (data.get("id") or "").strip()
-        repo = (data.get("repo") or "").strip()
-        if not ext_id or not repo:
-            return jsonify({"success": False, "error": "Missing extension ID or repository"}), 400
-
-        res = check_for_updates(ext_id, repo)
-        return jsonify({"success": True, "update_info": res})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/pixiv/exchange-cookie", methods=["POST"])
 def pixiv_exchange_cookie():
-    """Exchange a pixiv.net PHPSESSID cookie for an OAuth refresh token.
+    """Exchange pasted input for an OAuth refresh token.
 
-    Same flow as `gallery-dl oauth:pixiv`, but the login step is done
-    server-side with the user's cookie instead of a browser:
-    1. GET the pixiv-android login URL (PKCE) with the PHPSESSID cookie
-    2. Grab the `code` from the callback redirect
-    3. Exchange code + verifier for tokens at oauth.secure.pixiv.net
-    Pixiv is only reachable through the proxy, so the exchange always
-    goes through the configured proxy (default 127.0.0.1:10808).
+    Code path (gallery-dl `oauth:pixiv`): the user opened the URL from
+    /api/pixiv/oauth/start, logged in, and pasted the `code` of the last
+    'callback?state=...' Network entry (full callback URL works too).
+    Cookie path: the login step runs server-side with a PHPSESSID cookie.
+    Proxy is used only when use_proxy is on.
     """
     import re as _re
     import secrets as _secrets
     import hashlib as _hashlib
     import base64 as _base64
 
-    raw = (request.json or {}).get("cookie", "").strip()
+    body = request.json or {}
+    raw = (body.get("code") or body.get("cookie") or "").strip()
     if not raw:
-        return jsonify({"success": False, "error": "No cookie provided"}), 400
-
-    m = _re.search(r"PHPSESSID=([0-9a-fA-F_]+)", raw)
-    phpsessid = m.group(1) if m else raw.split(";")[0].strip()
-    if not phpsessid or "=" in phpsessid:
-        return jsonify({"success": False, "error": "Could not find PHPSESSID in the provided cookie"}), 400
-
-    proxy_url = settings.get("proxy_url") or "http://127.0.0.1:10808"
-    session = requests.Session()
-    session.proxies = {"http": proxy_url, "https": proxy_url}
-    session.verify = False
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Cookie": f"PHPSESSID={phpsessid}",
-    })
+        return jsonify({"success": False, "error": "Nothing pasted"}), 400
 
     try:
-        verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
-        challenge = _base64.urlsafe_b64encode(
-            _hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        state = _secrets.token_urlsafe(16)
+        if "PHPSESSID" in raw:
+            m = _re.search(r"PHPSESSID=([0-9a-fA-F_]+)", raw)
+            phpsessid = m.group(1) if m else raw.split(";")[0].strip()
+            if not phpsessid or "=" in phpsessid:
+                return jsonify({"success": False, "error": "Could not find PHPSESSID in the provided cookie"}), 400
+            session = _pixiv_session(phpsessid)
+            verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
+            challenge = _base64.urlsafe_b64encode(
+                _hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+            state = _secrets.token_urlsafe(16)
 
-        login_url = "https://app-api.pixiv.net/web/v1/login"
-        params = {"client": "pixiv-android", "code_challenge": challenge,
-                  "code_challenge_method": "S256", "state": state}
-        resp = session.get(login_url, params=params, timeout=30, allow_redirects=True)
+            login_url = "https://app-api.pixiv.net/web/v1/login"
+            params = {"client": "pixiv-android", "code_challenge": challenge,
+                      "code_challenge_method": "S256", "state": state}
+            resp = session.get(login_url, params=params, timeout=30, allow_redirects=True)
 
-        code = None
-        for r in [resp, *resp.history]:
-            loc = r.headers.get("Location", "") or r.url
-            cm = _re.search(r"[?&]code=([^&#]+)", loc)
+            code = None
+            for r in [resp, *resp.history]:
+                loc = r.headers.get("Location", "") or r.url
+                cm = _re.search(r"[?&]code=([^&#]+)", loc)
+                if cm:
+                    code = cm.group(1)
+                    break
+            if not code:
+                cm = _re.search(r"[?&]code=([^&#]+)", resp.text)
+                code = cm.group(1) if cm else None
+            if not code:
+                return jsonify({"success": False, "error": "Login with this cookie failed (no auth code returned). The cookie may be expired — log in to pixiv.net again and copy a fresh PHPSESSID."}), 400
+        else:
+            cm = _re.search(r"[?&]code=([^&#]+)", raw)
             if cm:
-                code = cm.group(1)
-                break
-        if not code:
-            cm = _re.search(r"[?&]code=([^&#]+)", resp.text)
-            code = cm.group(1) if cm else None
-        if not code:
-            return jsonify({"success": False, "error": "Login with this cookie failed (no auth code returned). The cookie may be expired — log in to pixiv.net again and copy a fresh PHPSESSID."}), 400
+                code = urllib.parse.unquote(cm.group(1))
+            elif " " in raw or raw.startswith("http"):
+                return jsonify({"success": False, "error": "No code= found — paste the 'code' value (or the full callback URL) of the last 'callback?state=...' Network entry."}), 400
+            else:
+                code = raw
+            verifier = _PIXIV_OAUTH["verifier"]
+            if not verifier:
+                return jsonify({"success": False, "error": "No login URL started — click 'Get login URL' in Settings → Pixiv first (your code must match its code_challenge)."}), 400
+            session = _pixiv_session()
 
-        token_resp = session.post(
-            "https://oauth.secure.pixiv.net/auth/token",
-            headers={"User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"},
-            data={
-                "client_id": "MOBrBDS8blbauoSck0ZfDbtuzpyT",
-                "client_secret": "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj",
-                "code": code,
-                "code_verifier": verifier,
-                "grant_type": "authorization_code",
-                "include_policy": "true",
-                "redirect_uri": "https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback",
-            },
-            timeout=30,
-        )
-        body = token_resp.json()
-        if "error" in body:
-            return jsonify({"success": False, "error": f"Token exchange failed: {body.get('error')}"}), 400
-
-        refresh_token = body.get("refresh_token", "")
+        refresh_token, err = _pixiv_token_post(session, code, verifier)
+        if err:
+            return jsonify({"success": False, "error": err}), 400
         if not refresh_token:
             return jsonify({"success": False, "error": "Token exchange returned no refresh token"}), 400
 
-        settings.save_api_settings({**settings.load_api_settings(), "pixiv_refresh_token": refresh_token, "pixiv_cookie": raw})
+        data = {**settings.load_api_settings(), "pixiv_refresh_token": refresh_token}
+        if "PHPSESSID" in raw:
+            data["pixiv_cookie"] = raw
+        settings.save_api_settings(data)
         return jsonify({"success": True, "refresh_token": refresh_token})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)[:300]}), 500
+        print("Pixiv auth error:", e)
+        return jsonify({"success": False, "error": f"pixiv auth failed: {e}"}), 500
 
 @app.route("/api/tags/waifu", methods=["POST"])
 def get_waifu_tags():
@@ -750,36 +818,6 @@ def get_waifu_tags():
     if WAIFU_TAGS_DB:
         return jsonify([t["name"] for t in WAIFU_TAGS_DB])
     return jsonify(['ass', 'ecchi', 'ero', 'genshin-impact', 'hentai', 'kamisato-ayaka', 'maid', 'marin-kitagawa', 'milf', 'mori-calliope', 'nami', 'one-piece', 'oppai', 'oral', 'paizuri', 'raiden-shogun', 'rem', 'selfies', 'uniform', 'waifu'])
-
-_suggest_sorted = {}
-
-def _suggest(db, query, limit=50):
-    """Prefix search over a tag list. Sorted DBs (sankaku/safe/yande/kona)
-    use bisect (~0.02ms); anything else falls back to a linear scan, which
-    also preserves popularity ordering (danbooru/gelbooru)."""
-    if not db or not query:
-        return []
-    key = id(db)
-    is_sorted = _suggest_sorted.get(key)
-    if is_sorted is None:
-        try:
-            is_sorted = all(db[i] <= db[i + 1] for i in range(len(db) - 1))
-        except TypeError:
-            is_sorted = False
-        _suggest_sorted[key] = is_sorted
-    if is_sorted:
-        out = []
-        i = bisect.bisect_left(db, query, 0, len(db))
-        while i < len(db):
-            t = db[i]
-            if not isinstance(t, str) or not t.startswith(query):
-                break
-            out.append(t)
-            if len(out) >= limit:
-                break
-            i += 1
-        return out
-    return [t for t in db if isinstance(t, str) and t.startswith(query)][:limit]
 
 @app.route("/api/tags/zerochan", methods=["POST"])
 def get_zerochan_suggestions():
@@ -1143,7 +1181,7 @@ def get_eshuushuu_suggestions():
 @app.route("/api/tags/nekosapi", methods=["POST"])
 def get_nekosapi_suggestions():
     data = request.json or {}
-    query = (data.get("query", "") or "").lower().strip()
+    query = (data.get("query", "") or "").lower()
     if len(query) < 2: return jsonify([])
     live = _refresh_nekosapi_live_tags(data.get("net_config", {}))
     out = [t for t in live if t.lower().startswith(query)]
@@ -1174,20 +1212,17 @@ def _refresh_nekosapi_live_tags(net_config):
         session = get_session("nekosapi", net_config or {})
         seen = list(disk)
         for offset in (0, 100, 200, 300, 400):
-            try:
-                resp = session.get("https://api.nekosapi.com/v4/images",
-                                   params={"limit": 100, "offset": offset}, timeout=4)
-                if resp.status_code != 200:
-                    break
-                items = resp.json().get("items", [])
-                if not items:
-                    break
-                for im in items:
-                    for t in im.get("tags", []) or []:
-                        if t and t not in seen:
-                            seen.append(t)
-            except Exception:
+            resp = session.get("https://api.nekosapi.com/v4/images",
+                               params={"limit": 100, "offset": offset}, timeout=10)
+            if resp.status_code != 200:
                 break
+            items = resp.json().get("items", [])
+            if not items:
+                break
+            for im in items:
+                for t in im.get("tags", []) or []:
+                    if t and t not in seen:
+                        seen.append(t)
         if seen:
             try:
                 import json as _json
@@ -1230,8 +1265,12 @@ def get_gsbooru_suggestions():
     names = []
     try:
         session = get_session("gsbooru", data.get("net_config", {}))
-        resp = session.get("https://gsbooru.org/api/tags/tag-suggestions",
-                           params={"tag_string": query}, timeout=5)
+        resp = session.get(
+            "https://gsbooru.org/api/tags",
+            # prefix match, not substring: "*ram*" matches "frame"/"scaramouche"
+            params={"tag_string": f"{query}*", "limit": 10, "sort": "post_count"},
+            headers={"Authorization": f"Bearer {os.getenv('GSBOORU_API_KEY', '')}"},
+            timeout=8)
         if resp.status_code == 200:
             items = resp.json().get("tags", [])
             names = [t.get("name") for t in items
@@ -1250,7 +1289,9 @@ def clear_tag_history():
 
 @app.route("/api/history/remove", methods=["POST"])
 def remove_tag_history():
-    data = request.json
+    data = request.json or {}
+    if not data.get("site") or not data.get("tag"):
+        return jsonify({"error": "site and tag required"}), 400
     DatabaseManager.remove_tag_history(data["site"], data["tag"], data.get("rating"))
     return jsonify({"success": True})
 
@@ -1262,6 +1303,22 @@ def get_image_history():
         hist = [{**h, "favourite": h.get("filename") in favs} for h in hist]
     except Exception:
         pass
+    # old entries predate downloaded_at — approximate with the file's mtime
+    for h in hist:
+        if not h.get("downloaded_at"):
+            fp = h.get("filepath")
+            if not fp:
+                h["downloaded_at"] = 0
+                continue
+            key = ("hist", fp, h.get("filename"))
+            ts = _TS_CACHE.get(key)
+            if ts is None:
+                try:
+                    ts = os.path.getmtime(os.path.join(MASTER_FOLDER, fp))
+                except OSError:
+                    ts = 0
+                _TS_CACHE[key] = ts
+            h["downloaded_at"] = ts
     return jsonify(hist)
 
 @app.route("/api/image_history/clear", methods=["POST"])
@@ -1271,8 +1328,10 @@ def clear_image_history():
 
 @app.route("/api/image_history/remove", methods=["POST"])
 def remove_image_history():
-    data = request.json
-    DatabaseManager.remove_image_history(data.get("filename"))
+    data = request.json or {}
+    if not data.get("filename"):
+        return jsonify({"error": "filename required"}), 400
+    DatabaseManager.remove_image_history(data["filename"])
     return jsonify({"success": True})
 
 @app.route("/api/favorites", methods=["GET", "POST"])
@@ -1301,7 +1360,33 @@ def _build_filepath_cache(force=False):
     _fp_cache["at"] = now
     return cache
 
-def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters):
+# ponytail: precomputed sort keys — stale if a file's mtime changes (or the
+# master folder switches), only ever used for ordering, never for display
+_TS_CACHE = {}
+
+def _image_timestamp(img):
+    key = (img.get("filepath", ""), img.get("downloaded_at", ""))
+    ts = _TS_CACHE.get(key)
+    if ts is not None:
+        return ts
+    dt = img.get("downloaded_at", "")
+    if dt:
+        try:
+            ts = datetime.fromisoformat(dt).timestamp()
+        except Exception:
+            ts = 0
+    else:
+        ts = 0
+        fp = img.get("filepath", "")
+        if fp:
+            full = os.path.join(MASTER_FOLDER, fp)
+            if os.path.exists(full):
+                ts = os.path.getmtime(full)
+    _TS_CACHE[key] = ts
+    return ts
+
+
+def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=None):
     def _get_all_tags(img):
         tags = img.get("tags", {})
         if isinstance(tags, dict):
@@ -1367,30 +1452,45 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             # ponytail: rule34 is all-explicit with no rating in path or tags
             if site == "rule34" and "explicit" in rating_filters:
                 return True
+            # lowered once per image — the nested rating loops reuse these
+            fpl = img.get("filepath", "").lower()
+            all_tags_l = [t.lower() for t in _get_all_tags(img)]
             # Safe-only / SFW imageboards and sources:
             is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
             if is_inherently_safe and "safe" in rating_filters:
-                fpl = img.get("filepath", "").lower()
-                all_tags = [t.lower() for t in _get_all_tags(img)]
-                if not any(exp in fpl or any(exp in t for t in all_tags) for exp in ("explicit", "nsfw", "rating:e", "r18")):
+                if not any(exp in fpl or any(exp in t for t in all_tags_l) for exp in ("explicit", "nsfw", "rating:e", "r18")):
                     return True
-            fpl = img.get("filepath", "").lower()
-            all_tags = _get_all_tags(img)
+            supported = SUPPORTED_RATINGS.get(site)
+            if supported is None:
+                return False
             for rf in rating_filters:
-                supported = SUPPORTED_RATINGS.get(site)
-                if supported is None:
-                    continue
                 if rf not in supported:
                     continue
-                patterns = rating_aliases.get(rf, [rf])
-                for p in patterns:
-                    if any(p in t.lower() for t in all_tags):
-                        return True
-                    if p in fpl:
+                for p in rating_aliases.get(rf, [rf]):
+                    if any(p in t for t in all_tags_l) or p in fpl:
                         return True
             return False
         images = [i for i in images if matches_any_rating(i)]
+    if ts_range is not None:
+        t_from, t_to = ts_range
+        images = [i for i in images if (t_from is None or _image_timestamp(i) >= t_from)
+                  and (t_to is None or _image_timestamp(i) <= t_to)]
     return images
+
+
+def _parse_ts_range():
+    try:
+        from_ts = float(request.args.get("from_ts", ""))
+    except (TypeError, ValueError):
+        from_ts = None
+    try:
+        to_ts = float(request.args.get("to_ts", ""))
+    except (TypeError, ValueError):
+        to_ts = None
+    if from_ts is None and to_ts is None:
+        return None
+    return (from_ts, to_ts)
+
 
 @app.route("/api/gallery", methods=["GET"])
 def get_gallery():
@@ -1403,59 +1503,35 @@ def get_gallery():
     type_filters = [t.strip() for t in type_filter_raw.split(",") if t.strip()] if type_filter_raw and type_filter_raw != "all" else []
     rating_filter_raw = request.args.get("rating", "").lower().strip()
     rating_filters = [r.strip() for r in rating_filter_raw.split(",") if r.strip()] if rating_filter_raw else []
-    page = max(1, int(request.args.get("page", 1)))
-    per_page = min(400, max(1, int(request.args.get("per_page", 24))))
+    page = max(1, _safe_int(request.args.get("page", 1), 1))
+    per_page = min(400, max(1, _safe_int(request.args.get("per_page", 24), 24)))
 
     gallery = shared.load_gallery()
     images = gallery.get("images", [])
     fp_cache = _build_filepath_cache()
-    dirty = False
+    # in-memory fix-up only: a GET must not rewrite gallery.json (2.5MB per
+    # page view), and deleting filepath on a cache miss drops live entries —
+    # the cache is keyed by bare filename, so a walk miss/collision is wrong
     for img in images:
         cached = fp_cache.get(img.get("filename", ""))
-        if cached:
-            if img.get("filepath") != cached:
-                img["filepath"] = cached
-                dirty = True
-        elif img.get("filepath"):
-            del img["filepath"]
-            dirty = True
-    if dirty:
-        shared.save_gallery(gallery)
-        images = gallery.get("images", [])
+        if cached and img.get("filepath") != cached:
+            img["filepath"] = cached
     images = [i for i in images if i.get("filepath")]
-    images = _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters)
-
-    def _sort_key(img):
-        ts = img.get("downloaded_at", "")
-        if ts:
-            try:
-                ts = datetime.fromisoformat(ts).timestamp()
-            except Exception:
-                ts = 0
-        else:
-            fp = img.get("filepath", "")
-            if fp:
-                full = os.path.join(MASTER_FOLDER, fp)
-                if os.path.exists(full):
-                    ts = os.path.getmtime(full)
-                else:
-                    ts = 0
-            else:
-                ts = 0
-        return ts
+    images = _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=_parse_ts_range())
 
     if sort_by == "newest":
-        images.sort(key=_sort_key, reverse=True)
+        images.sort(key=_image_timestamp, reverse=True)
     elif sort_by == "oldest":
-        images.sort(key=_sort_key)
+        images.sort(key=_image_timestamp)
     else:
-        images.sort(key=lambda x: (not x.get("favourite"), _sort_key(x)), reverse=False)
+        images.sort(key=lambda x: (not x.get("favourite"), _image_timestamp(x)), reverse=False)
 
     total = len(images)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     start = (page - 1) * per_page
     page_imgs = images[start:start + per_page]
+    warm_page_thumbs(page_imgs)
 
     return jsonify({
         "images": page_imgs,
@@ -1467,103 +1543,170 @@ def get_gallery():
 
 @app.route("/api/gallery/favourite", methods=["POST"])
 def toggle_gallery_fav():
-    data = request.json
+    data = request.json or {}
     img_id = data.get("id")
-    gallery = shared.load_gallery()
-    for img in gallery["images"]:
-        if img["id"] == img_id:
-            img["favourite"] = not img.get("favourite", False)
-            shared.save_gallery(gallery)
-            return jsonify({"success": True, "favourite": img["favourite"]})
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for img in gallery["images"]:
+            if img.get("id") == img_id:
+                img["favourite"] = not img.get("favourite", False)
+                shared.save_gallery(gallery)
+                return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
 @app.route("/api/gallery/favourite_batch", methods=["POST"])
 def toggle_gallery_fav_batch():
-    data = request.json or {}
-    ids = set(data.get("ids", []) or [])
+    # one load+save for the whole selection — N single toggles do N full
+    # gallery.json rewrites and crawl with large selections
+    ids = set((request.json or {}).get("ids") or [])
     if not ids:
-        return jsonify({"success": True, "updated": 0, "favourite": True})
+        return jsonify({"success": True, "flipped": 0})
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        flipped = 0
+        for img in gallery["images"]:
+            if img.get("id") in ids:
+                img["favourite"] = not img.get("favourite", False)
+                flipped += 1
+        if flipped:
+            shared.save_gallery(gallery)
+    return jsonify({"success": True, "flipped": flipped})
 
-    action = data.get("action")  # optional: "favourite", "unfavourite", or None for toggle
-    gallery = shared.load_gallery()
-    target_imgs = [img for img in gallery.get("images", []) if img.get("id") in ids]
-    if not target_imgs:
-        return jsonify({"success": True, "updated": 0, "favourite": True})
+# --- Extensions & Addons Management API ---
+@app.route("/api/extensions", methods=["GET"])
+def get_extensions_catalog():
+    try:
+        mgr = get_extension_manager(app, socketio)
+        catalog = mgr.get_catalog()
+        contributions = mgr.get_ui_contributions()
+        return jsonify({
+            "success": True,
+            "extensions": catalog,
+            "contributions": contributions
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
-    if action == "favourite":
-        target_state = True
-    elif action == "unfavourite":
-        target_state = False
-    else:
-        all_fav = all(img.get("favourite", False) for img in target_imgs)
-        target_state = not all_fav
+@app.route("/api/extensions/install", methods=["POST"])
+def install_extension():
+    try:
+        from core.extension_downloader import install_from_github, install_from_local_path
+        data = request.json or {}
+        repo = (data.get("repo") or "").strip()
+        ext_id = (data.get("id") or "").strip()
+        local_path = (data.get("local_path") or "").strip()
 
-    for img in target_imgs:
-        img["favourite"] = target_state
+        if local_path:
+            ok, msg = install_from_local_path(local_path, ext_id or os.path.basename(local_path))
+        elif repo:
+            ok, msg = install_from_github(repo, ext_id or None)
+        else:
+            return jsonify({"success": False, "error": "Missing 'repo' or 'local_path'"}), 400
 
-    shared.save_gallery(gallery)
-    return jsonify({"success": True, "updated": len(target_imgs), "favourite": target_state})
+        return jsonify({"success": ok, "message": msg})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/toggle", methods=["POST"])
+def toggle_extension():
+    try:
+        data = request.json or {}
+        ext_id = (data.get("id") or "").strip()
+        enabled = bool(data.get("enabled", True))
+        if not ext_id:
+            return jsonify({"success": False, "error": "Missing extension ID"}), 400
+
+        mgr = get_extension_manager(app, socketio)
+        if enabled:
+            ok = mgr.enable_extension(ext_id)
+        else:
+            ok = mgr.disable_extension(ext_id)
+
+        return jsonify({"success": ok, "enabled": enabled, "is_active": ext_id in mgr.active_plugins})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/uninstall", methods=["POST"])
+def uninstall_extension():
+    try:
+        data = request.json or {}
+        ext_id = (data.get("id") or "").strip()
+        if not ext_id:
+            return jsonify({"success": False, "error": "Missing extension ID"}), 400
+
+        mgr = get_extension_manager(app, socketio)
+        ok = mgr.uninstall_extension(ext_id)
+        return jsonify({"success": ok, "message": f"Extension '{ext_id}' uninstalled successfully."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/extensions/check_update", methods=["POST"])
+def check_extension_update():
+    try:
+        from core.extension_downloader import check_for_updates
+        data = request.json or {}
+        ext_id = (data.get("id") or "").strip()
+        repo = (data.get("repo") or "").strip()
+        if not ext_id or not repo:
+            return jsonify({"success": False, "error": "Missing extension ID or repository"}), 400
+
+        res = check_for_updates(ext_id, repo)
+        return jsonify({"success": True, "update_info": res})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/gallery/favourite_by_name", methods=["POST"])
 def toggle_gallery_fav_by_name():
     fn = (request.json or {}).get("filename", "")
-    gallery = shared.load_gallery()
-    for img in gallery["images"]:
-        if img.get("filename") == fn:
-            img["favourite"] = not img.get("favourite", False)
-            shared.save_gallery(gallery)
-            return jsonify({"success": True, "favourite": img["favourite"]})
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for img in gallery["images"]:
+            if img.get("filename") == fn:
+                img["favourite"] = not img.get("favourite", False)
+                shared.save_gallery(gallery)
+                return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
 @app.route("/api/gallery/delete_by_name", methods=["POST"])
 def delete_gallery_image_by_name():
     fn = (request.json or {}).get("filename", "")
-    gallery = shared.load_gallery()
-    for i, img in enumerate(gallery["images"]):
-        if img.get("filename") == fn:
-            full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
-            try:
-                if os.path.exists(full_path):
-                    os.remove(full_path)
-            except Exception as e:
-                print("Error deleting file:", e)
-            gallery["images"].pop(i)
-            shared.save_gallery(gallery)
-            _invalidate_fp_cache()
-            try:
-                DatabaseManager.remove_image_history(fn)
-            except Exception as e:
-                print("History delete error:", e)
-            dedup_warning = False
-            try:
-                from core.dedup_store import get_store
-                get_store().remove_by_filepath(full_path)
-            except Exception as e:
-                dedup_warning = True
-                print("Dedup cleanup error:", e)
-            return jsonify({"success": True, "dedup_warning": dedup_warning})
-    return jsonify({"success": False, "error": "not found"}), 404
-
-@app.route("/api/gallery/tags", methods=["GET"])
-def get_gallery_tags():
-    gallery = shared.load_gallery()
-    tags = set()
-    for img in gallery.get("images", []):
-        img_tags = img.get("tags", {})
-        if isinstance(img_tags, dict):
-            for v in img_tags.values():
-                if isinstance(v, list):
-                    for t in v:
-                        tags.add(t)
-        elif isinstance(img_tags, list):
-            for t in img_tags:
-                tags.add(t)
-    return jsonify(sorted(tags))
+    # lock the whole find+pop+save: a download finishing in between mutates
+    # the same live gallery dict and our save would resurrect the entry
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for i, img in enumerate(gallery["images"]):
+            if img.get("filename") == fn:
+                full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
+                gallery["images"].pop(i)
+                shared.save_gallery(gallery)
+                break
+        else:
+            return jsonify({"success": False, "error": "not found"}), 404
+    _invalidate_fp_cache()
+    try:
+        if os.path.exists(full_path):
+            os.remove(full_path)
+    except Exception as e:
+        print("Error deleting file:", e)
+    try:
+        DatabaseManager.remove_image_history(fn)
+    except Exception as e:
+        print("History delete error:", e)
+    dedup_warning = False
+    try:
+        from core.dedup_store import get_store
+        get_store().remove_by_filepath(full_path)
+    except Exception as e:
+        dedup_warning = True
+        print("Dedup cleanup error:", e)
+    return jsonify({"success": True, "dedup_warning": dedup_warning})
 
 @app.route("/api/gallery/file/<path:filepath>")
 def gallery_file(filepath):
-    full = os.path.normpath(os.path.join(MASTER_FOLDER, filepath))
-    if not full.startswith(os.path.normpath(MASTER_FOLDER)):
+    # realpath + sep: normpath+startswith lets "../<prefix-sibling>" through
+    # when MASTER_FOLDER's name prefixes another directory (foo vs foobar)
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if os.path.isfile(full):
         return send_file(full)
@@ -1571,79 +1714,145 @@ def gallery_file(filepath):
 
 @app.route("/api/thumb_by_name/<filename>")
 def thumb_by_name(filename):
-    # ponytail: check the disk cache BEFORE walking the library — the walk
-    # cost a full 4GB+ traversal per thumbnail on cache hits
-    cache_key = hashlib.sha256(filename.encode()).hexdigest()[:16]
-    cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
+        return "Forbidden", 403
+    # disk cache before any walk/isfile — a cached name answers instantly
+    cache_path = _thumb_cache_path(full)
     if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/jpeg')
-    full = os.path.join(MASTER_FOLDER, filename)
+        return _send_thumb(cache_path)
     if not os.path.isfile(full):
-        # Search subdirectories
-        for root, _, files in os.walk(MASTER_FOLDER):
-            if filename in files:
-                full = os.path.join(root, filename)
-                break
-        else:
+        # look it up in the cached walk (same 30s TTL as the gallery) — no os.walk per miss
+        rel = _build_filepath_cache().get(filename)
+        if rel:
+            full = os.path.realpath(os.path.join(MASTER_FOLDER, rel))
+        if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep) or not os.path.isfile(full):
             return "Image was deleted", 404
-    return redirect_to_thumb(full, filename)
+    return redirect_to_thumb(full)
 
-def redirect_to_thumb(full_path, rel_filename):
-    cache_key = hashlib.sha256(rel_filename.encode()).hexdigest()[:16]
-    cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
-    if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/jpeg')
-    try:
-        img = Image.open(full_path)
-        img.draft('RGB', (300, 300))
-        if img.mode in ('RGBA', 'P', 'LA'):
-            img = img.convert('RGB')
-        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-        img.save(cache_path, format='JPEG', quality=85)
-        return send_file(cache_path, mimetype='image/jpeg')
-    except Exception:
-        return "Thumbnail generation failed", 415
 
 THUMB_CACHE = os.path.join(DATABASE_DIR, "thumb_cache")
 os.makedirs(THUMB_CACHE, exist_ok=True)
 
-@app.route("/api/gallery/thumb/<path:filepath>")
-def gallery_thumb(filepath):
-    full = os.path.normpath(os.path.join(MASTER_FOLDER, filepath))
-    if not full.startswith(os.path.normpath(MASTER_FOLDER)):
-        return "Forbidden", 403
-    ext = os.path.splitext(full)[1].lower()
-    cache_key = hashlib.sha256(filepath.encode()).hexdigest()[:16]
-    cache_path = os.path.join(THUMB_CACHE, cache_key + ".jpg")
 
+def _thumb_cache_path(full):
+    return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + ".jpg")
+
+
+def _cached_thumb(full):
+    """300px JPEG on disk under thumb_cache — survives restarts, nothing in RAM.
+    Keyed by full path only (as the original cache was): an edited file keeps
+    its old thumb until the cache file is deleted. Exceptions aren't cached,
+    so a mid-download read retries next request."""
+    cache_path = _thumb_cache_path(full)
     if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/jpeg')
-    # ponytail: stale cache still beats a broken icon when the user
-    # deleted the source file outside the app, so it is checked above
-    if not os.path.isfile(full):
-        return "Image was deleted", 404
-
+        return cache_path
+    ext = os.path.splitext(full)[1].lower()
     if ext in EXTENSIONS_VIDEO:
         import subprocess
-        subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", cache_path],
-                       capture_output=True, timeout=10)
-        if os.path.exists(cache_path):
-            return send_file(cache_path, mimetype='image/jpeg')
-        return "", 415
-
-    try:
+        proc = subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+                              capture_output=True, timeout=10)
+        if proc.returncode == 0 and proc.stdout:
+            data = proc.stdout
+        else:
+            raise RuntimeError("ffmpeg frame extraction failed")
+    else:
         img = Image.open(full)
         # ponytail: cap memory usage for very large images; decompress bomb protection
         img.draft('RGB', (300, 300))
         if img.mode in ('RGBA', 'P', 'LA'):
             img = img.convert('RGB')
-        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-        img.save(cache_path, format='JPEG', quality=85)
-        return send_file(cache_path, mimetype='image/jpeg')
+        # BILINEAR: ~2x faster than LANCZOS at 300px, invisible at thumbnail size
+        img.thumbnail((300, 300), Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=80)
+        data = buf.getvalue()
+    # per-thread tmp + atomic replace: concurrent warmers never read a torn file
+    tmp = f"{cache_path}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, cache_path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return cache_path
+
+
+# gallery page returns, then the browser starts asking for its thumbs —
+# generate them onto disk here first (in the background, more workers than
+# the browser's 6 connections) so those requests hit the cache instead of
+# paying ~100-300ms of PNG decode each. Failures aren't cached, so the
+# browser request still retries.
+_thumb_warm_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="thumbwarm")
+
+
+def _warm_thumb(full):
+    try:
+        _cached_thumb(full)
+    except Exception:
+        pass
+
+
+def warm_page_thumbs(images):
+    for img in images:
+        fp = img.get("filepath")
+        if fp:
+            _thumb_warm_pool.submit(_warm_thumb, os.path.join(MASTER_FOLDER, fp))
+
+
+def _send_thumb(cache_path):
+    """Serve the disk-cached 300px JPEG; the browser keeps it per-URL for a
+    day, so repeat views skip the server entirely."""
+    resp = send_file(cache_path, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
+
+def redirect_to_thumb(full_path):
+    try:
+        return _send_thumb(_cached_thumb(full_path))
+    except Exception:
+        return "Thumbnail generation failed", 415
+
+@app.route("/api/gallery/thumb/<path:filepath>")
+def gallery_thumb(filepath):
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
+        return "Forbidden", 403
+    # ponytail: cached thumb still beats a broken icon when the source was
+    # deleted outside the app, so the cache is checked before isfile
+    cache_path = _thumb_cache_path(full)
+    if os.path.exists(cache_path):
+        return _send_thumb(cache_path)
+    if not os.path.isfile(full):
+        return "Image was deleted", 404
+
+    try:
+        return _send_thumb(_cached_thumb(full))
     except Exception as e:
+        if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
+            return "", 415
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         return send_file(full)
+
+def _gallery_stamp(images):
+    # coarse change signal for route memos: size + total tags + fav count
+    n_tags = n_favs = 0
+    for i in images:
+        t = i.get("tags", {})
+        if isinstance(t, dict):
+            n_tags += sum(len(v) for v in t.values() if isinstance(v, list))
+        elif isinstance(t, list):
+            n_tags += len(t)
+        n_favs += bool(i.get("favourite"))
+    return (len(images), n_tags, n_favs)
+
+_sources_cache = {"key": None, "at": 0.0, "data": None}
 
 @app.route("/api/gallery/sources", methods=["GET"])
 def get_gallery_sources():
@@ -1653,141 +1862,240 @@ def get_gallery_sources():
     type_filters = [t.strip() for t in type_filter_raw.split(",") if t.strip()] if type_filter_raw and type_filter_raw != "all" else []
     rating_filter_raw = request.args.get("rating", "").lower().strip()
     rating_filters = [r.strip() for r in rating_filter_raw.split(",") if r.strip()] if rating_filter_raw else []
+    ts_range = _parse_ts_range()
     images = shared.load_gallery().get("images", [])
-    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters)
+    # ponytail: full pass over every image per poll — memoize per query for
+    # _FP_CACHE_TTL, invalidated by the coarse gallery stamp
+    key = (search, fav_only, tuple(type_filters), tuple(rating_filters), ts_range, _gallery_stamp(images))
+    now = time.time()
+    if _sources_cache["key"] == key and now - _sources_cache["at"] < _FP_CACHE_TTL:
+        return jsonify(_sources_cache["data"])
+    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters, ts_range=ts_range)
     counts = {}
     for img in images:
         s = shared.normalize_site(img.get("site", "unknown"))
         counts[s] = counts.get(s, 0) + 1
+    _sources_cache["key"] = key
+    _sources_cache["at"] = now
+    _sources_cache["data"] = counts
     return jsonify(counts)
 
 @app.route("/api/gallery/delete", methods=["POST"])
 def delete_gallery_image():
-    data = request.json
+    data = request.json or {}
     img_id = data.get("id")
-    gallery = shared.load_gallery()
-    for i, img in enumerate(gallery["images"]):
-        if img["id"] == img_id:
-            # پاک کردن فیزیکی فایل از روی هارد
-            full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
-            try:
-                if os.path.exists(full_path):
-                    os.remove(full_path)
-            except Exception as e:
-                print("Error deleting file:", e)
-            # حذف از دیتابیس گالری
-            fn = img.get("filename", "")
-            gallery["images"].pop(i)
-            shared.save_gallery(gallery)
-            _invalidate_fp_cache()
-            try:
-                DatabaseManager.remove_image_history(fn)
-            except Exception as e:
-                print("History delete error:", e)
-            dedup_warning = False
-            try:
-                from core.dedup_store import get_store
-                get_store().remove_by_filepath(full_path)
-            except Exception as e:
-                dedup_warning = True
-                print("Dedup cleanup error:", e)
-            return jsonify({"success": True, "dedup_warning": dedup_warning})
-    return jsonify({"success": False, "error": "Not found"}), 404 
+    # find+pop+save atomically — a download finishing in between would have
+    # its new entry clobbered by our stale save (see delete_by_name)
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        for i, img in enumerate(gallery["images"]):
+            if img.get("id") == img_id:
+                full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
+                fn = img.get("filename", "")
+                gallery["images"].pop(i)
+                shared.save_gallery(gallery)
+                break
+        else:
+            return jsonify({"success": False, "error": "Not found"}), 404
+    # پاک کردن فیزیکی فایل از روی هارد
+    try:
+        if os.path.exists(full_path):
+            os.remove(full_path)
+    except Exception as e:
+        print("Error deleting file:", e)
+    _invalidate_fp_cache()
+    try:
+        DatabaseManager.remove_image_history(fn)
+    except Exception as e:
+        print("History delete error:", e)
+    dedup_warning = False
+    try:
+        from core.dedup_store import get_store
+        get_store().remove_by_filepath(full_path)
+    except Exception as e:
+        dedup_warning = True
+        print("Dedup cleanup error:", e)
+    return jsonify({"success": True, "dedup_warning": dedup_warning})
+
+def _tags_from_file(full):
+    """The tags the file itself carries (embedded when it was downloaded).
+
+    The embedded copy is the durable one: gallery.json can lose a record —
+    batched write plus a hard kill, a corrupt file quarantined on load — while
+    the file keeps every tag. Restoring from it is local, free, and works for
+    sites with no md5 API. Falls back to the folder name (a hint, never a
+    substitute) when the file carries nothing.
+    """
+    meta = shared.read_image_metadata(full)
+    if not meta:
+        return {"tag": []}
+    try:
+        from backfill_tags import parse_meta
+        _site, tags = parse_meta(meta)
+    except Exception:
+        return {"tag": []}
+    return tags if shared.count_tags(tags) else {"tag": []}
+
 
 def _scan_and_merge_gallery():
     """Walk MASTER_FOLDER and merge files into the gallery.
 
     Shared by the /rescan endpoint and startup_rescan. Returns
-    (gallery, count_added, count_fixed).
+    (gallery, count_added, count_fixed, count_checked): count_checked is
+    files whose embedded tags we read this pass — the caller must save when
+    it is non-zero, or every launch pays for the same reads again.
     """
     gallery = shared.load_gallery()
     by_fn = {i["filename"]: i for i in gallery["images"]}
     count_added = 0
     count_fixed = 0
+    count_checked = 0
     for root, dirs, files in os.walk(MASTER_FOLDER):
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
             if ext not in EXTENSIONS_IMAGE and ext not in EXTENSIONS_VIDEO:
                 continue
             full = os.path.join(root, fn)
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
             rel = os.path.relpath(full, MASTER_FOLDER)
             parts = rel.replace('\\', '/').split('/')
             site = parts[0] if len(parts) > 1 else "unknown"
 
             tag = parts[1] if len(parts) > 2 else ""
-            tags = {"tag": [tag]} if tag else {"tag": []}
             if fn in by_fn:
                 existing = by_fn[fn]
                 if not existing.get("filepath"):
                     existing["filepath"] = rel
                     count_fixed += 1
-                if not existing.get("tags"):
-                    existing["tags"] = tags
-                    count_fixed += 1
+                # read a file's own tags at most once per file version: most
+                # bare files carry nothing, and re-reading gigabytes of them
+                # on every launch is not a scan, it's a benchmark
+                if (shared.count_tags(existing.get("tags")) <= 1
+                        and existing.get("meta_mtime") != mtime):
+                    existing["meta_mtime"] = mtime
+                    count_checked += 1
+                    file_tags = _tags_from_file(full)
+                    if shared.count_tags(file_tags) > shared.count_tags(existing.get("tags")):
+                        existing["tags"] = file_tags
+                        count_fixed += 1
             else:
-                gallery["images"].append({
+                tags = _tags_from_file(full)
+                if not shared.count_tags(tags) and tag:
+                    tags = {"tag": [tag]}
+                entry = {
                     "id": hashlib.sha256(fn.encode()).hexdigest()[:12],
                     "filename": fn, "filepath": rel, "site": site,
                     "tags": tags, "favourite": False,
-                    "downloaded_at": datetime.fromtimestamp(os.path.getmtime(full)).isoformat()
-                })
-                by_fn[fn] = gallery["images"][-1]
+                    "downloaded_at": datetime.fromtimestamp(mtime).isoformat()
+                }
+                if shared.count_tags(tags) <= 1:
+                    entry["meta_mtime"] = mtime
+                gallery["images"].append(entry)
+                by_fn[fn] = entry
                 count_added += 1
-    # drop duplicate filenames (a download landing mid-scan can double-add)
-    seen = set()
+    # drop duplicate filenames (a download landing mid-scan can double-add) —
+    # keep the twin carrying the tags, never the empty rebuild
+    seen = {}
     unique = []
     for img in gallery["images"]:
-        if img.get("filename") in seen:
-            continue
-        seen.add(img.get("filename"))
-        unique.append(img)
+        fn = img.get("filename")
+        prev = seen.get(fn)
+        if prev is None:
+            seen[fn] = img
+            unique.append(img)
+        else:
+            if shared.count_tags(img.get("tags")) > shared.count_tags(prev.get("tags")):
+                prev["tags"] = img["tags"]
+            if not prev.get("filepath") and img.get("filepath"):
+                prev["filepath"] = img["filepath"]
+            if img.get("favourite"):
+                prev["favourite"] = True
     gallery["images"] = unique
-    return gallery, count_added, count_fixed
+    return gallery, count_added, count_fixed, count_checked
+
+def _hash_missing_dedup(gallery):
+    """Backfill dedup records for gallery images that were never hashed
+    (files dropped into the folder manually). Safe to call after every scan."""
+    try:
+        from core.dedup_store import get_store
+        entries = []
+        for img in gallery["images"]:
+            rel = img.get("filepath") or ""
+            if not rel or os.path.splitext(rel)[1].lower() not in EXTENSIONS_IMAGE:
+                continue
+            full = os.path.join(MASTER_FOLDER, rel)
+            if os.path.isfile(full):
+                entries.append((full, img.get("site")))
+        n = get_store().add_missing(entries)
+        if n:
+            print(f"Backfilled {n} dedup records for unhashed images")
+        return n
+    except Exception as e:
+        print("Dedup backfill error:", e)
+        return 0
 
 @app.route("/api/gallery/rescan", methods=["POST"])
 def rescan_gallery():
-    gallery, count_added, count_fixed = _scan_and_merge_gallery()
-    _invalidate_fp_cache()
-    try:
-        from core.dedup_store import get_store
-        count_removed_records = get_store().remove_missing_files()
-    except Exception as e:
-        print("Dedup sweep error:", e)
-        count_removed_records = 0
-    shared.save_gallery(gallery)
-    return jsonify({"success": True, "added": count_added, "fixed": count_fixed,
-                    "removed_entries": 0,
-                    "removed_records": count_removed_records})
+    # os.walk the whole library + dedup hashing takes seconds — a sync
+    # request holds the connection the whole time; run it in a thread and
+    # announce completion over the existing socket
+    def _rescan():
+        try:
+            gallery, count_added, count_fixed, _checked = _scan_and_merge_gallery()
+            _invalidate_fp_cache()
+            try:
+                from core.dedup_store import get_store
+                count_removed_records = get_store().remove_missing_files()
+            except Exception as e:
+                print("Dedup sweep error:", e)
+                count_removed_records = 0
+            hashed = _hash_missing_dedup(gallery)
+            shared.save_gallery(gallery)
+            _heal_bare_gallery_tags()
+            socketio.emit("gallery_rescan_done", {
+                "success": True, "added": count_added, "fixed": count_fixed,
+                "removed_entries": 0,
+                "removed_records": count_removed_records,
+                "hashed": hashed})
+        except Exception as e:
+            print("Rescan error:", e)
+            socketio.emit("gallery_rescan_done", {"success": False})
+    threading.Thread(target=_rescan, daemon=True).start()
+    return jsonify({"success": True, "started": True})
 
 @app.route("/api/gallery/import", methods=["POST"])
 def import_gallery_from_history():
     from core.shared import tags_dict_from_lists
     hist = DatabaseManager.load_image_history()
-    gallery = shared.load_gallery()
-    existing = {i["filename"] for i in gallery["images"]}
-    fp_cache = _build_filepath_cache()
-    count = 0
-    for entry in hist:
-        fn = entry.get("filename", "")
-        if fn and fn not in existing:
-            entry_tags = entry.get("tags", {})
-            entry_artists = entry.get("artists", [])
-            if isinstance(entry_tags, dict):
-                tags = entry_tags
-            else:
-                tags = tags_dict_from_lists(entry_tags, entry_artists)
-            gallery["images"].append({
-                "id": hashlib.sha256(f"{entry.get('site','')}:{fn}".encode()).hexdigest()[:12],
-                "filename": fn,
-                "filepath": fp_cache.get(fn, ""),
-                "site": entry.get("site", ""),
-                "tags": tags,
-                "favourite": False,
-                "downloaded_at": ""
-            })
-            existing.add(fn)
-            count += 1
-    shared.save_gallery(gallery)
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        existing = {i["filename"] for i in gallery["images"]}
+        fp_cache = _build_filepath_cache()
+        count = 0
+        for entry in hist:
+            fn = entry.get("filename", "")
+            if fn and fn not in existing:
+                entry_tags = entry.get("tags", {})
+                entry_artists = entry.get("artists", [])
+                if isinstance(entry_tags, dict):
+                    tags = entry_tags
+                else:
+                    tags = tags_dict_from_lists(entry_tags, entry_artists)
+                gallery["images"].append({
+                    "id": hashlib.sha256(f"{entry.get('site','')}:{fn}".encode()).hexdigest()[:12],
+                    "filename": fn,
+                    "filepath": fp_cache.get(fn, ""),
+                    "site": entry.get("site", ""),
+                    "tags": tags,
+                    "favourite": False,
+                    "downloaded_at": ""
+                })
+                existing.add(fn)
+                count += 1
+        shared.save_gallery(gallery)
     return jsonify({"success": True, "imported": count})
 
 @app.route("/api/ui_config", methods=["GET", "POST"])
@@ -1796,6 +2104,178 @@ def manage_ui_config():
         DatabaseManager.save_ui_config(request.json)
         return jsonify({"success": True})
     return jsonify(DatabaseManager.load_ui_config())
+
+
+# ==========================================
+# === PIXIV FOLLOWING NOTIFICATIONS ===
+# ==========================================
+@app.route("/api/pixiv/notifications", methods=["GET"])
+def pixiv_notifications_get():
+    items = pixiv_notify.load_items()
+    return jsonify({
+        "items": items,
+        "unread": pixiv_notify.unread_count(items),
+        "pending_toast": pixiv_notify.take_pending_toast(),
+        "last_check": pixiv_notify.last_check_ts(),
+        "error": pixiv_notify.STATE["error"],
+        "checking": pixiv_notify.STATE["checking"],
+        "interval_minutes": pixiv_notify.interval_minutes(),
+        "due_in": pixiv_notify.seconds_until_due(),
+    })
+
+
+@app.route("/api/pixiv/notifications/read", methods=["POST"])
+def pixiv_notifications_read():
+    data = request.json or {}
+    ids = data.get("ids")
+    unread = pixiv_notify.mark_read(ids if ids else None)
+    return jsonify({"unread": unread})
+
+
+@app.route("/api/pixiv/notifications/check", methods=["POST"])
+def pixiv_notifications_check():
+    return jsonify({"started": pixiv_notify.check_now()})
+
+
+@app.route("/api/pixiv/notifications/clear", methods=["POST"])
+def pixiv_notifications_clear():
+    pixiv_notify.clear_items()
+    return jsonify({"unread": 0, "items": []})
+
+
+# ==========================================
+# === MULTI-SOURCE NOTIFICATIONS ===
+# ==========================================
+# status providers per source — a registry lookup, not scattered if/elif
+NOTIF_STATUS = {
+    "pixiv": lambda: {
+        "last_check": pixiv_notify.last_check_ts(),
+        "error": pixiv_notify.STATE["error"],
+        "checking": pixiv_notify.STATE["checking"],
+        "interval_minutes": pixiv_notify.interval_minutes(),
+        "due_in": pixiv_notify.seconds_until_due(),
+        "pending_toast": pixiv_notify.take_pending_toast(),
+    },
+}
+
+
+@app.route("/api/notifications", methods=["GET"])
+def notifications_get():
+    source = request.args.get("source") or None
+    items, unread, by = notifications.summary(source)
+    return jsonify({
+        # items only when a page asks for them — the startup dot fetch
+        # just wants the counts
+        "items": items if source else [],
+        "unread": unread,
+        "unread_by_source": by,
+        "status": (NOTIF_STATUS.get(source) or (lambda: {}))(),
+    })
+
+
+@app.route("/api/notifications/read", methods=["POST"])
+def notifications_read():
+    data = request.json or {}
+    source = data.get("source") or ""
+    if not source:
+        return jsonify({"error": "source required"}), 400
+    keys = data.get("keys") or data.get("ids")
+    unread = notifications.mark_read(source, keys if keys else None)
+    return jsonify({"unread": unread,
+                    "unread_by_source": notifications.unread_by_source()})
+
+
+@app.route("/api/notifications/clear", methods=["POST"])
+def notifications_clear():
+    data = request.json or {}
+    source = data.get("source") or ""
+    if not source:
+        return jsonify({"error": "source required"}), 400
+    notifications.clear(source)
+    return jsonify({"unread": notifications.unread(),
+                    "unread_by_source": notifications.unread_by_source()})
+
+
+# ==========================================
+# === TAG WATCHERS ===
+# ==========================================
+@app.route("/api/watchers", methods=["GET"])
+def watchers_list():
+    source = request.args.get("source") or None
+    return jsonify({"watchers": watchers.list_watchers(source)})
+
+
+@app.route("/api/watchers", methods=["POST"])
+def watchers_create():
+    w, err = watchers.create(request.json or {})
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"watcher": w})
+
+
+@app.route("/api/watchers/<wid>", methods=["POST"])
+def watchers_update(wid):
+    w, err = watchers.update(wid, request.json or {})
+    if err:
+        code = 404 if err == "watcher not found" else 400
+        return jsonify({"error": err}), code
+    return jsonify({"watcher": w})
+
+
+@app.route("/api/watchers/<wid>", methods=["DELETE"])
+def watchers_delete(wid):
+    if not watchers.remove(wid):
+        return jsonify({"error": "watcher not found"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/api/watchers/check_now", methods=["POST"])
+def watchers_check_now():
+    data = request.json or {}
+    return jsonify({"started": watchers.check_now(data.get("source"))})
+
+
+_NOTIF_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
+
+
+def _notif_thumb(url, referer, allow_host):
+    """Fetch a hotlink-protected thumbnail server-side (shared by sources)."""
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    if host != allow_host and not host.endswith("." + allow_host):
+        return jsonify({"error": "bad host"}), 400
+    cached = _NOTIF_THUMB_CACHE.get(url)
+    if cached:
+        return Response(cached[0], mimetype=cached[1])
+    try:
+        r = requests.get(url, timeout=15, headers={
+            "Referer": referer,
+            "User-Agent": "Mozilla/5.0",
+        })
+        r.raise_for_status()
+    except Exception:
+        return jsonify({"error": "thumbnail fetch failed"}), 502
+    if len(_NOTIF_THUMB_CACHE) >= 200:
+        _NOTIF_THUMB_CACHE.pop(next(iter(_NOTIF_THUMB_CACHE)))
+    ctype = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0]
+    _NOTIF_THUMB_CACHE[url] = (r.content, ctype)
+    return Response(r.content, mimetype=ctype)
+
+
+@app.route("/api/pixiv/notif_thumb")
+def pixiv_notif_thumb():
+    # pximg hotlink-blocks foreign referers, so the browser cannot fetch
+    # these directly; fetch server-side with a pixiv referer instead
+    return _notif_thumb(request.args.get("url", ""),
+                        "https://www.pixiv.net/", "pximg.net")
+
+
+@app.route("/api/gelbooru/notif_thumb")
+def gelbooru_notif_thumb():
+    # img*.gelbooru.com 302s to an HTML hotlink page without a gelbooru
+    # referer, which the browser cannot spoof -> fetch server-side
+    return _notif_thumb(request.args.get("url", ""),
+                        "https://gelbooru.com/", "gelbooru.com")
 
 
 # ==========================================
@@ -1808,6 +2288,7 @@ def handle_connect():
         shutdown_timer.cancel()
         shutdown_timer = None
     print("Browser Tab Connected!")
+    _emit_queue_state()
 
 @socketio.on("disconnect")
 def handle_disconnect():
@@ -1816,32 +2297,122 @@ def handle_disconnect():
 
     def shutdown_server():
         print(">>> No active tabs. Killing Rems Dl Server... <<<")
+        # os._exit skips atexit — flush the batched gallery writes or the
+        # last N downloads are lost
+        try:
+            shared.flush_gallery()
+        except Exception:
+            pass
+        try:
+            DatabaseManager.flush_image_history()
+        except Exception:
+            pass
         os._exit(0)
 
+    # cancel the previous timer: without this a quick reconnect+disconnect
+    # leaves two timers, and the stale one kills a live tab
+    if shutdown_timer:
+        shutdown_timer.cancel()
     shutdown_timer = threading.Timer(3.0, shutdown_server)
     shutdown_timer.start()
 
+def _flush_before_sigterm(signum, frame):
+    # SIGTERM (systemctl stop, kill) skips atexit: flush the batched writes
+    # or the next scan rebuilds those records from the folder name alone
+    try:
+        shared.flush_gallery()
+    except Exception:
+        pass
+    try:
+        DatabaseManager.flush_image_history()
+    except Exception:
+        pass
+    os._exit(128 + signum)
+
+try:
+    signal.signal(signal.SIGTERM, _flush_before_sigterm)
+except (ValueError, OSError, AttributeError, RuntimeError):
+    pass  # not the main thread — leave the default disposition alone
+
 # ==========================================
 
-@socketio.on("start_worker")
-def handle_start_worker(data):
+# ==========================================
+# === DOWNLOAD QUEUE — one tag at a time per worker ===
+# ==========================================
+# each worker/site has its own queue and runs concurrently with other
+# sites; requests within one site stay strictly serialized
+ACTIVE_JOBS = {}      # site -> running job
+DOWNLOAD_QUEUES = {}  # site -> [waiting jobs]
+QUEUE_LOCK = threading.Lock()
+# finish_report needs to know whether a site's queue continues (shared can't
+# import us — attribute callback avoids the circular import)
+shared.queue_has_more = lambda site: bool(DOWNLOAD_QUEUES.get(site))
+
+def _safe_int(value, default=0):
+    try:
+        return int(str(value).strip() or default)
+    except (ValueError, TypeError):
+        return default
+
+def _queue_entry(job):
+    return {"site": job.get("worker", "?"),
+            "tag": (job.get("tag") or job.get("category") or "").strip() or "?"}
+
+def _emit_queue_state():
+    with QUEUE_LOCK:
+        active = [_queue_entry(j) for j in ACTIVE_JOBS.values()]
+        queued = [_queue_entry(j) for q in DOWNLOAD_QUEUES.values() for j in q]
+    socketio.emit("dl_queue", {"active": active, "queue": queued})
+
+def _start_job_thread(job):
+    threading.Thread(target=_run_job, args=(job,), daemon=True).start()
+
+def _run_job(job):
+    site = job.get("worker")
+    try:
+        _dispatch_worker(job)
+    except Exception as e:
+        print(f"Worker error ({job.get('worker')}): {e}", flush=True)
+    finally:
+        # heal old images: this run may have fetched categories the earlier
+        # download-time lookup failed (or the v1 cap skipped) — re-sort their tags
+        try:
+            g, h = shared.recategorize_all()
+            if g or h:
+                print(f"Tag recategorize: {g} gallery, {h} history entries fixed", flush=True)
+        except Exception as e:
+            print(f"Tag recategorize failed: {e}", flush=True)
+        nxt = None
+        with QUEUE_LOCK:
+            # only hand off if we're still that site's active job — a
+            # queue_bump may have superseded us (we're back on the queue)
+            if ACTIVE_JOBS.get(site) is job:
+                q = DOWNLOAD_QUEUES.get(site)
+                if q:
+                    nxt = q.pop(0)
+                    ACTIVE_JOBS[site] = nxt
+                else:
+                    ACTIVE_JOBS.pop(site, None)
+        if nxt is not None:
+            entry = _queue_entry(nxt)
+            shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
+            _start_job_thread(nxt)
+        _emit_queue_state()
+
+def _dispatch_worker(data):
+    """Run one download job to completion (blocking — called inside its own thread)."""
     worker = data.get("worker")
     net_config = data.get("net_config", {})
-
-    def _safe_int(value, default=0):
-        try:
-            return int(str(value).strip() or default)
-        except (ValueError, TypeError):
-            return default
-
     tag = data.get("tag", data.get("category", "")).strip()
 
     if tag:
         try:
-            DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "")
+            DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "",
+                                            bool(data.get("exclude_ai", False)))
             # Learn searched tags into local smart cache
             for single_tag in tag.replace(",", " ").split():
-                if len(single_tag.strip()) >= 2:
+                # -ai_generated is gelbooru's exclusion marker, not a tag
+                if len(single_tag.strip()) >= 2 and single_tag.strip() != "-ai_generated":
                     DatabaseManager.add_learned_tag(worker, single_tag.strip())
         except Exception as e:
             print("History Save Error:", e)
@@ -1849,39 +2420,85 @@ def handle_start_worker(data):
     if worker == "zero":
         net_config["zerochan_login"] = os.getenv("ZEROCHAN_LOGIN") or os.getenv("ZEROCHAN_USERNAME", "")
         net_config["zerochan_password"] = os.getenv("ZEROCHAN_PASSWORD", "")
-        threading.Thread(target=worker_zerochan, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config), daemon=True).start()
-    elif worker == "waifu": threading.Thread(target=worker_waifu, args=(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("nsfw", False), net_config), daemon=True).start()
-    elif worker == "neko": threading.Thread(target=worker_nekos_best, args=(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config), daemon=True).start()
-    elif worker == "safe": threading.Thread(target=worker_safebooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "rule34": threading.Thread(target=worker_rule34, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("method", "and"), data.get("sort_type", "id"), data.get("sort_order", "desc"), data.get("exclusions", []), net_config, data.get("exclude_ai", False)), daemon=True).start()
-    elif worker == "gelbooru": threading.Thread(target=worker_gelbooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "gsbooru": threading.Thread(target=worker_gsbooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "nekos_life": threading.Thread(target=worker_nekos_life, args=(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config, data.get("format", "both")), daemon=True).start()
-    elif worker == "yande": threading.Thread(target=worker_yande, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config), daemon=True).start()
-    elif worker == "kona": threading.Thread(target=worker_konachan, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "dan": threading.Thread(target=worker_danbooru, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "sankaku": threading.Thread(target=worker_sankaku, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config), daemon=True).start()
-    elif worker == "anime_dl": threading.Thread(target=worker_anime_dl, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config), daemon=True).start()
+        worker_zerochan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
+    elif worker == "waifu": worker_waifu(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("nsfw", False), net_config)
+    elif worker == "neko": worker_nekos_best(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config)
+    elif worker == "safe": worker_safebooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("exclusions", []), net_config)
+    elif worker == "rule34": worker_rule34(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("method", "and"), data.get("sort_type", "id"), data.get("sort_order", "desc"), data.get("exclusions", []), net_config, data.get("exclude_ai", False))
+    elif worker == "gelbooru": worker_gelbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "gsbooru": worker_gsbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "nekos_life": worker_nekos_life(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config, data.get("format", "both"))
+    elif worker == "yande": worker_yande(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config)
+    elif worker == "kona": worker_konachan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "dan": worker_danbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "sankaku": worker_sankaku(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
+    elif worker == "anime_dl": worker_anime_dl(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
     elif worker == "pinterest":
         net_config["pinterest_cookies"] = os.getenv("PINTEREST_COOKIES", "")
         net_config["pinterest_email"] = os.getenv("PINTEREST_EMAIL", "")
         net_config["pinterest_password"] = os.getenv("PINTEREST_PASSWORD", "")
-        threading.Thread(target=worker_pinterest, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("is_search", False), net_config, _safe_int(data.get("min_w", 0), 0), _safe_int(data.get("min_h", 0), 0)), daemon=True).start()
+        worker_pinterest(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("is_search", False), net_config, _safe_int(data.get("min_w", 0), 0), _safe_int(data.get("min_h", 0), 0))
     elif worker == "pixiv":
         net_config["pixiv_refresh_token"] = os.getenv("PIXIV_REFRESH_TOKEN", "")
-        threading.Thread(target=worker_pixiv, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False)), daemon=True).start()
+        worker_pixiv(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False))
     elif worker == "eshuushuu":
         from workers.eshuushuu import worker_eshuushuu
-        threading.Thread(target=worker_eshuushuu, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), [], data.get("user_id", ""), net_config), daemon=True).start()
+        worker_eshuushuu(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), [], data.get("user_id", ""), net_config)
     elif worker == "nekosapi":
         from workers.nekosapi import worker_nekosapi
-        threading.Thread(target=worker_nekosapi, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config), daemon=True).start()
+        worker_nekosapi(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config)
     elif worker == "nekosia":
         try:
             from workers.nekosia import worker_nekosia
-            threading.Thread(target=worker_nekosia, args=(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config), daemon=True).start()
+            worker_nekosia(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config)
         except ImportError:
             pass # در صورتی که بعدا خواستی فایل nekosia.py رو بسازی ارور نده
+
+@socketio.on("get_queue")
+def handle_get_queue():
+    # ponytail: the connect-time emit can race the client's handler
+    # registration on page load — pull again once listeners exist
+    _emit_queue_state()
+
+@socketio.on("start_worker")
+def handle_start_worker(data):
+    site = data.get("worker")
+    has_payload = any(data.get(k) for k in ("tag", "category", "user_id"))
+    with QUEUE_LOCK:
+        if ACTIVE_JOBS.get(site) is None:
+            q = DOWNLOAD_QUEUES.get(site)
+            if q:
+                # START with jobs already waiting runs the head of the queue;
+                # a fresh form payload joins the back instead of jumping the line
+                if has_payload:
+                    q.append(data)
+                    entry = _queue_entry(data)
+                    shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+                job = q.pop(0)
+                ACTIVE_JOBS[site] = job
+                _start_job_thread(job)
+            elif has_payload:
+                ACTIVE_JOBS[site] = data
+                _start_job_thread(data)
+        elif has_payload:
+            q = DOWNLOAD_QUEUES.setdefault(site, [])
+            q.append(data)
+            entry = _queue_entry(data)
+            shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+    _emit_queue_state()
+
+
+@socketio.on("queue_add")
+def handle_queue_add(data):
+    site = (data or {}).get("worker")
+    if not site or not any(data.get(k) for k in ("tag", "category", "user_id")):
+        return
+    with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.setdefault(site, [])
+        q.append(data)
+        entry = _queue_entry(data)
+        shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+    _emit_queue_state()
 
 @socketio.on("stop_worker")
 def handle_stop_worker(data):
@@ -1890,9 +2507,111 @@ def handle_stop_worker(data):
     if name in shared.STOP_EVENTS:
         for evt in shared.STOP_EVENTS[name]:
             evt.set()
+    # stop stays per-site — cancel this site's waiting entries only,
+    # other sites' queues keep their turn
+    with QUEUE_LOCK:
+        if DOWNLOAD_QUEUES.get(name):
+            DOWNLOAD_QUEUES[name] = []
+            shared.log_msg(name, ">>> Notice: queued request cancelled <<<")
+    _emit_queue_state()
+
+@socketio.on("queue_move")
+def handle_queue_move(data):
+    # ponytail: index-based ops, single-client trust — no per-entry ids
+    site = data.get("site")
+    with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site) or []
+        frm = _safe_int(data.get("from"), -1)
+        to = _safe_int(data.get("to"), -1)
+        if 0 <= frm < len(q) and to >= 0:
+            job = q.pop(frm)
+            q.insert(min(to, len(q)), job)
+    _emit_queue_state()
+
+@socketio.on("queue_cancel")
+def handle_queue_cancel(data):
+    site = data.get("site")
+    with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site) or []
+        idx = _safe_int(data.get("index"), -1)
+        if 0 <= idx < len(q):
+            job = q.pop(idx)
+            entry = _queue_entry(job)
+            shared.log_msg(entry["site"], f">>> Notice: queued request cancelled ({entry['tag']}) <<<")
+    _emit_queue_state()
+
+@socketio.on("queue_bump")
+def handle_queue_bump(data):
+    # double-click / drop-on-running: hold this site's running job (back to
+    # the front of its queue), start the picked one immediately
+    site = data.get("site")
+    promoted = None
+    with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site) or []
+        idx = _safe_int(data.get("index"), -1)
+        if 0 <= idx < len(q):
+            target = q.pop(idx)
+            held = ACTIVE_JOBS.get(site)
+            if held is not None:
+                for evt in shared.STOP_EVENTS.get(site, []):
+                    evt.set()
+                q.insert(0, held)
+                held_entry = _queue_entry(held)
+                shared.log_msg(held_entry["site"], f">>> On hold: {held_entry['tag']} (resumes after next job) <<<")
+            ACTIVE_JOBS[site] = target
+            promoted = target
+    if promoted is not None:
+        entry = _queue_entry(promoted)
+        shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
+        _start_job_thread(promoted)
+    _emit_queue_state()
+
+def _heal_bare_gallery_tags():
+    """Rescanned files arrive carrying only their folder name — refetch the
+    real tags by md5 in the background.
+
+    Runs after every scan: a file can reach disk without a download-time
+    gallery record (pre-tracking downloads, a hard kill before the batched
+    gallery flush, a pruned-then-restored entry), and the scan can only ever
+    know its path. Idempotent and rate-limited, so a re-run is free when
+    nothing is bare or the network is down.
+    """
+    from core import md5_refetch
+    gallery = shared.load_gallery().get("images", [])
+    md5_refetch.clear_stale_md5_misses(gallery)
+    # unsupported sites and posts the API already denied are not work — and
+    # counting them would print this line on every launch for the rest of time
+    todo = [i for i in gallery if md5_refetch.worth_trying(i)]
+    if not todo:
+        return
+    # the counts survive a shutdown mid-run: they are read from the gallery,
+    # so the next launch says how much is already done instead of starting
+    # the story over
+    bare = [i for i in gallery if md5_refetch.is_bare(i)]
+    no_api = sum(1 for i in bare if not md5_refetch.supports(i.get("site", "")))
+    checked = sum(1 for i in bare
+                  if md5_refetch.miss_count(i) >= md5_refetch.MISS_LIMIT)
+    print(f"Recovering tags for {len(todo)} gallery images that only know their folder "
+          f"({len(bare)} bare: {no_api} no md5 API, {checked} checked absent)")
+
+    def _run():
+        try:
+            stats = md5_refetch.refetch_gallery_bare(entries=todo, progress=print)
+        except Exception as e:
+            print("md5 tag recovery error:", e)
+            return
+        if stats.get("refetched"):
+            _invalidate_fp_cache()
+        print(f"Recovered tags for {stats.get('refetched', 0)} images "
+              f"(not found: {stats.get('not_found', 0)}, "
+              f"unsupported site: {stats.get('unsupported', 0)}, "
+              f"failed: {stats.get('failed', 0)})")
+
+    threading.Thread(target=_run, daemon=True).start()
+
 
 def startup_rescan():
-    gallery, count, _fixed = _scan_and_merge_gallery()
+    gallery, count, _fixed, checked = _scan_and_merge_gallery()
     _invalidate_fp_cache()
     if count:
         print(f"Rescanned {count} new images into gallery")
@@ -1905,7 +2624,9 @@ def startup_rescan():
         gallery["images"] = kept
         print(f"Pruned {removed} dead gallery entries")
 
-    if count or removed:
+    # _fixed/checked are entry mutations too — skipping the save would throw
+    # the restored tags (and every read marker) away until the next rescan
+    if count or removed or _fixed or checked:
         shared.save_gallery(gallery)
 
     # sweep dedup records whose files are gone (background thread only)
@@ -1916,6 +2637,9 @@ def startup_rescan():
             print(f"Pruned {swept} stale dedup records")
     except Exception as e:
         print(f"Dedup sweep error: {e}")
+
+    _hash_missing_dedup(gallery)
+    _heal_bare_gallery_tags()
 
 if __name__ == "__main__":
     def _pick_loopback_port():
@@ -1935,6 +2659,21 @@ if __name__ == "__main__":
 
     threading.Thread(target=_warm_tag_dbs, daemon=True).start()
     threading.Thread(target=startup_rescan, daemon=True).start()
+    pixiv_notify.start_watcher(
+        get_config=lambda: {
+            "use_proxy": settings.get("use_proxy"),
+            "proxy_url": settings.get("proxy_url"),
+            "verify_tls": settings.get("verify_tls"),
+            "refresh_token": (settings.load_api_settings().get("pixiv_refresh_token")
+                              or os.getenv("PIXIV_REFRESH_TOKEN", "")),
+        },
+        emit_fn=lambda payload: socketio.emit("notifications", payload),
+        log_fn=lambda msg: log_msg("pixiv", msg),
+    )
+    watchers.start_scheduler(
+        emit_fn=lambda payload: socketio.emit("notifications", payload),
+        log_fn=lambda msg: log_msg("watcher", msg),
+    )
 
     is_headless = (
         os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")
@@ -1947,7 +2686,7 @@ if __name__ == "__main__":
 
     if is_headless:
         print(f"Starting Rems Dl in headless/server mode on {url} ...")
-        socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
 
     try:
@@ -1956,13 +2695,13 @@ if __name__ == "__main__":
         print("NOTE: pywebview is not installed or GUI libraries are missing.")
         print(f"Starting Rems Dl in web browser mode on {url} ...")
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
 
     print(f"Starting Rems Dl desktop app ({url} on internal loopback) ...")
 
     def start_server():
-        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
 
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
@@ -1978,7 +2717,23 @@ if __name__ == "__main__":
     else:
         time.sleep(0.5)
 
-    def _shutdown_now():
+    _teardown_done = False
+
+    def _teardown():
+        # stop workers + flush only — must stay safe to run inside the GTK
+        # 'closed' callback (no os._exit there: WebKit still has to terminate
+        # its WebProcess, and killing the UI process mid-teardown makes it
+        # die with a fatal error KDE then reports as an app crash)
+        global _teardown_done, shutdown_timer
+        if _teardown_done:
+            return
+        _teardown_done = True
+        if shutdown_timer:
+            try:
+                shutdown_timer.cancel()
+            except Exception:
+                pass
+            shutdown_timer = None
         try:
             for events in list(shared.STOP_EVENTS.values()):
                 for ev in events:
@@ -1993,10 +2748,12 @@ if __name__ == "__main__":
         except Exception:
             pass
         try:
-            for _eid in list(extension_mgr.active_plugins.keys()):
-                extension_mgr.unload_extension(_eid)
+            DatabaseManager.flush_image_history()
         except Exception:
             pass
+
+    def _shutdown_now():
+        _teardown()
         os._exit(0)
 
     try:
@@ -2026,14 +2783,20 @@ if __name__ == "__main__":
             ]
         icon_path = next((p for p in icon_candidates if os.path.isfile(p)), None)
 
+        class _DesktopApi:
+            def toggle_fullscreen(self):
+                for w in list(_pywebview.windows):
+                    w.toggle_fullscreen()
+
         _win = _pywebview.create_window(
             "Rems Dl",
             url,
             width=1400,
-            height=900
+            height=900,
+            js_api=_DesktopApi()
         )
         try:
-            _win.events.closed += _shutdown_now
+            _win.events.closed += _teardown
         except Exception:
             pass
 
@@ -2049,7 +2812,14 @@ if __name__ == "__main__":
                 user_agent="RemsDlDesktopApp/1.0",
                 gui="gtk" if sys.platform == "linux" else "edgechromium"
             )
-        _shutdown_now()
+        # start() returns once the Gtk window is destroyed; WebKit terminates
+        # its WebProcess asynchronously — exiting immediately (as before) kills
+        # the UI process mid-teardown and KDE reports the orphaned
+        # WebKitWebProcess as an application crash. Teardown (workers, flush)
+        # already buys time; the short pause covers the rest.
+        _teardown()
+        time.sleep(0.3)
+        os._exit(0)
     except Exception as e:
         print(f"Desktop window could not be opened ({e}). Falling back to browser...")
         webbrowser.open(url)

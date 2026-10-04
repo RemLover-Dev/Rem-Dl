@@ -1,4 +1,4 @@
-import os, re
+import os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 import core.shared as shared
@@ -27,21 +27,13 @@ class WaifuImWorker(BaseWorker):
         for sub in ("Safe", "NSFW"):
             safe_ensure_dir(os.path.join(self.tag_dir, sub))
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}' -> slug: '{self.slug}' (NSFW: {self.is_nsfw})")
 
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             # ponytail: API shuffles per request, so tags > pageSize can dupe/miss across pages; dedupe keeps it correct, bump pageSize if big tags matter
             params = {"IncludedTags": self.slug, "pageSize": 50, "page": page}
@@ -71,9 +63,14 @@ class WaifuImWorker(BaseWorker):
                     break
             except Exception as e:
                 self.log(f"API Error: {e}. Retrying in {self.retry_wait}s...")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(self.retry_wait)
                 continue
 
+            consecutive_errors = 0
             for img in items:
                 if self.stop_event.is_set() or (self.amount > 0 and collected_count >= self.amount):
                     break
@@ -110,8 +107,6 @@ class WaifuImWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_waifu(tag, amount, is_nsfw, net_config):
     worker = WaifuImWorker(tag, amount, is_nsfw, net_config)

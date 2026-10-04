@@ -52,7 +52,7 @@ def test_inno_setup_script():
     assert "Rems-Dl-Windows-x64-Setup" in content
     assert "VCRedistNeedsInstall" in content
     assert "RemLoverDev.RemsDl.App.1.0" in content
-    assert '#define MyAppVersion "5.4.0"' in content
+    assert '#define MyAppVersion "5.3.0"' in content
 
 
 def test_pyinstaller_spec_and_metadata_hooks():
@@ -119,9 +119,14 @@ def test_folder_api_and_browse(tmp_path, monkeypatch):
         # POST without Rem God join
         test_dir = str(tmp_path / "MyDownloads")
         os.makedirs(test_dir, exist_ok=True)
+        # folder validation confines POSTed folders to the user's home root —
+        # point "~" at tmp_path so this fixture dir counts as inside the root
+        _real_expanduser = os.path.expanduser
+        monkeypatch.setattr(os.path, "expanduser",
+                            lambda p: str(tmp_path) if p == "~" else _real_expanduser(p))
         r = client.post("/api/folder", json={"folder": test_dir}, headers=H)
         assert r.status_code == 200
-        assert r.get_json()["folder"] == os.path.normpath(test_dir)
+        assert r.get_json()["folder"] == os.path.realpath(test_dir)
 
         # POST empty returns 400
         r = client.post("/api/folder", json={"folder": ""}, headers=H)

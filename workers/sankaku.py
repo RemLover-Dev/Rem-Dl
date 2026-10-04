@@ -1,4 +1,4 @@
-import os, re
+import os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 
@@ -13,11 +13,21 @@ class SankakuWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        # the dropdown collapses a full set to All — treat it the same defensively
+        if len(codes) == len(self.rating_map):
+            codes = []
+        self.rating_allowed = set(codes)
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
+        self.api_tag = self.original_tag
+        # ponytail: sankaku has no comma-OR in rating (verified live —
+        # 'rating:s,rating:e' is ignored, 'rating:s rating:e' = last wins) —
+        # a single rating goes server-side, multi is filtered locally
+        if len(codes) == 1:
+            self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         # Prohibited characters (colon, slashes, etc.) are safely stripped
@@ -65,9 +75,6 @@ class SankakuWorker(BaseWorker):
 
         return session
 
-    def get_tags(self):
-        return [self.original_tag]
-
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None):
         if artists is None: artists = []
         if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
@@ -77,38 +84,38 @@ class SankakuWorker(BaseWorker):
         # Download immediately — Sankaku signed URLs expire before queued download starts
         return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
 
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
+    def _tags_param(self):
+        # live-verified: sankaku's API honors '-tag' exclusion
+        # ("1girl -long_hair" -> 0/18 long_hair vs 26/28 plain) — keep dashes
+        tag_list = [t.strip() for t in self.original_tag.split() if t.strip()]
+        if len(self.rating_allowed) == 1:
+            tag_list.append(f"rating:{next(iter(self.rating_allowed))}")
+        if "-video" in self.exclusions and "-image" not in self.exclusions:
+            tag_list.append("file_type:image")
+        elif "-image" in self.exclusions and "-video" not in self.exclusions:
+            tag_list.append("file_type:video")
+        return " ".join(tag_list)
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(":")[-1], "")})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
+        made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
                 limit_val = min(40, self.amount - collected_count if self.amount > 0 else 40)
 
-                tag_list = [t.strip() for t in self.original_tag.split() if t.strip() and not t.startswith('-')]
                 params = {"limit": limit_val, "page": page}
                 if self.net_config.get("hide_pools", False):
                     params["hide_posts_in_books"] = "always"
-                if self.rating:
-                    rc = self.rating.split(":")[-1]
-                    tag_list.append(f"rating:{rc}")
 
-                if "-video" in self.exclusions and "-image" not in self.exclusions:
-                    tag_list.append("file_type:image")
-                elif "-image" in self.exclusions and "-video" not in self.exclusions:
-                    tag_list.append("file_type:video")
-
-                if tag_list:
-                    params["tags"] = " ".join(tag_list)
+                tags_param = self._tags_param()
+                if tags_param:
+                    params["tags"] = tags_param
 
                 resp = await self.session.get(f"{API_BASE}/posts", params=params)
                 if resp.status in [403, 429]:
@@ -140,9 +147,14 @@ class SankakuWorker(BaseWorker):
                     self.log("ERROR 403: Access denied.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             await asyncio.sleep(0.25)
 
             had_valid = False
@@ -153,10 +165,8 @@ class SankakuWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 url = post.get("file_url")
                 if not url:
@@ -177,7 +187,9 @@ class SankakuWorker(BaseWorker):
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 subfolder = "books" if post.get("in_visible_pool") else "images"
                 rating_dir = os.path.join(self.tag_dir, rating_label, subfolder)
-                safe_ensure_dir(rating_dir)
+                if rating_dir not in made_dirs:
+                    safe_ensure_dir(rating_dir)
+                    made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
                 raw_tags = post.get("tags", [])
@@ -211,8 +223,6 @@ class SankakuWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 
 def worker_sankaku(tag, amount, rating, exclusions, net_config):

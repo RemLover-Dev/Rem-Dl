@@ -1,7 +1,7 @@
 import os, re, json, random
 import asyncio
 from pathlib import Path
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, sanitize_path_component, safe_ensure_dir
 import core.shared as shared
 
 
@@ -21,12 +21,66 @@ def _disable_brotli():
     requests.sessions.default_headers = _no_br
 
 
-_disable_brotli()
+def _launch_with_proxy(orig, net):
+    """BrowserType.launch wrapper that injects the *caller's* proxy config.
+
+    An inline closure taking `self` as its first parameter shadowed the
+    worker's self and read net_config off BrowserType — every browser login
+    died with AttributeError. The wrapper must also be restored by the
+    caller, or a later run inherits a stale config."""
+    def launch(bt, **kw):
+        if net.get("use_proxy") and net.get("proxy_url"):
+            kw["proxy"] = {"server": net["proxy_url"]}
+        return orig(bt, **kw)
+    return launch
+
+
+def _streamlined_login(driver, email, password, url="https://www.pinterest.com/login/"):
+    """Drop-in PlaywrightDriver.login replacement.
+
+    pinterest-dl 1.3.0 waits for #email/#password, but Pinterest's streamlined
+    redesign renamed them to #streamlined-login-email/-password — the old
+    locator times out after 30s on every login. Same human-like flow, both
+    selector sets (one email/password input each on either variant)."""
+    import time as _t
+    page = driver.page
+    print("Navigating to login page...")
+    page.goto(url)
+    _t.sleep(random.uniform(2, 3))
+
+    print("Filling in email...")
+    email_field = page.locator("#email, #streamlined-login-email, input[type='email']").first
+    email_field.click()
+    _t.sleep(random.uniform(0.1, 0.5))
+    email_field.fill(email)
+
+    _t.sleep(random.uniform(0.1, 0.5))
+    print("Filling in password...")
+    password_field = page.locator("#password, #streamlined-login-password, input[type='password']").first
+    password_field.click()
+    _t.sleep(random.uniform(0.1, 0.5))
+    password_field.fill(password)
+
+    _t.sleep(random.uniform(0.3, 1.0))
+    print("Submitting login...")
+    try:
+        page.locator('button[type="submit"]').first.click()
+    except Exception:
+        password_field.press("Enter")
+
+    print("Waiting for login to process...")
+    page.wait_for_load_state("load")
+    _t.sleep(random.uniform(1, 2))
+    if "/login" not in page.url:
+        print("Login Successful")
+    print("(If prompted, please complete any CAPTCHA or 2FA in the browser window)")
+    return driver
 
 
 class PinterestWorker(BaseWorker):
     def __init__(self, url_or_query, amount, is_search, net_config, min_w=0, min_h=0):
         super().__init__("pinterest", "Pinterest", amount, net_config)
+        _disable_brotli()
         self.url_or_query = url_or_query
         self.is_search = is_search
         self.min_w = min_w
@@ -37,15 +91,6 @@ class PinterestWorker(BaseWorker):
         self.site_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
         safe_ensure_dir(self.site_root)
         self.tag_dir = self.site_root
-
-    def get_tags(self):
-        return [self.url_or_query]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
 
     async def _create_session(self):
         """Pinterest uses its own library, not aiohttp – return None."""
@@ -59,6 +104,58 @@ class PinterestWorker(BaseWorker):
             session.proxies = {"http": self.net_config["proxy_url"], "https": self.net_config["proxy_url"]}
         else:
             session.proxies = {"http": "", "https": "", "no_proxy": "*"}
+
+    def _do_login(self, client, cookies_path, email, password):
+        if cookies_path and os.path.exists(cookies_path):
+            try:
+                client.with_cookies_path(cookies_path)
+                self.log("Loaded Pinterest cookies")
+                return True
+            except Exception as e:
+                self.log(f"Cookie load error: {e}")
+
+        if email and password:
+            try:
+                from pinterest_dl import PinterestDL as PDL
+                from playwright.sync_api import BrowserType
+                from pinterest_dl.webdriver.playwright_driver import PlaywrightDriver
+                orig_launch = BrowserType.launch
+                orig_pw_login = PlaywrightDriver.login
+                BrowserType.launch = _launch_with_proxy(orig_launch, self.net_config)
+                PlaywrightDriver.login = _streamlined_login
+                scraper = None
+                try:
+                    # login() returns PlaywrightDriver (no .close) — keep the
+                    # scraper, which owns the browser/playwright processes
+                    scraper = PDL.with_browser(browser_type="chromium", headless=True, verbose=False)
+                    driver = scraper.login(email, password)
+                    cookies = driver.get_cookies(after_sec=7)
+                finally:
+                    if scraper is not None:
+                        scraper.close()
+                    BrowserType.launch = orig_launch
+                    PlaywrightDriver.login = orig_pw_login
+                client.with_cookies(cookies)
+                if cookies_path:
+                    try:
+                        os.makedirs(os.path.dirname(cookies_path) or ".", exist_ok=True)
+                        with open(cookies_path, "w") as f:
+                            json.dump(cookies, f, indent=2)
+                        self.log(f"Saved fresh cookies to {cookies_path}")
+                    except Exception as e:
+                        self.log(f"Could not save cookies: {e}")
+                self.log("Logged in via browser and using fresh cookies")
+                return True
+            except ImportError:
+                self.log("⚠️ Browser auth unavailable (install pinterest-dl[browser] and playwright)")
+                self.log("Falling back to public content — downloads may be limited.")
+            except Exception as e:
+                self.log(f"⚠️ Pinterest login FAILED: {e}")
+                self.log("Falling back to public content — downloads may be limited.")
+        return False
+
+    def _count_existing(self):
+        return len([f for f in os.listdir(self.tag_dir) if re.match(r'^\d+\.[a-z]+$', f)])
 
     async def scraper_task(self):
         self.log(f"Initializing Pinterest worker for: '{self.url_or_query[:80]}' ({'search' if self.is_search else 'url scrape'})")
@@ -75,54 +172,26 @@ class PinterestWorker(BaseWorker):
 
         client = PinterestDL.with_api(timeout=5, verbose=False, ensure_alt=True)
 
+        # every search/scrape API hit builds a fresh Api — pace its session
+        _orig_create_api = client._create_api
+
+        def _paced_create_api(url):
+            api = _orig_create_api(url)
+            shared.pace_session(api._session)
+            return api
+
+        client._create_api = _paced_create_api
+
         cookies_path = self.net_config.get("pinterest_cookies", "")
         email = self.net_config.get("pinterest_email", "")
         password = self.net_config.get("pinterest_password", "")
-        have_auth = False
-
-        if cookies_path and os.path.exists(cookies_path):
-            try:
-                client.with_cookies_path(cookies_path)
-                self.log("Loaded Pinterest cookies")
-                have_auth = True
-            except Exception as e:
-                self.log(f"Cookie load error: {e}")
-
-        if not have_auth and email and password:
-            try:
-                from pinterest_dl import PinterestDL as PDL
-                from playwright.sync_api import BrowserType
-                orig = BrowserType.launch
-                def patched_launch(self, **kw):
-                    if self.net_config.get("use_proxy") and self.net_config["proxy_url"]:
-                        kw["proxy"] = {"server": self.net_config["proxy_url"]}
-                    return orig(self, **kw)
-                BrowserType.launch = patched_launch
-                driver = PDL.with_browser(browser_type="chromium", headless=True, verbose=False).login(email, password)
-                cookies = driver.get_cookies(after_sec=7)
-                driver.close()
-                client.with_cookies(cookies)
-                if cookies_path:
-                    try:
-                        os.makedirs(os.path.dirname(cookies_path) or ".", exist_ok=True)
-                        with open(cookies_path, "w") as f:
-                            json.dump(cookies, f, indent=2)
-                        self.log(f"Saved fresh cookies to {cookies_path}")
-                    except Exception as e:
-                        self.log(f"Could not save cookies: {e}")
-                self.log("Logged in via browser and using fresh cookies")
-                have_auth = True
-            except ImportError:
-                self.log("⚠️ Browser auth unavailable (install pinterest-dl[browser] and playwright)")
-                self.log("Falling back to public content — downloads may be limited.")
-            except Exception as e:
-                self.log(f"⚠️ Pinterest login FAILED: {e}")
-                self.log("Falling back to public content — downloads may be limited.")
+        # browser launch + cookie-file IO can take minutes — keep it off the loop
+        have_auth = await asyncio.to_thread(self._do_login, client, cookies_path, email, password)
 
         if not have_auth:
             self.log("No auth — public content only")
 
-        existing = len([f for f in os.listdir(self.tag_dir) if re.match(r'^\d+\.[a-z]+$', f)])
+        existing = await asyncio.to_thread(self._count_existing)
         fetch_num = self.amount + existing
 
         seen_ids = set()
@@ -168,31 +237,42 @@ class PinterestWorker(BaseWorker):
             max_retries=dl_retries
         )
         self._apply_proxy(downloader.http_client.session)
+        # every media request joins the global ISP pace
+        shared.pace_session(downloader.http_client.session)
 
         downloaded = 0
         for i, media in enumerate(medias):
             if self.stop_event.is_set():
                 break
+            # names are "{id}.{ext}" (see pinterest_dl downloader) — skip pins
+            # whose name a previous run downloaded or hash-killed.
+            # ponytail: O(history) prefix scan per pin; index by id if histories grow
+            if any(n.startswith(f"{media.id}.") for n in self.dl_history):
+                continue
 
             try:
                 path = await asyncio.to_thread(downloader.download, media, Path(self.site_root), download_streams=True)
                 filename = os.path.basename(path)
 
                 # persistent perceptual-hash dedup (see core/shared.py)
-                dup = shared.check_duplicate(str(path), self.name, getattr(media, "id", None))
+                dup = await asyncio.to_thread(shared.check_duplicate, str(path), self.name, getattr(media, "id", None))
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(path)
                     except OSError:
                         pass
-                    self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
+                    self.duplicate_count += 1
+                    self._remember_filename(filename)
                     continue
 
                 rel = os.path.relpath(str(path), shared.MASTER_FOLDER)
-                tags = [media.alt] if media.alt else []
+                # media.alt is the pin's written description — an explanation,
+                # not tags. Record what was searched for instead.
+                tags = [self.url_or_query] if self.is_search else []
                 artists = []
-                shared.add_to_gallery(self.name, filename, rel, tags, artists)
-                shared.send_tags(self.name, filename, tags, artists, rel)
+                await asyncio.to_thread(shared.add_to_gallery, self.name, filename, rel, tags, artists)
+                await asyncio.to_thread(shared.send_tags, self.name, filename, tags, artists, rel)
+                self._remember_filename(filename)
 
                 downloaded += 1
                 self.log(f"[SUCCESS] Downloaded {filename} ({downloaded}/{self.amount}) |PATH| {rel} |TAGS| {', '.join(tags[:5])}")
@@ -209,7 +289,19 @@ class PinterestWorker(BaseWorker):
         self.failed_count = len(medias) - downloaded
 
     def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
+        # pinterest_dl reads proxy config only from the process env — save
+        # and restore it so a pinterest run can't leave its proxy settings
+        # glued to every other worker after it finishes
+        proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        saved = {k: os.environ.get(k) for k in proxy_keys}
+        try:
+            asyncio.run(self.run_async_loop(self.scraper_task))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 def worker_pinterest(url_or_query, amount, is_search, net_config, min_w=0, min_h=0):
     worker = PinterestWorker(url_or_query, amount, is_search, net_config, min_w, min_h)

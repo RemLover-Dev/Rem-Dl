@@ -1,4 +1,4 @@
-import os, re
+import os
 import asyncio
 import aiohttp
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
@@ -11,11 +11,19 @@ class DanbooruWorker(BaseWorker):
         self.rating = rating
         self.exclusions = exclusions
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"g": "Safe", "s": "Sensitive", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:g": "g", "rating:s": "s", "rating:q": "q", "rating:e": "e",
+                   "rating:general": "g", "rating:sensitive": "s",
+                   "rating:questionable": "q", "rating:explicit": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        self.rating_allowed = set(codes)
+
+        # ponytail: danbooru natively ORs comma lists in the rating metatag (verified live)
+        if codes and len(codes) < len(self.rating_map):
+            self.api_tag = f"{self.original_tag} rating:{','.join(codes)}".strip()
+        else:
+            self.api_tag = self.original_tag
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
         self.dan_login = os.getenv("DANBOORU_LOGIN", "")
         self.dan_api_key = os.getenv("DANBOORU_API_KEY", "")
         self._auth = aiohttp.BasicAuth(self.dan_login, self.dan_api_key) if (self.dan_login and self.dan_api_key) else None
@@ -27,15 +35,6 @@ class DanbooruWorker(BaseWorker):
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _log_auth_status(self):
         # ponytail: one cheap call so the log states the real tier —
         # Member accounts keep the 2-tag cap, so "authenticated" alone misleads
@@ -45,7 +44,9 @@ class DanbooruWorker(BaseWorker):
                     auth=self._auth,
                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
-                    self.log(f"Authenticated as {self.dan_login}")
+                    # non-200 here means bad credentials — this must not
+                    # print as a successful authentication
+                    self.log(f"Could not verify Danbooru credentials (HTTP {resp.status}) — continuing as {self.dan_login} (unverified).")
                     return
                 prof = await resp.json()
                 name = prof.get("name", self.dan_login)
@@ -60,13 +61,15 @@ class DanbooruWorker(BaseWorker):
             self.log(f"Authenticated as {self.dan_login}")
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(':')[-1], '')})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
         if self._auth:
             await self._log_auth_status()
 
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
+        made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -105,9 +108,14 @@ class DanbooruWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a proxy.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             had_valid = False
             for post in posts:
                 if self.stop_event.is_set() or (self.amount > 0 and collected_count >= self.amount):
@@ -116,12 +124,11 @@ class DanbooruWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
-                url = post.get("file_url") or post.get("large_file_url")
+                # the original only — large_file_url is a 1280px sample
+                url = post.get("file_url")
                 if not url:
                     continue
 
@@ -139,7 +146,9 @@ class DanbooruWorker(BaseWorker):
                 is_video = ext in self.video_exts
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 rating_dir = os.path.join(self.tag_dir, rating_label, "video" if is_video else "images")
-                safe_ensure_dir(rating_dir)
+                if rating_dir not in made_dirs:
+                    safe_ensure_dir(rating_dir)
+                    made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
                 tags_raw = post.get("tag_string", "")
@@ -173,8 +182,6 @@ class DanbooruWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_danbooru(tag, amount, rating, exclusions, net_config):
     worker = DanbooruWorker(tag, amount, rating, exclusions, net_config)

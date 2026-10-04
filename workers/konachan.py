@@ -1,7 +1,10 @@
-import os, re, hashlib
+import os, hashlib
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-from core.shared import load_tag_cache, save_tag_cache, TAG_TYPE_MAP
+from core.shared import TAG_TYPE_MAP
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "konachan_tag_types.json")
 
 
 class KonachanWorker(BaseWorker):
@@ -10,69 +13,70 @@ class KonachanWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
         self.exclusions = exclusions
-        self.tag_cache = load_tag_cache("konachan")
-
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        # the dropdown collapses a full set to All — treat it the same defensively
+        if len(codes) == len(self.rating_map):
+            codes = []
+        self.rating_allowed = set(codes)
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
+        self.api_tag = self.original_tag
+        # ponytail: moebooru has no comma-OR in the rating metatag — push the
+        # filter server-side only for a single rating, multi is filtered locally
+        if len(codes) == 1:
+            self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         self.safe_tag = sanitize_path_component(clean_tag, fallback="konachan")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def _fetch_tag_types(self, tag_names):
-        uncached = [t for t in tag_names if t not in self.tag_cache]
+        # ponytail: cap per run — v1 cache migration drops unverified "tag"
+        # entries; heal incrementally instead of stalling the first run
+        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
         if not uncached:
             return
         sem = asyncio.Semaphore(4)
         async def query_one(tag_name):
             async with sem:
-                try:
-                    resp = await self.session.get(
-                        "https://konachan.com/tag.json",
-                        params={"name": tag_name, "order": "count", "limit": 50}
-                    )
-                    if resp.status == 200:
-                        tags = await resp.json()
-                        # ponytail: scan every row for the exact tag
-                        match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
-                        if match:
-                            self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                        else:
-                            self.tag_cache[tag_name] = "tag"
-                    else:
-                        self.tag_cache[tag_name] = "tag"
-                except Exception:
-                    self.tag_cache[tag_name] = "tag"
+                # ponytail: 3 attempts — a transient failure must not leave a
+                # tag miscategorized for this whole run
+                for attempt in range(3):
+                    fetched = False
+                    try:
+                        resp = await self.session.get(
+                            "https://konachan.com/tag.json",
+                            params={"name": tag_name, "order": "count", "limit": 50}
+                        )
+                        if resp.status == 200:
+                            tags = await resp.json() or []
+                            # ponytail: scan every row for the exact tag
+                            match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
+                            if match is not None:
+                                self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                            fetched = True  # 200 processed: match OR genuinely absent
+                    except Exception:
+                        fetched = False
+                    if fetched:
+                        break
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                # ponytail: a tag that never comes back stays uncached —
+                # caching a failure would mislabel it forever; next run retries
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
-        save_tag_cache(self.tag_cache, "konachan")
-
-    def _categorize_tags(self, tag_names):
-        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-        for t in tag_names:
-            cat = self.tag_cache.get(t, "tag")
-            if cat == "artist": artists.append(t)
-            elif cat == "character": characters.append(t)
-            elif cat == "copyright": copyrights.append(t)
-            elif cat == "metadata": metadata_tags.append(t)
-            else: general.append(t)
-        return general, artists, characters, copyrights, metadata_tags
+        # ponytail: concurrent workers may overwrite each other's save —
+        # worst case those tags refetch on a later run
+        await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(":")[-1], "")})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         auth = {}
         kona_user = os.getenv("KONACHAN_USERNAME", "")
@@ -87,6 +91,7 @@ class KonachanWorker(BaseWorker):
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -102,7 +107,7 @@ class KonachanWorker(BaseWorker):
                 if not text_resp or text_resp == "[]" or text_resp == "null":
                     if page == 1:
                         self.log(f"ZERO images found for '{self.api_tag}'.")
-                        if self.rating and self.rating.split(":")[-1] in ("q", "e"):
+                        if self.rating_allowed & {"q", "e"}:
                             if auth:
                                 self.log("Authenticated, got 0 non-safe posts. Check 'Show explicit content' is enabled in your konachan.com profile settings.")
                             else:
@@ -129,8 +134,14 @@ class KonachanWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a proxy.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
+
+            consecutive_errors = 0
 
             had_valid = False
 
@@ -140,10 +151,7 @@ class KonachanWorker(BaseWorker):
                     for t in post.get("tags", "").split():
                         all_tags.add(t.strip())
             if all_tags:
-                uncached_count = len([t for t in all_tags if t not in self.tag_cache])
-                if uncached_count:
-                    self.log(f"Categorizing {len(all_tags)} tags ({uncached_count} uncached)...")
-                    await self._fetch_tag_types(all_tags)
+                await self._fetch_tag_types(all_tags)
 
             for post in posts:
                 if self.stop_event.is_set() or (self.amount > 0 and collected_count >= self.amount):
@@ -152,12 +160,11 @@ class KonachanWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
-                url = post.get("file_url") or post.get("large_file_url")
+                # the original only — never a sample variant
+                url = post.get("file_url")
                 if not url:
                     continue
 
@@ -198,8 +205,6 @@ class KonachanWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_konachan(tag, amount, rating, exclusions, net_config):
     worker = KonachanWorker(tag, amount, rating, exclusions, net_config)

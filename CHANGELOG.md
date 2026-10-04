@@ -4,22 +4,6 @@ All notable changes to Rems Dl will be documented in this file.
 
 ---
 
-## [5.4.0] - Rem 5.4: Modular Extension Architecture & Gallery Productivity - 2026-10-02
-
-### Added
-- **Modular Extension Engine (`core/extensions.py`):** Dynamic plugin manager supporting discovery, manifest validation, lifecycle management (`load`, `unload`, `enable`, `disable`, `uninstall`), and dynamic UI contribution injection for companion tools.
-- **GitHub Extension Downloader (`core/extension_downloader.py`):** Automated 1-click downloading and installation from GitHub releases with built-in Zip-Slip path traversal security protection, automatic archive un-nesting, and semantic version update checks.
-- **Settings Extensions & Addons Panel:** New UI card in the Settings tab displaying discoverable and installed extensions, status badges, update checks, and direct install/toggle controls.
-- **Batch Gallery Favoriting:** Added `/api/gallery/favourite_batch` endpoint and UI button to favorite/unfavorite selected items in bulk.
-- **Dynamic Navigation Tab Support:** Main navigation menu now dynamically injects extension navigation tabs (e.g. Notifications from Rems Watcher).
-
-### Fixed
-- **Tag Suggestion Timeouts:** Added timeout guards and query stripping for NekosAPI and E-Shuushuu tag autosuggest to prevent slow network lookups from stalling the UI.
-- **Gallery Multi-Select Stability:** Cleaned up card selection state sync, page selection toggles, and viewer re-anchoring.
-- **Test Suite Expansion:** Added comprehensive tests for extension lifecycle, Zip-Slip security guard, and autosuggest endpoints (67 total tests passing).
-
----
-
 ## [5.3.0] - Rem 5.3: PyInstaller Metadata Fix, Multi-Select & Productivity Overhaul - 2026-09-27
 
 ### Fixed

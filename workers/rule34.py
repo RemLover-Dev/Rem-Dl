@@ -1,6 +1,7 @@
-import os, re, random
+import os, random
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from core.shared import pace_requests
 
 # Safeguard importlib.metadata in frozen bundles (e.g. PyInstaller standalone / portable builds)
 try:
@@ -110,15 +111,6 @@ class Rule34Worker(BaseWorker):
         self.client = client
         return session
 
-    def get_tags(self):
-        return self.tag_list
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         self.log("Initializing worker... [RULE34PY LIBRARY MODE]")
 
@@ -133,6 +125,7 @@ class Rule34Worker(BaseWorker):
 
             for attempt in range(max_retries):
                 try:
+                    await pace_requests()
                     results = await asyncio.to_thread(self.client.search, self.api_tags, page_id=page, limit=chunk_limit, exclude_ai=self.exclude_ai)
                     break
                 except TypeError as e:
@@ -168,7 +161,9 @@ class Rule34Worker(BaseWorker):
                 if not file_url:
                     continue
 
-                ext = file_url.split('.')[-1].lower()
+                # strip the query first: "file.jpg?client=1" must yield jpg,
+                # not "jpg?client=1" (exclusion filters then never match)
+                ext = file_url.split('?')[0].split('.')[-1].lower()
 
                 if ext in ["mp4", "webm", "zip"] and "-video" in self.exclusions:
                     continue
@@ -221,8 +216,6 @@ class Rule34Worker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_rule34(tag, amount, method, sort_type, sort_order, exclusions, net_config, exclude_ai=False):
     worker = Rule34Worker(tag, amount, method, sort_type, sort_order, exclusions, net_config, exclude_ai)

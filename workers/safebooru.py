@@ -1,8 +1,11 @@
-import html, os, re
+import html, os
 import asyncio
 import xml.etree.ElementTree as ET
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 import core.shared as shared
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "safebooru_tag_types.json")
 
 
 class SafebooruWorker(BaseWorker):
@@ -15,50 +18,27 @@ class SafebooruWorker(BaseWorker):
         self.safe_tag = sanitize_path_component(clean_tag, fallback="safebooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
-        self.tag_cache = shared.load_tag_cache("safebooru")
-
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
     async def _fetch_tag_types(self, tag_names):
-        cache = self.tag_cache
-        uncached = [t for t in tag_names if t not in cache]
-        if uncached:
-            self.log(f"Fetching types for {len(uncached)} tags...")
-            # ponytail: one request per tag SEQUENTIALLY stalled every page
-            # for 10-25s — same concurrent pattern as the gelbooru worker
-            sem = asyncio.Semaphore(4)
-            async def query_one(tag_name):
-                async with sem:
-                    try:
-                        resp = await self.session.get("https://safebooru.org/index.php", params={
-                            "page": "dapi", "s": "tag", "q": "index",
-                            # safebooru tag search needs entity-encoded names (kal&#039;tsit_...); &#x27; doesn't match
-                            "name": html.escape(tag_name, quote=False).replace("'", "&#039;"), "limit": 50
-                        })
-                        if resp.status != 200:
-                            cache[tag_name] = 0
-                        else:
-                            text = await resp.text()
-                            root = ET.fromstring(text)
-                            # ponytail: scan every row for the exact tag
-                            cache[tag_name] = 0
-                            for tag_el in root.findall("tag"):
-                                if tag_el.get("name", "").lower() == tag_name.lower():
-                                    cache[tag_name] = int(tag_el.get("type", 0))
-                                    break
-                    except Exception:
-                        cache[tag_name] = 0
-                    await asyncio.sleep(0.2)
-            await asyncio.gather(*[query_one(t) for t in uncached])
-            shared.save_tag_cache(cache, "safebooru")
-        return cache
+        async def attempt(tag_name):
+            resp = await self.session.get("https://safebooru.org/index.php", params={
+                "page": "dapi", "s": "tag", "q": "index",
+                # safebooru tag search needs entity-encoded names (kal&#039;tsit_...); &#x27; doesn't match
+                "name": html.escape(tag_name, quote=False).replace("'", "&#039;"), "limit": 50
+            })
+            if resp.status != 200:
+                return False
+            root = ET.fromstring(await resp.text())
+            # ponytail: scan every row for the exact tag
+            for tag_el in root.findall("tag"):
+                if tag_el.get("name", "").lower() == tag_name.lower():
+                    self.tag_cache[tag_name] = int(tag_el.get("type", 0))
+                    break
+            return True  # 200 processed: match OR genuinely absent
+        return await self._run_tag_fetch(tag_names, attempt, TAG_TYPES_FILE)
 
     def _categorize_tags(self, tag_names, cache):
         result = {"artist": [], "character": [], "copyright": [], "metadata": [], "tag": []}
@@ -74,6 +54,11 @@ class SafebooruWorker(BaseWorker):
         collected_count = 0
         pid = 0
 
+        # loop-invariant: every safebooru post lands in Safe/images
+        safe_dir = os.path.join(self.tag_dir, "Safe", "images")
+        safe_ensure_dir(safe_dir)
+
+        consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
@@ -108,9 +93,14 @@ class SafebooruWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a VPN.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             all_tag_names = set()
             for post in posts:
                 if not isinstance(post, dict):
@@ -128,7 +118,8 @@ class SafebooruWorker(BaseWorker):
                 if not isinstance(post, dict):
                     continue
 
-                file_url = post.get("file_url") or post.get("large_file_url")
+                # the original only — never a sample variant
+                file_url = post.get("file_url")
                 if not file_url:
                     continue
 
@@ -141,8 +132,6 @@ class SafebooruWorker(BaseWorker):
                     continue
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"safebooru_{post.get('id', 'item')}.jpg")
-                safe_dir = os.path.join(self.tag_dir, "Safe", "images")
-                safe_ensure_dir(safe_dir)
                 filepath = os.path.join(safe_dir, filename)
 
                 tags_raw = post.get("tag_string", post.get("tags", ""))
@@ -171,8 +160,6 @@ class SafebooruWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_safebooru(tag, amount, exclusions, net_config):
     worker = SafebooruWorker(tag, amount, exclusions, net_config)

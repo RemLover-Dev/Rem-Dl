@@ -13,24 +13,38 @@ class NekosApiWorker(BaseDownloader):
                 self.tags.remove(t)
         if not self.tags:
             self.tags = ["kemonomimi"]
-        self.rating = rating or "safe"
-        self.rating_label = {"safe": "Safe", "suggestive": "Sensitive", "borderline": "Questionable", "explicit": "NSFW"}.get(self.rating.lower(), "Safe")
+        self.rating_map = {"safe": "Safe", "suggestive": "Sensitive",
+                           "borderline": "Questionable", "explicit": "NSFW"}
+        codes = []
+        for tok in (rating or "").split():
+            tok = tok.strip().lower().removeprefix("rating:")
+            if tok in self.rating_map and tok not in codes:
+                codes.append(tok)
+        self.rating_codes = codes
+        self.rating_allowed = set(codes)
+        # nekosapi natively ORs comma lists in the rating param (verified live)
+        # — full set and "All Ratings" both mean no server-side filter
+        self.api_rating = ",".join(codes) if len(codes) < len(self.rating_map) else ""
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
         self.api_base = "https://api.nekosapi.com/v4"
         safe_tag_folder = sanitize_path_component("_".join(self.tags), fallback="kemonomimi")
         self.tag_dir = os.path.join(self.site_root, safe_tag_folder)
-        safe_rating_label = sanitize_path_component(self.rating_label, fallback="Safe")
+        folder_label = "_".join(self.rating_map[c] for c in codes) or "All Ratings"
+        safe_rating_label = sanitize_path_component(folder_label, fallback="Safe")
         self.rating_dir = os.path.join(self.tag_dir, safe_rating_label)
         safe_ensure_dir(self.rating_dir)
 
-    def _validate_rating(self):
-        valid = {"safe", "suggestive", "borderline", "explicit"}
-        if self.rating.lower() not in valid:
-            self.rating = "safe"
+    def _query_params(self, limit, offset):
+        params = {"limit": limit, "offset": offset}
+        if self.tags: params["tags"] = ",".join(self.tags)
+        if self.exclusions: params["without_tags"] = ",".join(self.exclusions)
+        if self.api_rating: params["rating"] = self.api_rating
+        return params
 
     async def scraper_task(self):
-        self._validate_rating()
         self.log(f"Initializing worker for tags: {self.tags}")
-        self.log(f"Rating: {self.rating}")
+        self.log(f"Rating: {self.rating_display or 'All Ratings'}")
 
         need = self.amount or 200
         collected = 0
@@ -38,10 +52,7 @@ class NekosApiWorker(BaseDownloader):
         batch_size = 50
 
         while collected < need and not self.stop_event.is_set():
-            params = {"limit": min(batch_size, need - collected), "offset": offset}
-            if self.tags: params["tags"] = ",".join(self.tags)
-            if self.exclusions: params["without_tags"] = ",".join(self.exclusions)
-            params["rating"] = self.rating
+            params = self._query_params(min(batch_size, need - collected), offset)
 
             try:
                 async with self.session.get(f"{self.api_base}/images", params=params) as resp:
@@ -61,6 +72,9 @@ class NekosApiWorker(BaseDownloader):
 
             for img in images:
                 if self.stop_event.is_set() or collected >= need: break
+                # safety net for anything the server-side rating filter let through
+                if self.rating_allowed and img.get("rating") not in self.rating_allowed:
+                    continue
                 url = img.get("url")
                 if not url: continue
                 img_id = img.get("id", "unknown")
@@ -86,8 +100,6 @@ class NekosApiWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_nekosapi(tags, amount, rating, net_config):
     NekosApiWorker(tags, amount, rating, net_config).run()

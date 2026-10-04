@@ -1,10 +1,5 @@
 import os
-import re
 import asyncio
-import html as html_lib
-import subprocess
-import hashlib
-from urllib.parse import urlencode
 
 try:
     from workers import BaseWorker
@@ -14,101 +9,22 @@ except ImportError:
     from workers import BaseWorker
 
 from core.shared import (
-    save_history,
-    write_image_metadata,
-    add_to_gallery,
-    send_tags,
-    build_tagd,
-    check_duplicate,
-    MASTER_FOLDER,
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
+    TAG_TYPE_MAP,
 )
+from core.database import DatabaseManager, DATABASE_DIR
 
+POSTS_API = "https://gsbooru.org/api/posts"
+TAGS_API = "https://gsbooru.org/api/tags"
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gsbooru_tag_types.json")
 
-class CloudflareError(Exception):
-    pass
-
-
-POSTS_URL = "https://gsbooru.org/posts"
-GSBOORU_REFERER = "https://gsbooru.org"
-
-
-def _gsbooru_curl(url, out_path=None, timeout=60):
-    """Fetch via curl exactly like the site owner's workaround: Referer set,
-    redirects followed. Returns the subprocess.CompletedProcess (stdout holds
-    the body unless out_path is given, in which case it's written to disk)."""
-    cmd = ["curl", "-s", "-L", "--max-time", str(timeout),
-           "-H", f"Referer: {GSBOORU_REFERER}"]
-    if out_path:
-        cmd += ["-o", out_path]
-    cmd += [url]
-    return subprocess.run(cmd, capture_output=True, timeout=timeout + 30)
-
-ARTICLE_RE = re.compile(
-    r'<article class="post_item"[^>]*>\s*'
-    r'<a href="/posts/view/(\d+)">\s*'
-    r'<img[^>]*title="([^"]*)"',
-    re.S
-)
-
-# Prefer the original (/files/images/); samples are 850px downscale-reuploads
-FILE_ORIG_RE = re.compile(r'href="(/files/images/[^"]+)"')
-FILE_ANY_RE = re.compile(r'href="(/files/(?:images|samples)/[^"]+)"')
-
-TITLE_TAIL_RE = re.compile(
-    r'\bscore:\s*\S+\s+rating:\s*(\S+)\s*$'
-)
-
-
-def _parse_view_tags(view_html):
-    """Parse categorized tags from gsbooru view page HTML.
-    Returns (artists, characters, copyrights, metadata_tags, general)."""
-    artists = []
-    characters = []
-    copyrights = []
-    metadata_tags = []
-    general = []
-
-    sections = re.split(
-        r'<strong class="detail_header">',
-        view_html
-    )
-
-    for section in sections[1:]:
-        header_end = section.find('</strong>')
-        if header_end == -1:
-            continue
-        header = section[:header_end].strip()
-
-        tag_names = re.findall(
-            r'class="tag_string"[^>]*>\s*([^<]+?)\s*</a>',
-            section[header_end:]
-        )
-        tag_names = [t.strip() for t in tag_names if t.strip()]
-
-        if header == "Artist":
-            artists.extend(tag_names)
-        elif header == "Character":
-            characters.extend(tag_names)
-        elif header == "Copyright":
-            copyrights.extend(tag_names)
-        elif header == "Meta":
-            metadata_tags.extend(tag_names)
-        elif header == "General":
-            general.extend(tag_names)
-
-    return artists, characters, copyrights, metadata_tags, general
+# API schema: rating is an integer {0: g, 1: s, 2: q, 3: e}
+RATING_WORD_BY_INT = {0: "general", 1: "sensitive", 2: "questionable", 3: "explicit"}
 
 
 class GsbooruWorker(BaseWorker):
-
-    async def _create_session(self):
-        # gsbooru talks to the site via curl (see _get_text / _async_download_file),
-        # which sets the Referer itself. The aiohttp session is only kept because
-        # run_async_loop expects one; it is not used for network I/O.
-        return await super()._create_session()
 
     def __init__(self, tag, amount, rating, exclusions, net_config):
         super().__init__("gsbooru", "Gsbooru", amount, net_config)
@@ -116,32 +32,45 @@ class GsbooruWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
         self.exclusions = exclusions
+        self.api_key = os.getenv("GSBOORU_API_KEY", "")
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
+        self._last_api_launch = 0.0
 
-        # UI sends rating:g / rating:s / rating:q
-        # Site has General, Sensitive, and Questionable.
-        self.filter_code = self.rating.split(":")[-1] if self.rating else ""
-
-        self.filter_word = {
-            "g": "general",
-            "s": "sensitive",
-            "q": "questionable"
-        }.get(self.filter_code, "")
-
+        # UI sends rating:g / rating:s / rating:q (space-separated when multi).
+        # Site has General, Sensitive, and Questionable (rating=e is empty live).
         self.rating_label_map = {
             "general": "Safe",
             "sensitive": "Sensitive",
             "questionable": "Questionable",
             "explicit": "NSFW"
         }
+        code_of = {"rating:g": "g", "rating:s": "s", "rating:q": "q",
+                   "rating:general": "g", "rating:sensitive": "s",
+                   "rating:questionable": "q"}
+        code_word = {"g": "general", "s": "sensitive", "q": "questionable"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
 
-        self.api_tag = self.original_tag
+        # ponytail: gsbooru ORs comma lists in its rating param (verified live:
+        # rating=g,s -> mixed page of g and s); all three = the site's entirety,
+        # same as All, so no param and no client-side filter
+        if codes and len(codes) < 3:
+            self.filter_code = ",".join(codes)
+            self.filter_words = {code_word[c] for c in codes}
+        else:
+            self.filter_code = ""
+            self.filter_words = set()
+        self.rating_display = ", ".join(self.rating_label_map[code_word[c]] for c in codes)
 
-        clean_tag = " ".join(
-            t for t in self.original_tag.split()
-            if not t.startswith("-")
-        )
+        # live-verified: gsbooru's tags param has no '-' exclusion
+        # ("1girl -bogus_xyz" -> 0 posts) — send positives only and drop
+        # excluded tags per-post in the scrape loop
+        parts = self.original_tag.split()
+        self.exclude_tags = [t[1:] for t in parts if t.startswith("-") and t[1:]]
+        self.api_tag = " ".join(t for t in parts if not t.startswith("-"))
 
-        self.safe_tag_name = sanitize_path_component(clean_tag, fallback="all")
+        self.safe_tag_name = sanitize_path_component(self.api_tag, fallback="all")
 
         self.tag_dir = os.path.join(
             self.site_root,
@@ -150,157 +79,138 @@ class GsbooruWorker(BaseWorker):
 
         safe_ensure_dir(self.tag_dir)
 
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(
-        self,
-        url,
-        filepath,
-        filename,
-        tags_list,
-        artists=None
-    ):
-        return await self.enqueue_download(
-            url,
-            filepath,
-            filename,
-            tags_list,
-            artists or []
-        )
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
-    async def _get_text(self, url):
-        # curl with the required Referer — mirrors the site owner's workaround.
-        proc = await asyncio.to_thread(_gsbooru_curl, url, None, 60)
-        if proc.returncode != 0:
-            err = (proc.stderr or b"").decode("utf-8", "replace")[:200]
-            raise Exception(f"curl exit {proc.returncode}: {err}")
-        text = proc.stdout.decode("utf-8", "replace")
-        low = text[:4000].lower()
-        if "just a moment" in low or "cf-mitigated" in low or "challenge-platform" in low:
-            raise CloudflareError("HTTP 403: Cloudflare challenge page")
-        return text
-
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
-        # gsbooru fetches files via curl too; skip the aiohttp HEAD request.
-        if artists is None:
-            artists = []
-        if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
-            return False
-        self.queued_items.add(filename)
-        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, 0, characters, copyrights, metadata_tags, outfits, groups, hair, eyes))
-        self.enqueued_count += 1
-        return True
-
-    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
-        if self.stop_event.is_set():
-            self.enqueued_count -= 1
-            return False
-
-        part_path = filepath + ".part"
-        for attempt in range(self.dl_retries):
-            try:
-                proc = await asyncio.to_thread(_gsbooru_curl, url, part_path, 300)
-                if proc.returncode != 0:
-                    raise Exception(
-                        f"curl exit {proc.returncode}: "
-                        f"{(proc.stderr or b'')[:200].decode('utf-8', 'replace')}"
-                    )
-                if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
-                    raise Exception("empty download")
-
-                # booru filenames embed their md5 (-<32hex>.ext); verify content
-                # so a stale/recompressed variant is rejected, not saved as good
-                m = re.search(r'-([0-9a-f]{32})\.[^.]+$', filename, re.I)
-                if m:
-                    h = hashlib.md5()
-                    with open(part_path, 'rb') as f:
-                        for chunk in iter(lambda: f.read(1 << 20), b''):
-                            h.update(chunk)
-                    if h.hexdigest() != m.group(1).lower():
-                        os.remove(part_path)
-                        raise Exception("md5 mismatch: server sent a different/degraded file")
-
-                # publish under the real name only after full verification
-                os.replace(part_path, filepath)
-
-                # persistent perceptual-hash dedup (see core/shared.py)
-                dup = check_duplicate(filepath, self.name)
-                if dup is not None and dup.is_duplicate:
-                    try:
-                        os.remove(filepath)
-                    except OSError:
-                        pass
-                    self.enqueued_count -= 1
-                    self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
-                    return False
-
-                self.downloaded_count += 1
-                self.downloaded_bytes += os.path.getsize(filepath)
-                self.dl_history.add(filename)
-                save_history(self.site_root, self.dl_history)
-
-                if self.is_scanning and self.amount > 0:
-                    target_total = max(self.amount, self.enqueued_count)
-                else:
-                    target_total = max(self.enqueued_count, self.downloaded_count)
-
-                pct = int((self.downloaded_count / target_total) * 100) if target_total > 0 else 0
-
-                rel_path = os.path.relpath(filepath, MASTER_FOLDER)
-                top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
-                tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
-
-                write_image_metadata(filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                add_to_gallery(self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                self.log(
-                    f"[SUCCESS] Downloaded {filename} "
-                    f"({self.downloaded_count}/{target_total}) [{pct}%] "
-                    f"|PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}"
-                )
-                send_tags(self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                return True
-
-            except Exception as e:
-                if os.path.exists(part_path):
-                    os.remove(part_path)
-                if self.stop_event.is_set():
-                    self.enqueued_count -= 1
+    async def _api_get(self, params, url=POSTS_API):
+        """GET a JSON API endpoint with Bearer auth. Returns the parsed dict,
+        or None after logging a whitelisted 'API error' line (console-visible)."""
+        if not self.api_key:
+            self.log("API error: GSBOORU_API_KEY missing in .env — generate one in gsbooru account settings.")
+            return None
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        last = "unknown error"
+        loop = asyncio.get_running_loop()
+        for attempt in range(4):
+            if self.stop_event.is_set():
+                return None
+            # global pacing for this worker: every launch (posts + tags, all
+            # concurrent tasks) ≥ 1.1 s after the previous one — the limit is
+            # now 1 request/s, held just under it so jitter can't trip 429s
+            while True:
+                wait = self._last_api_launch + 1.1 - loop.time()
+                if wait <= 0:
+                    self._last_api_launch = loop.time()
                     break
-                if attempt < self.dl_retries - 1:
-                    await asyncio.sleep(2)
-                else:
-                    self.enqueued_count -= 1
-                    err_msg = str(e).strip() or "HTTP 404 / File Deleted from Server"
-                    self.log(f"[FAILED] {filename}: {err_msg}")
-                    self.failed_count += 1
-                    if os.path.exists(filepath):
-                        os.remove(filepath)
-        return False
+                await asyncio.sleep(wait)
+            try:
+                async with self.session.get(
+                        url, params=params, headers=headers, timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        if isinstance(data, dict) and data.get("status") == "ok":
+                            return data
+                        last = str(data)[:200]
+                    elif resp.status == 401:
+                        self.log("API error: auth failed (401) — check GSBOORU_API_KEY in .env.")
+                        return None
+                    elif resp.status == 400 and "rating" in params:
+                        # server rejected the comma list (undocumented) — drop it;
+                        # the client-side filter still enforces the selection
+                        self.log("Notice: API rejected the rating parameter — filtering locally instead.")
+                        params.pop("rating", None)
+                        continue
+                    elif resp.status == 429:
+                        last = "429 rate limited"
+                    else:
+                        last = f"HTTP {resp.status}: {(await resp.text())[:200]}"
+            except Exception as e:
+                last = str(e)[:200]
+            await asyncio.sleep(5)
+        self.log(f"API error: {last}")
+        return None
+
+    async def _throttled_get(self, params_list):
+        """Run several GETs with up to 3 in flight (the server parallel-handles);
+        launch pacing lives in _api_get so every call shares one gate."""
+        sem = asyncio.Semaphore(3)
+
+        async def one(p):
+            async with sem:
+                return await self._api_get(p, url=TAGS_API)
+
+        return await asyncio.gather(*[one(p) for p in params_list])
+
+    async def _fetch_tag_types(self, tag_names):
+        had = len(self.tag_cache)
+        try:
+            await self._fetch_tag_types_impl(tag_names)
+        finally:
+            # ponytail: save even partial fetches (impl bails on API failure);
+            # skip the write when nothing new landed
+            if len(self.tag_cache) > had:
+                await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
+
+    async def _fetch_tag_types_impl(self, tag_names):
+        """Categorize tags via batched prefix lookups on /api/tags (the server
+        takes ~3 s per exact query, so group by first letter)."""
+        remaining = {t for t in tag_names if t not in self.tag_cache}
+        if not remaining:
+            return
+        by_char = {}
+        for t in remaining:
+            by_char.setdefault(t[0].lower(), []).append(t)
+        # prefix pages: top 300 per first letter (3 rounds of parallel
+        # calls) — much cheaper than one exact query per leftover
+        if self.stop_event.is_set():
+            return
+        for page in (1, 2, 3):
+            chars = [ch for ch in by_char
+                     if any(n not in self.tag_cache for n in by_char[ch])]
+            if not chars:
+                break
+            results = await self._throttled_get(
+                [{"tag_string": f"{ch}*", "limit": 100, "page": page,
+                  "sort": "post_count"}
+                 for ch in chars])
+            for ch, data in zip(chars, results):
+                if data is None:
+                    return
+                wanted = {n.lower(): n for n in by_char[ch]
+                          if n not in self.tag_cache}
+                for t in data.get("tags") or []:
+                    low = str(t.get("name", "")).lower()
+                    if low in wanted:
+                        orig = wanted.pop(low)
+                        self.tag_cache[orig] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
+
+        # final fallback: exact lookups for anything past rank 300
+        leftovers = [n for n in remaining if n not in self.tag_cache]
+        if leftovers and not self.stop_event.is_set():
+            results = await self._throttled_get(
+                [{"tag_string": n, "limit": 50} for n in leftovers])
+            for name, data in zip(leftovers, results):
+                if data is None:
+                    return
+                match = next(
+                    (t for t in data.get("tags") or []
+                     if str(t.get("name", "")).lower() == name.lower()),
+                    None)
+                # ponytail: failures/no-matches stay uncached (retried next run)
+                if match is not None:
+                    self.tag_cache[name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+
+    def _excluded(self, tag_names):
+        return any(t in self.exclude_tags for t in tag_names)
 
     async def scraper_task(self):
 
         self.log(
             f"Initializing worker for tag: '{self.api_tag}'"
-            + (f" (rating: {self.rating_label_map.get(self.filter_word, '')})" if self.filter_word else "")
+            + (f" (rating: {self.rating_display})" if self.rating_display else "")
         )
-
-        if self.stop_event.is_set():
-
-            self.log(
-                "BUG DIAGNOSTIC: stop_event was already set at start "
-                "— a STOP signal reached this run."
-            )
-
-            return
 
         page = 1
 
         # Scan page by page until the requested number of UNIQUE
-        # images has been downloaded.
+        # images has been enqueued.
         while (
             not self.stop_event.is_set()
             and (
@@ -309,117 +219,35 @@ class GsbooruWorker(BaseWorker):
             )
         ):
 
-            articles = None
+            params = {
+                "tags": self.api_tag,
+                "page": page,
+                "limit": 100,
+            }
 
-            # Retry a page if something goes wrong.
-            for attempt in range(4):
+            if self.filter_code:
+                params["rating"] = self.filter_code
 
-                try:
-                    self.log(
-                        f"Scanning posts... (Page {page})"
-                    )
+            data = await self._api_get(params)
 
-                    # First page intentionally has no page parameter.
-                    #
-                    # Later pages:
-                    # ?page=N&rating=X&tags=...
-                    #
-                    # _get_text() automatically uses the session headers.
-                    params = {}
-
-                    if page > 1:
-                        params["page"] = str(page)
-
-                    if self.filter_code:
-                        params["rating"] = self.filter_code
-
-                    params["tags"] = self.api_tag
-
-                    list_url = (
-                        f"{POSTS_URL}?{urlencode(params)}"
-                    )
-
-                    list_html = await self._get_text(
-                        list_url
-                    )
-
-                    articles = ARTICLE_RE.findall(
-                        list_html
-                    )
-
-                    break
-
-                except CloudflareError as e:
-
-                    if attempt < 3:
-
-                        self.log(
-                            f"Cloudflare challenge on page {page}, "
-                            f"retrying in {5 * (attempt + 1)}s..."
-                        )
-
-                        await asyncio.sleep(
-                            15 * (attempt + 1)
-                        )
-
-                        continue
-
-                    self.log(
-                        f"{e}. "
-                        f"The request included "
-                        f"Referer: {GSBOORU_REFERER}"
-                    )
-
-                    break
-
-                except Exception as e:
-
-                    self.log(
-                        f"Scrape Error: {e}"
-                    )
-
-                    await asyncio.sleep(5)
-
-                    continue
-
-            if articles is None:
+            if data is None:
                 break
 
-            if not articles:
+            posts = data.get("posts") or []
 
-                low = list_html[:2000].lower()
-
-                if (
-                    "challenge" in low
-                    or "just a moment" in low
-                ):
-
-                    self.log(
-                        "Cloudflare challenge served with HTTP 200. "
-                        "Stopping pagination."
-                    )
-
-                    break
-
+            if not posts:
                 if page == 1:
-
                     self.log(
                         f"ZERO images found for "
-                        f"'{self.original_tag}'. "
-                        f"Page head: {list_html[:150]}"
+                        f"'{self.original_tag}'."
                     )
-
                 else:
-
-                    self.log(
-                        "End of database reached."
-                    )
-
+                    self.log("End of database reached.")
                 break
 
             page_enqueued = 0
 
-            for post_id, title_attr in articles:
+            for post in posts:
 
                 if (
                     self.stop_event.is_set()
@@ -434,83 +262,29 @@ class GsbooruWorker(BaseWorker):
                 ):
                     break
 
-                title = html_lib.unescape(
-                    title_attr
-                )
+                if not isinstance(post, dict):
+                    continue
 
-                m = TITLE_TAIL_RE.search(title)
+                if post.get("is_soft_deleted"):
+                    continue
 
-                rating_word = (
-                    m.group(1)
-                    if m
-                    else ""
-                )
-
-                tags_part = (
-                    title[:m.start()]
-                    if m
-                    else title
-                )
-
-                tags_list = [
-                    t
-                    for t in tags_part.split()
-                    if t
-                ]
+                word = RATING_WORD_BY_INT.get(post.get("rating"))
 
                 if (
-                    self.filter_word
-                    and rating_word != self.filter_word
+                    self.filter_words
+                    and word not in self.filter_words
                 ):
-
                     continue
 
-                try:
-
-                    view_html = await self._get_text(
-                        f"https://gsbooru.org/posts/view/{post_id}"
-                    )
-
-                except CloudflareError as e:
-
-                    self.log(
-                        f"{e}. Stopping."
-                    )
-
-                    return
-
-                except Exception as e:
-
-                    self.log(
-                        f"[SKIP] #{post_id}: {e}"
-                    )
-
+                file_url = post.get("file_url")
+                if not file_url:
                     continue
-
-                fm = (
-                    FILE_ORIG_RE.search(view_html)
-                    or FILE_ANY_RE.search(view_html)
-                )
-
-                if not fm:
-
-                    self.log(
-                        f"[SKIP] #{post_id}: "
-                        f"no file link on post page"
-                    )
-
-                    continue
-
-                file_url = (
-                    "https://gsbooru.org"
-                    + fm.group(1)
-                )
 
                 ext = (
-                    file_url
-                    .split(".")[-1]
+                    (post.get("file_ext") or "")
                     .lower()
-                    .split("?")[0]
+                    .lstrip(".")
+                    or file_url.split("?")[0].split(".")[-1].lower()
                 )
 
                 if (
@@ -531,23 +305,24 @@ class GsbooruWorker(BaseWorker):
                 ):
                     continue
 
-                artists, characters, copyrights, metadata_tags, general = (
-                    _parse_view_tags(view_html)
-                )
+                if ext not in [
+                    "jpg", "jpeg", "png", "gif",
+                    "webp", "mp4", "webm"
+                ]:
+                    continue
 
-                if not general:
-                    general = tags_list
-
+                post_id = post.get("id")
                 raw_filename = (
-                    file_url
-                    .split("/")[-1]
-                    .split("?")[0]
+                    file_url.split("/")[-1].split("?")[0]
                 )
-                filename = sanitize_filename(raw_filename, fallback=f"gsbooru_{post_id}.jpg")
+                filename = sanitize_filename(
+                    raw_filename,
+                    fallback=f"gsbooru_{post_id}.{ext}"
+                )
 
                 rating_label = sanitize_path_component(
                     self.rating_label_map.get(
-                        rating_word,
+                        word,
                         "Unknown"
                     ),
                     fallback="Unknown"
@@ -566,11 +341,31 @@ class GsbooruWorker(BaseWorker):
                     filename
                 )
 
+                # cheap dupe check first — don't pay tag lookups for posts
+                # we won't enqueue anyway (enqueue re-checks below)
+                if (filename in self.dl_history
+                        or filename in self.queued_items
+                        or os.path.exists(filepath)):
+                    continue
+
+                # ponytail: the API returns one flat tag_string —
+                # categories come from the cached /api/tags lookups
+                tag_names = [
+                    t
+                    for t in str(post.get("tag_string", "")).split()
+                    if t
+                ]
+                if self._excluded(tag_names):
+                    continue
+                await self._fetch_tag_types(tag_names)
+                (tags_list, artists, characters,
+                 copyrights, metadata_tags) = self._categorize_tags(tag_names)
+
                 if await self.enqueue_download(
                     file_url,
                     filepath,
                     filename,
-                    general,
+                    tags_list,
                     artists,
                     characters,
                     copyrights,
@@ -585,6 +380,12 @@ class GsbooruWorker(BaseWorker):
 
             page += 1
 
+            total_pages = data.get("total_pages")
+
+            if total_pages and page > total_pages:
+                self.log("End of database reached.")
+                break
+
             if (
                 not self.stop_event.is_set()
                 and (
@@ -592,8 +393,9 @@ class GsbooruWorker(BaseWorker):
                     or self.downloaded_count < self.amount
                 )
             ):
+                # API limit: 3 queries / 5 s — never go faster
                 await asyncio.sleep(
-                    self.anti_ban_pause
+                    max(self.anti_ban_pause, 1.7)
                 )
 
         actual = self.enqueued_count
@@ -614,12 +416,6 @@ class GsbooruWorker(BaseWorker):
                 actual
             )
 
-    def run(self):
-        asyncio.run(
-            self.run_async_loop(
-                self.scraper_task
-            )
-        )
 
 
 

@@ -310,3 +310,23 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
             assert safe_name in dl.dl_history
 
         asyncio.run(_run_download())
+
+
+def test_pinterest_proxy_patch_reads_the_workers_config_not_the_browser_type():
+    """The old inline closure took `self` as BrowserType.launch's first arg,
+    shadowing the worker's self — login died on BrowserType.net_config."""
+    from workers.pinterest_worker import _launch_with_proxy
+
+    seen = {}
+    orig = lambda bt, **kw: seen.update(kw)
+
+    _launch_with_proxy(orig, {"use_proxy": True, "proxy_url": "http://127.0.0.1:10808"})("bt", headless=True)
+    assert seen["proxy"] == {"server": "http://127.0.0.1:10808"}
+
+    seen.clear()
+    _launch_with_proxy(orig, {"use_proxy": False, "proxy_url": "http://127.0.0.1:10808"})("bt")
+    assert "proxy" not in seen
+
+    seen.clear()
+    _launch_with_proxy(orig, {"use_proxy": True, "proxy_url": ""})("bt")
+    assert "proxy" not in seen

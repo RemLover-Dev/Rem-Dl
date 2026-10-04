@@ -1,24 +1,72 @@
 import os
 import asyncio
+import threading
+import time
 from curl_cffi import requests as curl_requests
 from core.shared import (
     BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
     write_image_metadata, save_history, build_tagd, check_duplicate,
-    sanitize_path_component, sanitize_filename, safe_ensure_dir
+    sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_wait
 )
 
 API = "https://api.anime-pictures.net/api/v3"
 PER_PAGE = 80
 
+
+class _RateLimiter:
+    """Space callers at per_sec; thread-safe (requests run in to_thread)."""
+    def __init__(self, per_sec):
+        self.interval = 1.0 / per_sec
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self.interval
+        delay = slot - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+# ponytail: _SITE_RATE holds anime-pictures' own 4 req/s cap; pace_wait adds
+# the shared ISP budget (Settings → req_rate_limit) every other worker uses
+_SITE_RATE = _RateLimiter(4)
+
+
+def _rate_limit_session(session, rate=_SITE_RATE):
+    """Wrap session.get so every request this worker makes passes the limiter."""
+    raw_get = session.get
+
+    def get(*args, **kwargs):
+        rate.wait()
+        pace_wait()
+        return raw_get(*args, **kwargs)
+
+    session.get = get
+    return session
+
 class AnimeDlWorker(BaseDownloader):
     def __init__(self, tag, amount, net_config):
         super().__init__("anime_dl", "AnimePictures", amount, net_config)
         self.tag = tag.strip().lower()
+        toks = self.tag.split()
+        # site search has no '-' operator (live: "-x" is just ANDed as "x")
+        # — dashes are stripped from the query and filtered client-side
+        self.exclude_tags = [t[1:] for t in toks if t.startswith('-') and len(t) > 1]
+        self._exclude_norm = {t.replace("_", " ").strip().lower() for t in self.exclude_tags}
+        self.tag = " ".join(t for t in toks if not t.startswith('-'))
         self.tag_slug = sanitize_path_component(self.tag.replace(" ", "_"), fallback="anime_pictures")
         self.tag_dir = os.path.join(self.site_root, self.tag_slug)
         safe_ensure_dir(self.tag_dir)
         
         self.curl_session = None
+
+    def _excluded(self, tag_names):
+        if not self._exclude_norm:
+            return False
+        return any(n.replace("_", " ").strip().lower() in self._exclude_norm for n in tag_names)
 
     async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         if self.stop_event.is_set():
@@ -30,7 +78,10 @@ class AnimeDlWorker(BaseDownloader):
 
         for attempt in range(self.dl_retries):
             try:
-                self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
+                # first attempt stays quiet — [SUCCESS]/[FAILED] report the
+                # outcome; only retries earn a log line
+                if attempt:
+                    self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
                 # ponytail: flat 600s cap; switch to streaming + stall detection if bigger files crawl
                 resp = await asyncio.to_thread(
                     self.curl_session.get, 
@@ -52,20 +103,21 @@ class AnimeDlWorker(BaseDownloader):
                 os.replace(part_path, filepath)
 
                 # persistent perceptual-hash dedup (see core/shared.py)
-                dup = check_duplicate(filepath, self.name)
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)
                     except OSError:
                         pass
                     self.enqueued_count -= 1
-                    self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
+                    self.duplicate_count += 1
+                    self._remember_filename(filename)
                     return False
 
                 self.downloaded_count += 1
                 self.downloaded_bytes += len(resp.content)
                 self.dl_history.add(filename)
-                save_history(self.site_root, self.dl_history)
+                await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 
                 if self.is_scanning and self.amount > 0:
                     target_total = max(self.amount, self.enqueued_count)
@@ -78,12 +130,13 @@ class AnimeDlWorker(BaseDownloader):
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
-                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-
+                # send_tags first: history row must exist before the image is
+                # clickable in the viewer (its tag box reads imageHistory)
+                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 # ponytail: metadata must land before gallery publish, else thumbs read a half-written file
-                write_image_metadata(filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                add_to_gallery(self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                send_tags(self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
                 return True
 
             except Exception as e:
@@ -102,10 +155,13 @@ class AnimeDlWorker(BaseDownloader):
 
     def _fetch_child_tags(self):
         """Resolve this tag's id, then return its child sub-tags."""
-        r = self.curl_session.get(f"{API}/tags", params={"tag": self.tag, "lang": "en"}, timeout=20)
+        base = self.tag.split()[0] if self.tag else ""
+        if not base:
+            return []
+        r = self.curl_session.get(f"{API}/tags", params={"tag": base, "lang": "en"}, timeout=20)
         if r.status_code != 200:
             return []
-        hits = [t for t in r.json().get("tags", []) if isinstance(t, dict) and str(t.get("tag", "")).lower() == self.tag]
+        hits = [t for t in r.json().get("tags", []) if isinstance(t, dict) and str(t.get("tag", "")).lower() == base]
         if not hits:
             return []
         r2 = self.curl_session.get(f"{API}/tags/{hits[0]['id']}/children", params={"lang": "en"}, timeout=20)
@@ -128,7 +184,7 @@ class AnimeDlWorker(BaseDownloader):
             s.proxies = {"http": p, "https": p}
         s.cookies.set("time_zone", "UTC", domain=".anime-pictures.net")
         s.cookies.set("sitelang", "en", domain=".anime-pictures.net")
-        self.curl_session = s
+        self.curl_session = _rate_limit_session(s)
 
         # ponytail: list child sub-tags once so the user can search them
         # standalone — same pattern as the zerochan worker
@@ -206,30 +262,33 @@ class AnimeDlWorker(BaseDownloader):
                         if not detail:
                             continue
 
-                    file_url = detail.get("file_url", "")
-                    if not file_url: continue
+                        file_url = detail.get("file_url", "")
+                        if not file_url: continue
 
-                    dl_url = f"https://api.anime-pictures.net/pictures/download_image/{file_url}"
-                    ext = file_url.rsplit(".", 1)[-1].split("?")[0]
-                    filename = sanitize_filename(f"{self.tag_slug}_{post_id}.{ext}", fallback=f"anime_{post_id}.jpg")
-                    filepath = os.path.join(self.tag_dir, filename)
+                        dl_url = f"https://api.anime-pictures.net/pictures/download_image/{file_url}"
+                        ext = file_url.rsplit(".", 1)[-1].split("?")[0]
+                        filename = sanitize_filename(f"{self.tag_slug}_{post_id}.{ext}", fallback=f"anime_{post_id}.jpg")
+                        filepath = os.path.join(self.tag_dir, filename)
 
-                    raw_tags = detail.get("tags", [])
-                    artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-                    for t in raw_tags:
-                        tag_info = t.get("tag", {}) if isinstance(t, dict) else {}
-                        # ponytail: API tags use underscores — show spaces everywhere
-                        tag_name = tag_info.get("tag", "").replace("_", " ")
-                        tag_type = tag_info.get("type", 0)
-                        if not tag_name: continue
-                        if tag_type == 4: artists.append(tag_name)
-                        elif tag_type == 1: characters.append(tag_name)
-                        elif tag_type == 5: copyrights.append(tag_name)
-                        elif tag_type == 7: metadata_tags.append(tag_name)
-                        else: general.append(tag_name)
+                        raw_tags = detail.get("tags", [])
+                        if self._excluded([str((t.get("tag") or {}).get("tag", ""))
+                                           for t in raw_tags if isinstance(t, dict)]):
+                            continue
+                        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
+                        for t in raw_tags:
+                            tag_info = t.get("tag", {}) if isinstance(t, dict) else {}
+                            # ponytail: API tags use underscores — show spaces everywhere
+                            tag_name = tag_info.get("tag", "").replace("_", " ")
+                            tag_type = tag_info.get("type", 0)
+                            if not tag_name: continue
+                            if tag_type == 4: artists.append(tag_name)
+                            elif tag_type == 1: characters.append(tag_name)
+                            elif tag_type == 5: copyrights.append(tag_name)
+                            elif tag_type == 7: metadata_tags.append(tag_name)
+                            else: general.append(tag_name)
 
-                    if await self.enqueue_download(dl_url, filepath, filename, general, artists, characters, copyrights, metadata_tags):
-                        collected += 1
+                        if await self.enqueue_download(dl_url, filepath, filename, general, artists, characters, copyrights, metadata_tags):
+                            collected += 1
             finally:
                 for t in pending:
                     if not t.done():
@@ -248,8 +307,6 @@ class AnimeDlWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_anime_dl(tag, amount, net_config):
     AnimeDlWorker(tag, amount, net_config).run()

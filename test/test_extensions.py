@@ -1,11 +1,9 @@
-import os
 import json
 import zipfile
-import tempfile
 import pytest
 
-from core.extensions import ExtensionManager, EXTENSIONS_DIR, get_extension_manager
-from core.extension_downloader import _safe_extract_zip, SecurityError, check_for_updates, install_from_local_path
+from core.extensions import ExtensionManager
+from core.extension_downloader import _safe_extract_zip, SecurityError, install_from_local_path
 from Rems_Dl import app
 
 

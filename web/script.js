@@ -1,9 +1,29 @@
 let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": false, "dedup_enabled": true };
 var workerRunning = {};
+let queuedCounts = {}; // site -> waiting entries, tracked so START can kick off the queue
 let uiConfig = {};
 let currentActiveTheme = 'dark';
 
-const TAG_CATEGORIES = ["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "mangaka", "game", "theme", "source", "meta", "vtuber", "series", "studio", "tag"];
+// localStorage throws when blocked (private mode / file://) — a crash here kills the whole script
+function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+// fullscreen keybind (default F11) in the pywebview desktop shell — plain
+// browsers have no window.pywebview, so we bail out and let their native key handle it
+document.addEventListener("keydown", function (e) {
+    if (e.key.toLowerCase() !== String(uiConfig.fullscreen_key || "F11").toLowerCase() || !window.pywebview || !window.pywebview.api) return;
+    e.preventDefault();
+    window.pywebview.api.toggle_fullscreen();
+});
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+const TAG_CATEGORIES =["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "mangaka", "game", "theme", "source", "meta", "vtuber", "series", "studio", "tag"];
 const RATING_INPUT_BY_WORKER = {dan:'danRating', gelbooru:'gelbooruRating', gsbooru:'gsbooruRating', kona:'konaRating', yande:'yandeRating', sankaku:'sankakuRating', nekosapi:'nekosapiRating', nekosia:'nekosiaRating', pixiv:'pixivRating'};
 
 function getTagCategoryClass(cat) {
@@ -53,14 +73,40 @@ function normalizeTags(tagsInput) {
     return result;
 }
 
-function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()); }
-function siteLabel(site) { const s = site || "unknown"; return s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " "); }
+function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
+function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
 document.addEventListener("focusin", e => { if (e.target && e.target.matches('input[type="number"]')) { _selBox = e.target; _selAt = Date.now(); try { e.target.select(); } catch (_) {} } });
 // ponytail: the mouseup ending the click clears the select-all — swallow it only while fresh, so later drag-selects still work
 document.addEventListener("mouseup", e => { if (e.target !== _selBox) { _selBox = null; return; } if (Date.now() - _selAt < 1000) e.preventDefault(); _selBox = null; });
+
+// Persian / Arabic-Indic digits -> ASCII. Replacement is 1:1 in length, so
+// caret offsets never move.
+function faToEnDigits(s) {
+    return String(s)
+        .replace(/[\u06F0-\u06F9]/g, d => String.fromCharCode(d.charCodeAt(0) - 0x06F0 + 0x30))
+        .replace(/[\u0660-\u0669]/g, d => String.fromCharCode(d.charCodeAt(0) - 0x0660 + 0x30));
+}
+const _FA_DIGIT_RE = /[\u06F0-\u06F9\u0660-\u0669]/;
+// capture phase: convert before the element's own input handlers run, so
+// autosuggest/search handlers never see the raw Persian digits
+document.addEventListener("input", function (e) {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT" || !el.value || !_FA_DIGIT_RE.test(el.value)) return;
+    el.value = faToEnDigits(el.value);
+    try { el.setSelectionRange(el.selectionStart, el.selectionEnd); } catch (_) {}
+}, true);
+// number inputs drop non-ASCII digits before they ever land — catch at keydown
+document.addEventListener("keydown", function (e) {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT" || el.type !== "number" || !e.key || !_FA_DIGIT_RE.test(e.key)) return;
+    e.preventDefault();
+    try {
+        if (!document.execCommand("insertText", false, faToEnDigits(e.key))) el.value = (el.value || "") + faToEnDigits(e.key);
+    } catch (_) { el.value = (el.value || "") + faToEnDigits(e.key); }
+});
 
 // Streamline heart (web/icons/heart.svg): one asset, both states via paint
 const HEART_PATH = "M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z";
@@ -70,6 +116,7 @@ function heartIcon(filled) {
         : 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"';
     return `<svg width="1em" height="1em" viewBox="-1 -1 18 18" shape-rendering="geometricPrecision" style="display:block; vertical-align:middle;"><path ${paint} d="${HEART_PATH}"/></svg>`;
 }
+
 
 function renderCategorizedTags(tagsInput, clickable) {
     let tagsDict = normalizeTags(tagsInput);
@@ -99,6 +146,9 @@ async function loadUIConfig() {
     try {
         let resp = await fetch("/api/ui_config");
         uiConfig = await resp.json();
+        const fk = document.getElementById("fullscreenKey");
+        if (fk) fk.value = uiConfig.fullscreen_key || "F11";
+        await syncBlurSettings();
 
         let radio = document.querySelector(`input[name="themeMode"][value="${uiConfig.theme_mode}"]`);
         if (radio) radio.checked = true;
@@ -112,6 +162,34 @@ async function loadUIConfig() {
         if (window.requestIdleCallback) requestIdleCallback(preloadWallpapers, { timeout: 5000 });
         else setTimeout(preloadWallpapers, 3000);
     } catch(e) { console.error("Error loading UI config", e); }
+}
+
+let capturingFullscreenKey = false;
+function startFullscreenKeyCapture() {
+    const inp = document.getElementById("fullscreenKey");
+    if (!inp) return;
+    capturingFullscreenKey = true;
+    inp.value = "";
+    inp.placeholder = "Press any key\u2026";
+    inp.focus();
+}
+function cancelFullscreenKeyCapture() {
+    if (!capturingFullscreenKey) return;
+    capturingFullscreenKey = false;
+    const inp = document.getElementById("fullscreenKey");
+    if (inp) inp.value = uiConfig.fullscreen_key || "F11";
+}
+function captureFullscreenKey(e) {
+    if (!capturingFullscreenKey) return true;
+    e.preventDefault();
+    if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return false;
+    capturingFullscreenKey = false;
+    const k = e.key.length === 1 && e.key.toLowerCase() !== e.key.toUpperCase() ? e.key.toUpperCase() : e.key;
+    e.target.value = k;
+    e.target.placeholder = "Click to change";
+    uiConfig.fullscreen_key = k;
+    fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+    return false;
 }
 
 function applyRenderTheme(themeStr) {
@@ -239,7 +317,6 @@ function _drainWpWaiters(url) {
 let _wpLayerA = null;
 let _wpLayerB = null;
 let _wpFrontIsA = true;
-let _wpFadeTimer = null;
 let _wpGen = 0;
 
 function _ensureWpLayers() {
@@ -355,6 +432,9 @@ const WORKER_TO_TAB = {
     "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
 };
 
+// ponytail: one green check for every end-of-run box — SVG, not an emoji
+const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
+
 function updateProgressBar(worker, msg) {
     let key = WORKER_TO_TAB[worker];
     if (!key) return;
@@ -362,14 +442,23 @@ function updateProgressBar(worker, msg) {
     if (!container) return;
 
     // 1. نمایش پیام پایانی بزرگ و زیبا و حذف نوارها
+    if (msg.includes("Queue finished")) {
+        workerRunning[worker] = false; renderRunBtn(worker);
+        const m = msg.match(/Queue finished: (\d+) tasks(?:, (\d+) downloaded)?(?:, (\d+) failed)?/);
+        const jobs = m ? m[1] : "", d = m && m[2] ? m[2] : "0", f = m && m[3] ? m[3] : "0";
+        let endText = `${CHECK_SVG} Queue finished: ${jobs} tasks — ${d} downloaded`;
+        if (f !== "0") endText += `, <span style="color: #e74c3c;">${f} failed</span>`;
+        container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: #2ecc71; text-shadow: 0 0 10px rgba(46, 204, 113, 0.5);">${endText}</div>`;
+        return;
+    }
     if (msg.includes("downloads completed successfully") || msg.includes("Task finished") || msg.includes("No new") || msg.includes("No posts")) {
         workerRunning[worker] = false; renderRunBtn(worker);
         let match = msg.match(/All (\d+) downloads/);
         let countText = match ? match[1] : "";
 
-        let endText = countText ? `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg> All ${countText} Media Downloaded Successfully! <svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>` : "✅ Task Finished Successfully!";
+        let endText = countText ? `${CHECK_SVG} All ${countText} Media Downloaded Successfully! ${CHECK_SVG}` : `${CHECK_SVG} Task Finished Successfully!`;
         if (msg.includes("No new") || msg.includes("No posts")) {
-            endText = "✅ No New Images Found.";
+            endText = `${CHECK_SVG} No New Images Found.`;
         }
         if (msg.includes("failed to download!")) {
             let failMatch = msg.match(/([\d]+) failed to download!/);
@@ -423,6 +512,33 @@ function capConsole(cb, max) {
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
 const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
+// ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
+function hideFileNames(s) {
+    return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
+}
+function appendLogCard(cb, card) {
+    // follow the tail only if the user was already at the bottom — scrolling
+    // up to read shouldn't be yanked back down by the next log entry
+    const atBottom = cb.scrollTop + cb.clientHeight >= cb.scrollHeight - 30;
+    if (atBottom) {
+        cb.appendChild(card);
+        capConsole(cb);
+        cb.scrollTop = cb.scrollHeight;
+    } else {
+        // capping trims the head while you read — pin the first visible card so
+        // a flood of new downloads can't drag what you're looking at upward
+        const viewTop = cb.getBoundingClientRect().top;
+        let ref = cb.firstElementChild;
+        while (ref && ref.getBoundingClientRect().bottom <= viewTop) ref = ref.nextElementSibling;
+        const before = ref ? ref.getBoundingClientRect().top : null;
+        cb.appendChild(card);
+        capConsole(cb);
+        if (ref && ref.parentElement === cb && before !== null) cb.scrollTop += ref.getBoundingClientRect().top - before;
+    }
+    // a new card may have joined the box the open viewer walks — update now so
+    // the next/prev arrows appear without reopening the image
+    refreshViewerSingleList();
+}
 function logToConsole(tabID, msg) {
     let boxMap = CONSOLE_BOX_MAP;
     let cb = document.getElementById(boxMap[tabID.toLowerCase()] || "consoleLog_main");
@@ -455,43 +571,47 @@ function logToConsole(tabID, msg) {
             });
             let artistNames = cats.artist || [];
             delete cats.artist;
-            var logArtistBadge = artistNames.map(a => `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(a)}</span>`).join('');
+            var logArtistBadge = artistNames.map(a => `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
             // ponytail: log cards show plain tag text — only the artist keeps a colored badge
-            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => cleanTagDisplay(t)).join(', ') + `</span>`;
+            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => escapeHtml(cleanTagDisplay(t))).join(', ') + `</span>`;
         } else {
             var logArtistBadge = "";
-            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => cleanTagDisplay(t)).join(', ') + `</span>` : "No tags";
+            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => escapeHtml(cleanTagDisplay(t))).join(', ') + `</span>` : "No tags";
         }
         let fnMatch = raw.match(/Downloaded ([^\s]+)/);
         let fn = fnMatch ? fnMatch[1] : "image";
-        let countMatch = raw.match(/\((\d+)\/\d+\)/);
-        let countNum = countMatch ? countMatch[1] : "1";
 
-        let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn);
+        let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn).replace(/'/g, "%27");
 
         let ratingHtml = "";
+        let logRating = "";
         let pLow = rawPath.toLowerCase().replace(/\\/g, '/');
         if (pLow.includes('/rule34/') || pLow.includes('\\rule34\\') || pLow.includes('rule34')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            logRating = "explicit";
         }
         else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            logRating = "explicit";
         }
         else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Rating: Sensitive</div>`;
+            logRating = "sensitive";
         }
         else if (pLow.includes('moderate') || pLow.includes('questionable')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Rating: Questionable</div>`;
+            logRating = "questionable";
         }
         else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Rating: Safe</div>`;
+            logRating = "safe";
         }
-        // ponytail: badge only matters when the tab isn't already filtered to one rating
+        // ponytail: badge only matters when the tab's rating filter doesn't pin it down
         const _ratingInputByWorker = RATING_INPUT_BY_WORKER;
         const _rsId = _ratingInputByWorker[tabID];
         if (_rsId) {
             const _rsEl = document.getElementById(_rsId);
-            if (_rsEl && _rsEl.value) ratingHtml = "";
+            if (_rsEl && _rsEl.value && _rsEl.value.split(/\s+/).length === 1) ratingHtml = "";
         }
         // ponytail: safebooru is all-safe and rule34 all-explicit — badge states the obvious
         if (tabID === 'safe' || tabID === 'rule34') ratingHtml = "";
@@ -505,29 +625,28 @@ function logToConsole(tabID, msg) {
 
         let card = document.createElement("div");
         card.className = "image-card-log";
+        if (logRating) card.dataset.rating = logRating;
+        if (ratingBlurred(logRating)) card.classList.add("is-nsfw");
         let thumbSrc = '/api/gallery/thumb/' + pathUrlStr;
         let safeFn = escJs(fn);
 
         card.innerHTML = `
         <div class="img-card-left">
         <!-- استفاده از Date.now برای جلوگیری از باگ لود شدن -->
-        <img src="${thumbSrc}" onclick="openFullImage('${pathUrlStr}', '${safeFn}')" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
+        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
         </div>
         <div class="img-card-right">
-        <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px 0;" title="${safeFn}"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0.6;">${fn}</span><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
+        <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
         <div class="img-card-tags">${tagsHtml}</div>
         ${ratingHtml}
         </div>
-        <div class="img-card-number">${countNum}</div>
         `;
-        cb.appendChild(card);
-        capConsole(cb);
-        cb.scrollTop = cb.scrollHeight;
+        appendLogCard(cb, card);
         return;
     }
 
     if (raw.includes("[FAILED]") || raw.includes("ERROR") || raw.includes("BAN") || raw.includes("API Alert:")) {
-        showToast(raw.replace(/\[.*?\]/g, '').split("|PATH|")[0].trim(), { warn: true, icon: `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7.89003 1.0499C7.80611 0.886097 7.67861 0.748632 7.52158 0.652642 7.36455 0.556651 7.18407 0.505859 7.00003 0.505859c-0.18405 0 -0.36453 0.050792 -0.52156 0.146783 -0.15703 0.09599 -0.28453 0.233455 -0.36844 0.397258l-5.500004 11c-0.07671 0.1522 -0.113232 0.3215 -0.106098 0.4919 0.007134 0.1703 0.057688 0.3359 0.146861 0.4812 0.089172 0.1453 0.214003 0.2654 0.362641 0.3488 0.14863 0.0835 0.31613 0.1276 0.4866 0.1281H12.5c0.1705 -0.0005 0.338 -0.0446 0.4866 -0.1281 0.1487 -0.0834 0.2735 -0.2035 0.3627 -0.3488 0.0891 -0.1453 0.1397 -0.3109 0.1468 -0.4812 0.0072 -0.1704 -0.0294 -0.3397 -0.1061 -0.4919l-5.49997 -11Z"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 5v3.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c-0.13807 0 -0.25 -0.1119 -0.25 -0.25s0.11193 -0.25 0.25 -0.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c0.13807 0 0.25 -0.1119 0.25 -0.25s-0.11193 -0.25 -0.25 -0.25"/></svg>` });
+        showToast(hideFileNames(raw.replace(/\[.*?\]/g, '').split("|PATH|")[0].trim()), { warn: true, icon: `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7.89003 1.0499C7.80611 0.886097 7.67861 0.748632 7.52158 0.652642 7.36455 0.556651 7.18407 0.505859 7.00003 0.505859c-0.18405 0 -0.36453 0.050792 -0.52156 0.146783 -0.15703 0.09599 -0.28453 0.233455 -0.36844 0.397258l-5.500004 11c-0.07671 0.1522 -0.113232 0.3215 -0.106098 0.4919 0.007134 0.1703 0.057688 0.3359 0.146861 0.4812 0.089172 0.1453 0.214003 0.2654 0.362641 0.3488 0.14863 0.0835 0.31613 0.1276 0.4866 0.1281H12.5c0.1705 -0.0005 0.338 -0.0446 0.4866 -0.1281 0.1487 -0.0834 0.2735 -0.2035 0.3627 -0.3488 0.0891 -0.1453 0.1397 -0.3109 0.1468 -0.4812 0.0072 -0.1704 -0.0294 -0.3397 -0.1061 -0.4919l-5.49997 -11Z"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 5v3.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c-0.13807 0 -0.25 -0.1119 -0.25 -0.25s0.11193 -0.25 0.25 -0.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c0.13807 0 0.25 -0.1119 0.25 -0.25s-0.11193 -0.25 -0.25 -0.25"/></svg>` });
         return;
     }
 
@@ -536,13 +655,24 @@ function logToConsole(tabID, msg) {
         let clean = raw.replace(/\[.*?\]/g, '').split("|PATH|")[0].trim();
         // ponytail: prettify quoted tags for display — skip paths (slashes) and files (dots)
         clean = clean.replace(/'([^'/.,]*_[^'/.,]*)'/g, (m, t) => "'" + cleanTagDisplay(t) + "'");
+        clean = hideFileNames(clean);
+        // escape log-derived text before it hits innerHTML — tags are
+        // attacker-controlled; WARN_ICON swap happens after so the svg survives
+        clean = escapeHtml(clean);
+        clean = clean.replace(/⚠️?/g, WARN_ICON);
         let card = document.createElement("div");
         card.className = "log-item system";
         card.innerHTML = `<span style="font-size:16px;display:inline-flex;"><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none"><path fill="currentColor" fill-rule="evenodd" d="M18.98 2.458c0.805 -0.423 2.358 -0.958 5.02 -0.958s4.215 0.535 5.022 0.958c0.612 0.32 0.97 0.83 1.174 1.256 0.29 0.605 0.925 1.97 1.48 3.449a18.483 18.483 0 0 1 3.063 1.771c1.56 -0.26 3.061 -0.39 3.731 -0.443 0.47 -0.036 1.09 0.02 1.675 0.39 0.77 0.486 2.01 1.563 3.34 3.869 1.332 2.306 1.644 3.918 1.681 4.828 0.029 0.69 -0.233 1.255 -0.5 1.645a44.816 44.816 0 0 1 -2.25 3.01 18.738 18.738 0 0 1 0 3.534 44.867 44.867 0 0 1 2.25 3.01c0.267 0.39 0.529 0.954 0.5 1.645 -0.037 0.91 -0.35 2.522 -1.68 4.828 -1.332 2.306 -2.572 3.383 -3.341 3.87 -0.584 0.37 -1.204 0.425 -1.675 0.389a44.829 44.829 0 0 1 -3.731 -0.443 18.478 18.478 0 0 1 -3.063 1.771 44.816 44.816 0 0 1 -1.48 3.449c-0.204 0.426 -0.562 0.935 -1.174 1.256 -0.807 0.422 -2.36 0.958 -5.022 0.958 -2.662 0 -4.215 -0.535 -5.022 -0.958 -0.612 -0.32 -0.97 -0.83 -1.174 -1.256 -0.29 -0.605 -0.925 -1.97 -1.48 -3.449a18.48 18.48 0 0 1 -3.063 -1.771c-1.56 0.26 -3.062 0.39 -3.732 0.443 -0.47 0.036 -1.09 -0.02 -1.674 -0.39 -0.77 -0.486 -2.01 -1.563 -3.34 -3.869 -1.332 -2.306 -1.645 -3.918 -1.682 -4.828 -0.028 -0.69 0.234 -1.255 0.5 -1.645a44.84 44.84 0 0 1 2.25 -3.01 18.727 18.727 0 0 1 0 -3.534 44.844 44.844 0 0 1 -2.25 -3.01c-0.266 -0.39 -0.528 -0.954 -0.5 -1.645 0.038 -0.91 0.35 -2.522 1.681 -4.828 1.331 -2.306 2.572 -3.383 3.341 -3.87 0.584 -0.37 1.204 -0.425 1.675 -0.389 0.67 0.052 2.17 0.184 3.73 0.443a18.48 18.48 0 0 1 3.064 -1.771 44.852 44.852 0 0 1 1.48 -3.449c0.204 -0.426 0.562 -0.935 1.174 -1.256ZM32 24a8 8 0 1 1 -16 0 8 8 0 0 1 16 0Z" clip-rule="evenodd"></path></svg></span> <span style="flex:1;">${clean}</span>`;
-        cb.appendChild(card);
-        capConsole(cb);
-        cb.scrollTop = cb.scrollHeight;
+        appendLogCard(cb, card);
+        return;
     }
+
+    // plain lines with no special pattern still deserve a row — otherwise
+    // e.g. the pixiv auth steps and "Auth error: ..." are silently dropped
+    let plain = document.createElement("div");
+    plain.className = "log-item system";
+    plain.innerHTML = `<span style="flex:1;">${escapeHtml(raw).replace(/⚠️?/g, WARN_ICON)}</span>`;
+    appendLogCard(cb, plain);
 }
 
 // --- Rule34 Interactive Tag System ---
@@ -579,7 +709,7 @@ function renderRule34Tags() {
         let cls = isNeg ? 'warning' : 'positive';
         let icon = isNeg ? '− ' : '✔ ';
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + text + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
     }).join('');
 }
 
@@ -621,6 +751,157 @@ function renderGelbooruTags() {
         let safeT = escJs(t);
         return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
     }).join('');
+}
+
+// --- Gelbooru tag watcher (chips mirror the downloader; ratings reuse the shared dropdown machinery) ---
+let watcherTags = [];
+let gelWatchers = [];
+let editingWatcherId = null;
+
+function addWatcherTag() {
+    let input = document.getElementById("watcherTag");
+    if (!input) return;
+    let added = false;
+    danTagForRequest('watcherTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+        if (!watcherTags.includes(val)) { watcherTags.push(val); added = true; }
+    });
+    if (added) { input.value = ""; delete input.dataset.raw; renderWatcherTags(); }
+}
+function removeWatcherTag(tag) {
+    watcherTags = watcherTags.filter(t => t !== tag);
+    renderWatcherTags();
+}
+function renderWatcherTags() {
+    let container = document.getElementById("watcherTagsContainer");
+    if (!container) return;
+    container.innerHTML = watcherTags.map(function(t, idx) {
+        const isNeg = t.startsWith('-');
+        const text = isNeg ? t.substring(1) : t;
+        const cls = isNeg ? 'warning' : (idx === 0 ? 'main' : 'neutral');
+        const icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
+        const safeT = escJs(t);
+        return '<span class="v-tag ' + cls + '" onclick="removeWatcherTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+    }).join('');
+}
+function onWatcherRatingChange() { onMultiRatingChange('watcherRatingDropdown', 'watcherGelRating'); }
+
+async function loadGelWatchers() {
+    try {
+        const r = await fetch("/api/watchers?source=gelbooru");
+        const d = await r.json();
+        gelWatchers = d.watchers || [];
+        renderGelWatcherList();
+    } catch (e) { console.error("watchers load failed", e); }
+}
+
+function relTime(ts) {
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 90) return "just now";
+    if (s < 3600) return Math.round(s / 60) + " min ago";
+    if (s < 86400) return Math.round(s / 3600) + " h ago";
+    return Math.round(s / 86400) + " d ago";
+}
+
+function renderGelWatcherList() {
+    const box = document.getElementById("gelWatcherList");
+    if (!box) return;
+    if (!gelWatchers.length) {
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">No watchers yet — add tags above to get notified about new matching posts.</div>`;
+        return;
+    }
+    box.innerHTML = gelWatchers.map(w => {
+        const ratings = (w.ratings || []).map(r => (GEL_RATING_LABEL[r.split(":")[1]] || r)).join(", ") || "All ratings";
+        const last = w.last_checked_at ? relTime(w.last_checked_at) : "never";
+        const state = w.enabled ? "" : " (disabled)";
+        const err = w.error ? `<div style="color:#e08585; font-size:11px;">⚠ ${escapeHtml(w.error)}</div>` : "";
+        const pending = !w.initialized ? `<div style="opacity:0.6; font-size:11px;">first check establishes a baseline (no notifications)</div>` : "";
+        return `<div style="border:1px solid var(--border-color); border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div style="flex:1; min-width:200px;">
+                <div style="font-size:13px; font-weight:bold;">${escapeHtml(w.tags.join(" "))}${state}</div>
+                <div style="font-size:11px; opacity:0.7;">${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
+                ${err}${pending}
+            </div>
+            <button class="action-btn" onclick="editGelWatcher('${w.watcher_id}')">Edit</button>
+            <button class="action-btn" onclick="toggleGelWatcher('${w.watcher_id}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
+            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')" title="Delete watcher">×</button>
+        </div>`;
+    }).join("");
+}
+
+async function saveGelWatcher() {
+    if (!watcherTags.length) { showToast("Add at least one tag first", { warn: true }); return; }
+    const body = {
+        source: "gelbooru",
+        tags: watcherTags,
+        ratings: (document.getElementById("watcherGelRating").value || "").split(/\s+/).filter(Boolean),
+        interval_minutes: parseInt(document.getElementById("watcherInterval").value, 10) || 5,
+    };
+    const url = editingWatcherId ? "/api/watchers/" + editingWatcherId : "/api/watchers";
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || "Failed to save watcher", { warn: true }); return; }
+    showToast(editingWatcherId ? "Watcher updated — fresh baseline on next check" : "Watcher added — baseline on first check");
+    cancelGelWatcherEdit();
+    await loadGelWatchers();
+}
+
+function editGelWatcher(id) {
+    const w = gelWatchers.find(x => x.watcher_id === id);
+    if (!w) return;
+    editingWatcherId = id;
+    watcherTags = (w.tags || []).slice();
+    renderWatcherTags();
+    const hidden = document.getElementById("watcherGelRating");
+    hidden.value = (w.ratings || []).join(" ");
+    hidden.dispatchEvent(new Event("change", { bubbles: true })); // syncs checkboxes + label
+    const iv = document.getElementById("watcherInterval");
+    const ivVal = String(w.interval_minutes || 5);
+    if (iv && ![...iv.options].some(o => o.value === ivVal)) {
+        const opt = document.createElement("option"); // custom values keep their own menu entry
+        opt.value = ivVal; opt.textContent = ivVal + " min";
+        iv.appendChild(opt);
+    }
+    if (iv) setSelectValue(iv, ivVal);
+    const sb = document.getElementById("watcherSaveBtn");
+    if (sb) sb.textContent = "Update Watcher";
+    const cb = document.getElementById("watcherCancelBtn");
+    if (cb) cb.style.display = "inline-block";
+}
+
+function cancelGelWatcherEdit() {
+    editingWatcherId = null;
+    watcherTags = [];
+    renderWatcherTags();
+    const input = document.getElementById("watcherTag");
+    if (input) { input.value = ""; delete input.dataset.raw; }
+    const hidden = document.getElementById("watcherGelRating");
+    if (hidden) { hidden.value = ""; hidden.dispatchEvent(new Event("change", { bubbles: true })); }
+    const sb = document.getElementById("watcherSaveBtn");
+    if (sb) sb.textContent = "Add Watcher";
+    const cb = document.getElementById("watcherCancelBtn");
+    if (cb) cb.style.display = "none";
+}
+
+async function toggleGelWatcher(id, enabled) {
+    await fetch("/api/watchers/" + id, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: enabled }) });
+    await loadGelWatchers();
+}
+
+async function deleteGelWatcher(id) {
+    if (!await customConfirm("Delete this watcher? Its notifications stay in the Notifications tab.", "Delete")) return;
+    await fetch("/api/watchers/" + id, { method: "DELETE" });
+    await loadGelWatchers();
+}
+
+function checkGelWatchersNow() {
+    fetch("/api/watchers/check_now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "gelbooru" }) })
+        .then(r => r.json())
+        .then(d => {
+            if (d.started) showToast("Checking watchers…");
+            else showToast("A check is already running", { warn: true });
+            setTimeout(loadGelWatchers, 6000);
+        })
+        .catch(() => {});
 }
 
 // --- E-Shuushuu interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
@@ -1714,6 +1995,21 @@ function enhanceSelect(select) {
     }
 }
 
+// ponytail: enhanced selects only refresh .cs-label on real menu clicks —
+// programmatic value sets must go through here or the visible label goes stale
+function setSelectValue(sel, value) {
+    if (!sel) return;
+    sel.value = value;
+    const wrap = sel.closest('.custom-select');
+    if (wrap) {
+        const label = wrap.querySelector('.cs-label');
+        const opt = sel.options[sel.selectedIndex];
+        if (label && opt) label.textContent = opt.textContent;
+        wrap.querySelectorAll('.cs-item').forEach((it, i) => it.classList.toggle('active', i === sel.selectedIndex));
+    }
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
     let input = document.getElementById(inputId);
     let dropdown = document.getElementById(dropdownId);
@@ -1750,12 +2046,20 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
                 if (data && data.length > 0) {
                     activeIndex = -1;
                     dropdown.innerHTML = "";
+                    // ponytail: distinct site tags can render identically
+                    // (zani_(wuthering_waves) vs zani_(wuthering_waves)_) —
+                    // one row per label, first occurrence wins
+                    let seenLabels = new Set();
                     data.forEach((item) => {
+                        let label = displayFn ? displayFn(item) : String(item);
+                        let labelKey = label.trim().toLowerCase();
+                        if (seenLabels.has(labelKey)) return;
+                        seenLabels.add(labelKey);
                         let finalTag = isNegative ? '-' + item : item;
                         let div = document.createElement("div");
                         div.className = "autosuggest-item";
                         // ponytail: pretty display only — finalTag (underscores intact) is what gets sent
-                        div.textContent = (isNegative ? '-' : '') + (displayFn ? displayFn(item) : item);
+                        div.textContent = (isNegative ? '-' : '') + label;
                         div.onclick = function() {
                             if (displayFn) {
                                 // ponytail: pretty in the box, raw (underscores) stashed for the request
@@ -1767,7 +2071,7 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
                             dropdown.style.display = "none";
                             input.focus();
                             // ponytail: chip tabs add on pick — other tabs keep fill-then-confirm
-                            var _chipFn = { 'gelbooruTag': 'addGelbooruTag', 'gsbooruTag': 'addGsbooruTag', 'konaTag': 'addKonaTag', 'nekosiaTag': 'addNekosiaTag', 'safeTag': 'addSafeTag', 'sankakuTag': 'addSankakuTag', 'yandeTag': 'addYandeTag' }[inputId];
+                            var _chipFn = { 'gelbooruTag': 'addGelbooruTag', 'watcherTag': 'addWatcherTag', 'gsbooruTag': 'addGsbooruTag', 'konaTag': 'addKonaTag', 'nekosiaTag': 'addNekosiaTag', 'safeTag': 'addSafeTag', 'sankakuTag': 'addSankakuTag', 'yandeTag': 'addYandeTag' }[inputId];
                             if (_chipFn && typeof window[_chipFn] === 'function') window[_chipFn]();
                         };
                         dropdown.appendChild(div);
@@ -1839,6 +2143,7 @@ document.addEventListener("DOMContentLoaded", function() {
     setupAutosuggest("nekosapiTag", "nekosapiAutosuggest", "/api/tags/nekosapi", cleanTagDisplay);
     setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay);
     setupAutosuggest("gelbooruTag", "gelbooruAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
+    setupAutosuggest("watcherTag", "watcherAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
     setupAutosuggest("konaTag", "konaAutosuggest", "/api/tags/kona", cleanTagDisplay);
     setupAutosuggest("safeTag", "safeAutosuggest", "/api/tags/safe", cleanTagDisplay);
     setupAutosuggest("sankakuTag", "sankakuAutosuggest", "/api/tags/sankaku", cleanTagDisplay);
@@ -1847,8 +2152,8 @@ document.addEventListener("DOMContentLoaded", function() {
 
 
     document.addEventListener("click", function(e) {
-        let dropdowns = ["eshuushuuAutosuggest", "nekosapiAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
-        let inputs = ["eshuushuuTag", "nekosapiTag", "nekosiaTag", "gelbooruTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
+        let dropdowns = ["eshuushuuAutosuggest", "nekosapiAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "watcherAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
+        let inputs = ["eshuushuuTag", "nekosapiTag", "nekosiaTag", "gelbooruTag", "watcherTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
         for (let i = 0; i < dropdowns.length; i++) {
             let dp = document.getElementById(dropdowns[i]);
             let inp = document.getElementById(inputs[i]);
@@ -1866,21 +2171,51 @@ socket.on("python_log", function (data) {
 
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
-    if (!data || data.stopped) return;
-    const d = data.downloaded || 0, f = data.failed || 0;
-    if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Task finished: ${d} downloaded successfully, ${f} failed to download! ---`);
-    else if (d > 0) updateProgressBar(data.worker, `--- All ${d} downloads completed successfully! ---`);
-    else updateProgressBar(data.worker, "Task finished. No new images to download.");
+    if (!data || data.stopped || data.more) return;
+    const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
+    const dup = z ? ` (${z} duplicates removed)` : "";
+    const jobs = data.jobs || 1;
+    if (jobs > 1) {
+        if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded, ${f} failed${dup}! ---`);
+        else if (d > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded${dup}! ---`);
+        else updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, no new images${dup} ---`);
+        return;
+    }
+    if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Task finished: ${d} downloaded successfully, ${f} failed to download${dup}! ---`);
+    else if (d > 0) updateProgressBar(data.worker, `--- All ${d} downloads completed successfully!${dup} ---`);
+    else updateProgressBar(data.worker, `Task finished. No new images to download${dup}.`);
+});
+
+socket.on("notifications", function (data) {
+    setNotifDot((data && data.unread) || 0);
+    if (data && data.new > 0) {
+        const src = NOTIF_SOURCES[data.source];
+        showToast(src && src.toast ? src.toast(data.new) : `${data.new} new notification${data.new === 1 ? "" : "s"}`);
+    }
+    const tab = document.getElementById("Notifications");
+    if (tab && tab.style.display !== "none") loadNotifications();
 });
 
 let _histReloadTimer = null;
 socket.on("update_history", function () {
-    loadGallery();
-    populateGallerySiteFilter();
-    // ponytail: downloads fire this per file — coalesce history reloads
-    // or the tab re-renders dozens of times per run
+    // ponytail: downloads fire this per file — coalesce history reloads or
+    // the tab re-fetches and re-renders dozens of times per run
+    viewerMetaMisses.clear();  // a row may have landed since the viewer's fetch
     if (_histReloadTimer) return;
-    _histReloadTimer = setTimeout(() => { _histReloadTimer = null; loadTagsData(); }, 1500);
+    _histReloadTimer = setTimeout(() => {
+        _histReloadTimer = null;
+        loadGallery();
+        populateGallerySiteFilter();
+        loadTagsData();
+    }, 1500);
+});
+
+socket.on("gallery_rescan_done", function (data) {
+    if (data && data.success) {
+        showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" });
+        loadGallery(1);
+        populateGallerySiteFilter();
+    } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" });
 });
 
 socket.on("pinterest_progress", function (data) {
@@ -1893,7 +2228,237 @@ socket.on("pinterest_progress", function (data) {
     if (txt) txt.textContent = pct + "%";
 });
 
+// live byte-level progress while files stream (throttled server-side ~5/s)
+socket.on("dl_progress", function (data) {
+    let key = WORKER_TO_TAB[data.worker];
+    if (!key) return;
+    let fill = document.getElementById("dlBar_" + key);
+    let txt = document.getElementById("dlText_" + key);
+    let container = document.getElementById("dualProgress_" + key);
+    if (container) container.style.display = "flex";
+    if (fill) fill.style.width = data.pct + "%";
+    if (txt) txt.textContent = Math.round(data.pct) + "%";
+});
+
+let openQueueSite = null; // worker whose pill list is open (survives re-renders)
+// ponytail: a locally stopped site stays server-active while its thread winds
+// down (in-flight awaits ignore stop_event) — suppress that ghost in the pill
+// until the server's real clear arrives
+let stoppedWorker = {};
+function renderQueueChip(data) {
+    const actives = ((data && data.active) || []).filter(a => !stoppedWorker[a.site]);
+    const queued = (data && data.queue) || [];
+    // one pill per worker — a pill's list never mixes in another worker's jobs
+    const bySite = {};
+    queued.forEach(j => (bySite[j.site] = bySite[j.site] || []).push(j));
+    queuedCounts = Object.fromEntries(Object.keys(bySite).map(s => [s, bySite[s].length]));
+    const actBySite = {};
+    actives.forEach(a => (actBySite[a.site] = actBySite[a.site] || []).push(a));
+    if (openQueueSite && !bySite[openQueueSite]) openQueueSite = null;
+    // the pill lives inside the worker's own tab — clear all, rebuild per worker
+    document.querySelectorAll(".queue-chip-row").forEach(r => r.remove());
+    const sites = new Set([...Object.keys(bySite), ...Object.keys(actBySite)]);
+    if (!sites.size) return;
+    let drag = null; // {site, from} while dragging
+    const cleanDragMarkers = () => {
+        document.querySelectorAll(".queue-chip-row .queue-list").forEach(l => l.classList.remove("dragging"));
+        document.querySelectorAll(".queue-chip-row .queue-item").forEach(r => r.classList.remove("drop-above", "drop-below", "drop-bump"));
+        document.querySelectorAll(".queue-chip-row .queue-chip").forEach(c => c.classList.remove("drop-bump"));
+        drag = null;
+    };
+    const stopBtn = (site) => {
+        const x = document.createElement("button");
+        x.className = "queue-x";
+        x.title = "Stop this download";
+        x.textContent = "✕";
+        x.onclick = e => { e.stopPropagation(); stoppedWorker[site] = true; socket.emit("stop_worker", { worker: site }); };
+        return x;
+    };
+    sites.forEach(site => {
+        // find this worker's tab via its progress bar — the ids are the only
+        // worker→tab link that exists (tab ids are capitalized, worker ids aren't)
+        const key = WORKER_TO_TAB[site];
+        const bar = key && document.getElementById("dualProgress_" + key);
+        const tab = bar && bar.closest(".tab-content");
+        if (!tab) return;
+        const items = bySite[site] || [];
+        const pillRow = document.createElement("div");
+        pillRow.className = "queue-chip-row";
+
+        // one pill per worker: the tag downloading right now (▶) when busy,
+        // otherwise the waiting count — clicking opens the waiting list
+        const acts = actBySite[site] || [];
+        const chip = document.createElement("div");
+        chip.className = "queue-chip";
+        chip.dataset.site = site;
+        chip.onclick = toggleQueueList;
+        const text = document.createElement("span");
+        if (acts.length) {
+            text.textContent = `▶ ${siteLabel(site)}: ${cleanTagDisplay(acts[0].tag)}`;
+            text.title = `${acts[0].site} — ${acts[0].tag}`;
+        } else {
+            text.textContent = `${siteLabel(site)}: ${items.length} queued`;
+        }
+        const list = document.createElement("div");
+        list.className = "queue-list";
+        list.style.display = openQueueSite === site ? "block" : "none";
+        // keep row clicks/dblclicks from toggling the pill open/closed
+        list.onclick = e => e.stopPropagation();
+        list.ondblclick = e => e.stopPropagation();
+        if (acts.length) chip.append(text, stopBtn(acts[0].site));
+        else chip.append(text);
+        if (!items.length) {
+            const empty = document.createElement("div");
+            empty.className = "queue-item queue-empty";
+            empty.textContent = "no queued tags";
+            list.appendChild(empty);
+        }
+        items.forEach((j, n) => {
+            const row = document.createElement("div");
+            row.className = "queue-item";
+            row.draggable = true;
+            row.dataset.site = j.site;
+            row.dataset.siteIdx = n;
+
+            const pos = document.createElement("input");
+            pos.className = "queue-pos";
+            pos.type = "number";
+            pos.min = "1";
+            pos.max = String(items.length);
+            pos.value = String(n + 1);
+            pos.title = "Priority position (press Enter to move)";
+            pos.onclick = e => e.stopPropagation();
+            pos.ondblclick = e => e.stopPropagation();
+            const commitPos = () => {
+                const v = parseInt(pos.value, 10);
+                if (Number.isNaN(v) || v === n + 1) { pos.value = String(n + 1); return; }
+                socket.emit("queue_move", { site: j.site, from: n, to: Math.min(Math.max(v, 1), items.length) - 1 });
+            };
+            pos.onchange = commitPos;
+            pos.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); commitPos(); pos.blur(); } };
+
+            const label = document.createElement("span");
+            label.className = "queue-label";
+            label.textContent = cleanTagDisplay(j.tag);
+            label.title = `${j.site} — ${j.tag}`;
+
+            const x = document.createElement("button");
+            x.className = "queue-x";
+            x.title = "Cancel this request";
+            x.textContent = "✕";
+            x.onclick = e => { e.stopPropagation(); socket.emit("queue_cancel", { site: j.site, index: n }); };
+
+            row.append(pos, label, x);
+
+            // double-click anywhere on the row (not on its controls) → hold the
+            // running job of this worker and start this one now
+            row.ondblclick = e => {
+                if (e.target.closest(".queue-pos, .queue-x")) return;
+                socket.emit("queue_bump", { site: j.site, index: n });
+            };
+
+            row.ondragstart = e => {
+                drag = { site: j.site, from: n };
+                e.dataTransfer.setData("text/plain", String(n));
+                e.dataTransfer.effectAllowed = "move";
+                list.classList.add("dragging");
+            };
+            row.ondragover = e => {
+                if (!drag) return;
+                // only reorder within this worker's queue, never onto itself
+                if (drag.site !== j.site || n === drag.from) return;
+                e.preventDefault();
+                const r = row.getBoundingClientRect();
+                const above = e.clientY < r.top + r.height / 2;
+                row.classList.toggle("drop-above", above);
+                row.classList.toggle("drop-below", !above);
+                row.dataset.side = above ? "above" : "below";
+            };
+            row.ondragleave = () => { row.classList.remove("drop-above", "drop-below"); delete row.dataset.side; };
+            row.ondrop = e => {
+                e.preventDefault();
+                const d = drag;
+                const below = row.dataset.side === "below";
+                cleanDragMarkers();
+                if (!d || d.site !== j.site || d.from === n) return;
+                // convert original-list drop spot to final index after removal
+                let to = below ? (d.from < n ? n : n + 1) : (d.from < n ? n - 1 : n);
+                if (to < 0) to = 0;
+                socket.emit("queue_move", { site: d.site, from: d.from, to });
+            };
+            row.ondragend = cleanDragMarkers;
+
+            list.appendChild(row);
+        });
+        chip.append(list);
+        // dropping a waiting item on the pill itself (outside its list) = bump
+        chip.ondragover = e => {
+            if (e.target.closest(".queue-list") || !drag || drag.site !== site) return;
+            e.preventDefault();
+            chip.classList.add("drop-bump");
+        };
+        chip.ondragleave = e => { if (!e.target.closest(".queue-list")) chip.classList.remove("drop-bump"); };
+        chip.ondrop = e => {
+            if (e.target.closest(".queue-list")) return;
+            e.preventDefault();
+            const d = drag;
+            cleanDragMarkers();
+            if (d && d.site === site) socket.emit("queue_bump", { site: d.site, index: d.from });
+        };
+        pillRow.appendChild(chip);
+        const h2 = tab.querySelector("h2");
+        if (h2 && h2.parentNode === tab) tab.insertBefore(pillRow, h2.nextSibling);
+        else tab.prepend(pillRow);
+    });
+}
+
+function toggleQueueList(ev) {
+    ev.stopPropagation();
+    const chip = ev.currentTarget;
+    const list = chip.querySelector(".queue-list");
+    const opening = list.style.display === "none";
+    document.querySelectorAll(".queue-chip-row .queue-list").forEach(l => l.style.display = "none");
+    list.style.display = opening ? "block" : "none";
+    openQueueSite = opening ? chip.dataset.site : null;
+}
+document.addEventListener("click", function () {
+    document.querySelectorAll(".queue-chip-row .queue-list").forEach(l => l.style.display = "none");
+    openQueueSite = null;
+});
+
+// server: one tag at a time per worker — sync buttons/progress and the queue chip
+socket.on("dl_queue", function (data) {
+    if (!data) return;
+    const actives = data.active || [];
+    const queued = data.queue || [];
+    const busy = new Set();
+    const activeSites = new Set();
+    actives.forEach(a => { busy.add(a.site); activeSites.add(a.site); });
+    queued.forEach(j => busy.add(j.site));
+    Object.keys(workerRunning).forEach(w => {
+        if (busy.has(w)) {
+            // queued-only sites must show START (it kicks off the queue) — but
+            // never override a local STOP press while its worker winds down
+            if (!activeSites.has(w) && workerRunning[w]) { workerRunning[w] = false; renderRunBtn(w); }
+        } else if (workerRunning[w]) {
+            workerRunning[w] = false; renderRunBtn(w);
+        }
+    });
+    // jobs still waiting: hide their progress bar until the job actually starts
+    queued.forEach(j => {
+        const key = WORKER_TO_TAB[j.site];
+        const c = document.getElementById("dualProgress_" + key);
+        if (c) c.style.display = "none";
+    });
+    // drop the stop marker once the server agrees the job is gone
+    Object.keys(stoppedWorker).forEach(w => { if (!activeSites.has(w)) delete stoppedWorker[w]; });
+    renderQueueChip(data);
+});
+
 window.onload = async function () {
+    socket.emit("get_queue");
+    // buttons must exist before any queue state arrives
+    Object.keys(WORKER_TO_TAB).forEach(renderRunBtn);
     try {
         let resp = await fetch("/api/config");
         let config = await resp.json();
@@ -1905,6 +2470,7 @@ window.onload = async function () {
             document.getElementById("retryWait").value = config.retry_wait || 5;
             document.getElementById("antiBanPause").value = config.anti_ban_pause || 3;
             document.getElementById("downloadRetries").value = config.download_retries || 3;
+            document.getElementById("reqRateLimit").value = config.req_rate_limit || 4;
             if (document.getElementById("dedupEnabled")) document.getElementById("dedupEnabled").checked = config.dedup_enabled !== false;
         }
     } catch (e) { console.error("Config error:", e); }
@@ -1913,7 +2479,7 @@ window.onload = async function () {
         let resp = await fetch("/api/folder");
         let data = await resp.json();
         if (data.folder) document.getElementById("folderDisplay").innerText = data.folder;
-    } catch (e) {}
+    } catch (e) { console.error("folder load failed:", e); }
 
     updateNekoDropdown();
     updateNekosLifeType();
@@ -1937,15 +2503,18 @@ window.onload = async function () {
             let opt = document.createElement("option");
             opt.value = t; opt.textContent = cleanTagDisplay(t); sel.appendChild(opt);
         });
-    } catch (e) {}
+    } catch (e) { console.error("waifu tags load failed:", e); }
 
     await _startupTail;
-    const gGrid = document.getElementById("galleryGrid");
-    if (gGrid) gGrid.classList.toggle("blur-nsfw", galleryBlurNsfw);
     const gBlurBtn = document.getElementById("galleryBlurBtn");
     if (gBlurBtn) gBlurBtn.classList.toggle("active", galleryBlurNsfw);
-    loadGallery();
-    populateGallerySiteFilter();
+    // ponytail: Gallery is display:none at startup (default tab is MAIN), so clientWidth/clientHeight
+    // are 0 and per_page comes from a window-width guess — openTab refetches when Gallery is
+    // actually shown, so the startup fetch only wastes work; skip it unless the tab is visible.
+    if (document.getElementById("Gallery").style.display !== "none") {
+        loadGallery();
+        populateGallerySiteFilter();
+    }
 };
 
 const nekoImages = ["husbando", "kitsune", "neko", "waifu"];
@@ -2063,17 +2632,224 @@ function openTab(tabName, btn) {
     let buttons = document.getElementsByClassName("tab-btn");
     for (let i = 0; i < buttons.length; i++) buttons[i].classList.remove("active");
 
+    // btn is optional: programmatic jumps (e.g. notifications -> Pixiv) find it
+    if (!btn) btn = Array.from(buttons).find(b => (b.getAttribute("onclick") || "").includes("'" + tabName + "'"));
     document.getElementById(tabName).style.display = "flex";
-    btn.classList.add("active");
+    if (btn) btn.classList.add("active");
     updateBackground(tabName);
     if (tabName === "Gallery") {
-        const grid = document.getElementById("galleryGrid");
-        if (grid) grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
         const blurBtn = document.getElementById("galleryBlurBtn");
         if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
         clearTimeout(_resizeTimer);
         _resizeTimer = setTimeout(() => loadGallery(), 60);
     }
+    // gallery keeps its hearts fresh by reloading on open; the history tab
+    // must refetch too, or favourites toggled in the gallery stay stale here
+    if (tabName === "History") loadTagsData();
+    if (tabName === "Notifications") loadNotifications();
+}
+
+// --- Multi-source notifications ---
+let notifItems = [];
+let notifSource = null;
+const NOTIF_FALLBACK = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><rect x='30' y='34' width='40' height='32' rx='4' fill='none' stroke='%23888888' stroke-width='4'/><circle cx='42' cy='46' r='4' fill='%23888888'/><path d='M34 62l12-12 8 8 6-6 6 6z' fill='%23888888'/></svg>";
+const GEL_RATING_LABEL = { g: "Safe", s: "Sensitive", q: "Questionable", e: "NSFW" };
+
+// Source registry: dropdown options, unread counts, empty text, card
+// markup and the ⚡ flash all come from here — adding a source means
+// adding one entry, not threading if/else through the UI.
+const NOTIF_SOURCES = {
+    gelbooru: {
+        name: "Gelbooru",
+        empty: "No watcher notifications yet — matching posts from your Gelbooru watchers will appear here.",
+        toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
+        flash: n => gelbooruGotoFlash(n),
+        card: (n, idx) => gelbooruNotifCard(n, idx),
+        watcherPanel: true, // watcher management lives in this source's page
+    },
+    pixiv: {
+        name: "Pixiv",
+        empty: "No notifications yet — new works from the artists you follow will appear here.",
+        toast: n => `${n} new artwork${n === 1 ? "" : "s"} from artists you follow`,
+        flash: n => pixivGotoArtist(String(n.artist_id || "").replace(/[^0-9]/g, "")),
+        card: (n, idx) => pixivNotifCard(n, idx),
+        controls: true, // interval + Check now row belongs to the pixiv watcher
+    },
+};
+
+function notifSourceId() {
+    return notifSource || (typeof uiConfig !== "undefined" && uiConfig.notif_source) || "pixiv";
+}
+
+function setNotifDot(n) {
+    const d = document.getElementById("notifDot");
+    if (d) d.style.display = n > 0 ? "inline-block" : "none";
+}
+// startup: show the dot for unread that arrived before this page load
+fetch("/api/notifications").then(r => r.json()).then(d => setNotifDot((d && d.unread) || 0)).catch(() => {});
+
+function onNotifSourceChange(sel) {
+    if (sel.value === notifSourceId()) return; // programmatic setSelectValue fires change too
+    notifSource = sel.value;
+    uiConfig.notif_source = notifSource;
+    persistUiConfig();
+    loadNotifications();
+}
+
+function renderNotifSourceSelect(counts) {
+    const sel = document.getElementById("notifSource");
+    if (!sel) return;
+    sel.innerHTML = Object.keys(NOTIF_SOURCES).map(id =>
+        `<option value="${id}">${NOTIF_SOURCES[id].name} (${(counts && counts[id]) || 0})</option>`).join("");
+    setSelectValue(sel, notifSourceId());
+}
+
+async function loadNotifications() {
+    try {
+        const source = notifSourceId();
+        const resp = await fetch("/api/notifications?source=" + encodeURIComponent(source));
+        const data = await resp.json();
+        notifItems = data.items || [];
+        renderNotifSourceSelect(data.unread_by_source);
+        renderNotifications();
+        setNotifDot(data.unread || 0);
+        const src = NOTIF_SOURCES[source];
+        const controls = document.getElementById("notifPixivControls");
+        if (controls) controls.style.display = (src && src.controls) ? "inline-flex" : "none";
+        const wpanel = document.getElementById("gelWatcherPanel");
+        if (wpanel) wpanel.style.display = (src && src.watcherPanel) ? "block" : "none";
+        if (src && src.watcherPanel) loadGelWatchers();
+        const status = data.status || {};
+        const iv = document.getElementById("notifInterval");
+        if (iv && document.activeElement !== iv && status.interval_minutes) iv.value = status.interval_minutes;
+        updateNotifStatus(status);
+        if (status.pending_toast > 0) {
+            showToast(src && src.toast ? src.toast(status.pending_toast) : `${status.pending_toast} new notification${status.pending_toast === 1 ? "" : "s"}`);
+        }
+        // viewing a page = reading that source (other sources stay lit on the bell)
+        if (notifItems.some(i => !i.read)) {
+            const r = await fetch("/api/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: source }) });
+            const rd = await r.json();
+            setNotifDot((rd && rd.unread) || 0);
+        }
+    } catch (e) { console.error("Notifications load failed", e); }
+}
+
+function updateNotifStatus(d) {
+    const el = document.getElementById("notifStatus");
+    if (!el) return;
+    const parts = [];
+    if (d.error) parts.push("⚠ " + d.error);
+    if (d.last_check) parts.push("Last check: " + new Date(d.last_check * 1000).toLocaleString());
+    if (!d.error && d.due_in > 0) parts.push("next check in " + Math.max(1, Math.round(d.due_in / 60)) + " min");
+    el.textContent = parts.join("  ·  ");
+}
+
+function notifCardShell(n, idx, body, flashTitle) {
+    return `
+        <div class="image-card-log" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+            ${body}
+            <button onclick="flashNotif(${idx})" title="${flashTitle}" style="position: absolute; top: 10px; right: 10px; padding: 5px 8px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color); border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button>
+        </div>`;
+}
+
+function pixivNotifCard(n, idx) {
+    const title = escapeHtml(n.title || "Untitled");
+    const artist = escapeHtml(n.artist_name || "Unknown artist");
+    const date = String(n.create_date || "").replace("T", " ").slice(0, 16);
+    const thumb = n.thumb ? `/api/pixiv/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
+    return notifCardShell(n, idx, `
+            <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
+                <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
+            </div>
+            <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
+                <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
+                <div style="font-size: 12px; opacity: 0.75;">${artist}${date ? " · " + date : ""}</div>
+            </div>`, "Open this artist in the Pixiv downloader");
+}
+
+function gelbooruNotifCard(n, idx) {
+    const m = n.metadata || {};
+    const title = escapeHtml(n.title || "New matching Gelbooru post");
+    const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
+    const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
+    const thumb = n.thumb ? `/api/gelbooru/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
+    return notifCardShell(n, idx, `
+            <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
+                <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
+            </div>
+            <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
+                <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
+                <div style="font-size: 12px; opacity: 0.75;">New matching Gelbooru post · ${rating}${date ? " · " + date : ""}</div>
+            </div>`, "Populate the Gelbooru downloader with this watcher's tags");
+}
+
+// ponytail: newest 100 cards only — 1000 <img> cards is a DOM stall;
+// counts/status stay exact, flashNotif idx stays valid (slice from 0)
+const NOTIF_RENDER_CAP = 100;
+
+function renderNotifications() {
+    const box = document.getElementById("notifList");
+    if (!box) return;
+    const src = NOTIF_SOURCES[notifSourceId()];
+    if (!notifItems.length) {
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">${escapeHtml((src && src.empty) || "No notifications yet.")}</div>`;
+        return;
+    }
+    const shown = notifItems.slice(0, NOTIF_RENDER_CAP);
+    const hidden = notifItems.length - shown.length;
+    box.innerHTML = shown.map((n, idx) => {
+        const s = NOTIF_SOURCES[n.source];
+        return (s && s.card ? s.card : pixivNotifCard)(n, idx);
+    }).join("") + (hidden
+        ? `<div style="opacity:0.6; font-size:12px; margin-top:8px;">${hidden} older notification${hidden === 1 ? "" : "s"} not shown</div>`
+        : "");
+}
+
+function flashNotif(idx) {
+    const n = notifItems[idx];
+    const s = n && NOTIF_SOURCES[n.source];
+    if (n && s && s.flash) s.flash(n);
+}
+
+function gelbooruGotoFlash(n) {
+    const m = n.metadata || {};
+    jumpToSite("gelbooru", (m.tags || []).join(" "), (m.ratings || []).join(" "));
+}
+
+function pixivGotoArtist(artistId) {
+    if (!artistId) return;
+    openTab("Pixiv");
+    // setSelectValue, not .value=: the enhanced dropdown's label only follows it
+    setSelectValue(document.getElementById("pixivMode"), "artworks");
+    document.getElementById("pixivTag").value = artistId;
+}
+
+function saveNotifInterval(el) {
+    let v = parseInt(el.value, 10);
+    if (!v) v = 90;
+    v = Math.max(60, Math.min(120, v));
+    el.value = v;
+    uiConfig.pixiv_watch_minutes = v;
+    persistUiConfig();
+}
+
+function checkPixivNow() {
+    fetch("/api/pixiv/notifications/check", { method: "POST" })
+        .then(r => r.json())
+        .then(d => {
+            if (d.started) showToast("Checking for new works…");
+            else showToast("A check is already running", { warn: true });
+            setTimeout(loadNotifications, 6000);
+        })
+        .catch(() => {});
+}
+
+async function clearNotifications() {
+    const src = NOTIF_SOURCES[notifSourceId()];
+    if (!await customConfirm(`Clear these ${(src && src.name) || ""} notifications? Posts you've already seen won't reappear.`, "Clear")) return;
+    await fetch("/api/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: notifSourceId() }) });
+    await loadNotifications();
 }
 
 function toggleMenu(groupId) {
@@ -2097,15 +2873,20 @@ function clearLog(tabID) {
 function showToast(msg, opts) {
     opts = opts || {};
     const container = document.getElementById("toastContainer") || (() => { const c = document.createElement('div'); c.id = 'toastContainer'; c.className = 'toast-container'; document.body.appendChild(c); return c; })();
+    // keyed toasts replace the previous toast of the same kind instead of
+    // stacking (e.g. "Rescan started" is pointless once "Rescan complete" lands)
+    if (opts.key) container.querySelectorAll(".toast-item").forEach(t => { if (t.dataset.toastKey === opts.key) t.remove(); });
     let toast = document.createElement("div");
     toast.className = "toast-item" + (opts.warn ? " warn" : "");
-    toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${msg}</span></div><button class="toast-dismiss" onclick="this.parentElement.remove()">✕</button>`;
+    if (opts.key) toast.dataset.toastKey = opts.key;
+    toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${escapeHtml(msg)}</span></div><button class="toast-dismiss" onclick="this.parentElement.remove()">✕</button>`;
     container.appendChild(toast);
     // ponytail: warnings (e.g. copy fallback) stay until dismissed; info toasts fade
     if (!opts.sticky) setTimeout(() => { if (!toast.parentElement) return; toast.classList.add("fade-out"); setTimeout(() => toast.remove(), 350); }, 4000);
 }
 
 // ponytail: silent JS failures are undebuggable in the desktop window — surface them
+window.addEventListener("unhandledrejection", function (e) { console.error("Unhandled promise rejection:", e.reason); });
 const WARN_ICON = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7.89003 1.0499C7.80611 0.886097 7.67861 0.748632 7.52158 0.652642 7.36455 0.556651 7.18407 0.505859 7.00003 0.505859c-0.18405 0 -0.36453 0.050792 -0.52156 0.146783 -0.15703 0.09599 -0.28453 0.233455 -0.36844 0.397258l-5.500004 11c-0.07671 0.1522 -0.113232 0.3215 -0.106098 0.4919 0.007134 0.1703 0.057688 0.3359 0.146861 0.4812 0.089172 0.1453 0.214003 0.2654 0.362641 0.3488 0.14863 0.0835 0.31613 0.1276 0.4866 0.1281H12.5c0.1705 -0.0005 0.338 -0.0446 0.4866 -0.1281 0.1487 -0.0834 0.2735 -0.2035 0.3627 -0.3488 0.0891 -0.1453 0.1397 -0.3109 0.1468 -0.4812 0.0072 -0.1704 -0.0294 -0.3397 -0.1061 -0.4919l-5.49997 -11Z"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 5v3.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c-0.13807 0 -0.25 -0.1119 -0.25 -0.25s0.11193 -0.25 0.25 -0.25"/><path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M7 11c0.13807 0 0.25 -0.1119 0.25 -0.25s-0.11193 -0.25 -0.25 -0.25"/></svg>`;
 const CHECK_ICON = ZERO_CHECK_ICON;
 const TRASH_ICON = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path fill="currentColor" d="M15.2188 0c0.2229 0.0000058603 0.4394 0.0747674 0.6152 0.211914 0.1757 0.137143 0.3013 0.328695 0.3555 0.544922L16.6182 3H24v2h-3v16c0 0.7957 -0.3163 1.5585 -0.8789 2.1211S18.7957 24 18 24H6c-0.79565 0 -1.55849 -0.3163 -2.12109 -0.8789C3.3163 22.5585 3 21.7957 3 21V5H0V3h7.38184L7.81055 0.756836c0.05418 -0.216227 0.17973 -0.407779 0.35547 -0.544922C8.34176 0.0747674 8.55833 0.0000058603 8.78125 0zM8 19h2V8H8zm6 -11v11h2V8z"></path></svg>`;
@@ -2124,12 +2905,25 @@ function renderRunBtn(workerName) {
     const running = !!workerRunning[workerName];
     btn.textContent = running ? "STOP" : "START";
     btn.classList.toggle("stop-btn", running);
+    // busy: "add to queue" appears just before this worker's Limit/Amount box
+    let add = document.getElementById("queueAdd_" + workerName);
+    if (!add) {
+        add = document.createElement("button");
+        add.id = "queueAdd_" + workerName;
+        add.className = "action-btn";
+        add.textContent = "Add to queue";
+        add.title = "Add these form values to this worker's queue (press START to begin)";
+        add.onclick = () => addWorkerToQueue(workerName);
+        const tab = btn.closest(".tab-content") || btn.parentElement;
+        const limLabel = Array.from(tab.querySelectorAll("label")).find(l => /^(limit|amount):?$/i.test(l.textContent.trim()));
+        (limLabel ? limLabel.parentElement : btn.parentElement).insertBefore(add, limLabel || btn);
+    }
 }
 function toggleWorker(workerName) {
     if (workerRunning[workerName]) stopWorker(workerName);
     else startWorker(workerName);
 }
-function startWorker(workerName) {
+function buildWorkerPayload(workerName) {
     let payload = { worker: workerName, net_config: { ...globalNetConfig } };
     payload.net_config.api_timeout = document.getElementById("apiTimeout").value;
     payload.net_config.retry_wait = document.getElementById("retryWait").value;
@@ -2140,14 +2934,14 @@ function startWorker(workerName) {
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
     else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; const mixed = ["goose", "wallpaper", "lizard", "span"]; if (mixed.includes(payload.category)) payload.format = document.getElementById('nekosLifeFormat').value; }
     else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
-    else if (workerName === 'gelbooru') { payload.tag = currentGelbooruTags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked) payload.tag += " -ai_generated"; }
+    else if (workerName === 'gelbooru') { payload.tag = currentGelbooruTags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !currentGelbooruTags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
     else if (workerName === 'gsbooru') { payload.tag = currentGsbooruTags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
     else if (workerName === 'yande') { payload.tag = currentYandeTags.join(' '); payload.limit = document.getElementById('yandeLimit').value; payload.rating = document.getElementById('yandeRating').value; }
     else if (workerName === 'dan') { payload.tag = currentDanTags.join(' '); payload.limit = document.getElementById('danLimit').value; payload.rating = document.getElementById('danRating').value; let format = document.getElementById('danFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('danExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
     else if (workerName === 'kona') { payload.tag = currentKonaTags.join(' '); payload.limit = document.getElementById('konaLimit').value; payload.rating = document.getElementById('konaRating').value; let format = document.getElementById('konaFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('konaExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
     else if (workerName === 'rule34') { payload.tag = currentRule34Tags.join(' '); payload.limit = document.getElementById('rule34Limit').value; payload.method = document.getElementById('rule34Method').value; payload.sort_type = document.getElementById('rule34SortType').value; payload.sort_order = document.getElementById('rule34SortOrder').value; let format = document.getElementById('rule34Format').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'gifs') { ex.push('-video'); ex.push('-image'); } else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('exGif').checked) ex.push('-gif'); if (document.getElementById('exComic').checked) ex.push('-comic'); if (document.getElementById('ex3D').checked) ex.push('-3d'); payload.exclusions = ex; payload.exclude_ai = document.getElementById('rule34-exclude-ai').checked; }
     else if (workerName === 'sankaku') { payload.tag = currentSankakuTags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; }
-    else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join('&&'); payload.limit = document.getElementById('animeDlLimit').value; }
+    else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join(' '); payload.limit = document.getElementById('animeDlLimit').value; }
     else if (workerName === 'pinterest') { payload.tag = document.getElementById('pinterestTag').value; payload.limit = document.getElementById('pinterestLimit').value; payload.is_search = document.getElementById('pinterestMode').value === 'search'; payload.min_w = parseInt(document.getElementById('pinterestMinW').value) || 0; payload.min_h = parseInt(document.getElementById('pinterestMinH').value) || 0; }
     else if (workerName === 'pixiv') {
         let mode = document.getElementById('pixivMode').value;
@@ -2157,7 +2951,7 @@ function startWorker(workerName) {
             payload.tag = 'ranking:' + ranking;
         } else {
             let val = document.getElementById('pixivTag').value.trim();
-            if (!val) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return; }
+            if (!val) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return null; }
             payload.tag = mode + ':' + val;
         }
 
@@ -2188,18 +2982,18 @@ function startWorker(workerName) {
     if (TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
         logToConsole(workerName, "Error: tag is empty — nothing to search");
-        workerRunning[workerName] = false; renderRunBtn(workerName);
-        return false;
+        return null;
     }
     if (workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
         showToast("Enter a tag or user ID first");
         logToConsole('eshuushuu', "Error: tag and user ID are both empty — nothing to search");
-        workerRunning[workerName] = false; renderRunBtn(workerName);
-        return false;
+        return null;
     }
 
-    socket.emit("start_worker", payload);
-    workerRunning[workerName] = true; renderRunBtn(workerName);
+    return payload;
+}
+
+function clearSubmittedTags(workerName) {
     // ponytail: submitted combo clears so the box is fresh for the next search
     if (workerName === 'zero') { currentZerochanTags = []; zerochanSubTags.clear(); renderZerochanTags(); document.getElementById('zeroTag').value = ''; }
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
@@ -2212,7 +3006,20 @@ function startWorker(workerName) {
     if (workerName === 'safe') { currentSafeTags = []; safeSubTags.clear(); renderSafeTags(); document.getElementById('safeTag').value = ''; }
     if (workerName === 'sankaku') { currentSankakuTags = []; sankakuSubTags.clear(); renderSankakuTags(); document.getElementById('sankakuTag').value = ''; }
     if (workerName === 'yande') { currentYandeTags = []; yandeSubTags.clear(); renderYandeTags(); document.getElementById('yandeTag').value = ''; }
+}
 
+function startWorker(workerName) {
+    delete stoppedWorker[workerName];
+    if (queuedCounts[workerName]) {
+        // jobs are already waiting — START kicks off the head of the queue
+        socket.emit("start_worker", { worker: workerName });
+    } else {
+        const payload = buildWorkerPayload(workerName);
+        if (!payload) return false;
+        socket.emit("start_worker", payload);
+        clearSubmittedTags(workerName);
+    }
+    workerRunning[workerName] = true; renderRunBtn(workerName);
     let key = WORKER_TO_TAB[workerName];
     if (key) {
         let container = document.getElementById("dualProgress_" + key);
@@ -2229,7 +3036,17 @@ function startWorker(workerName) {
     return true;
 }
 
+function addWorkerToQueue(workerName) {
+    const payload = buildWorkerPayload(workerName);
+    if (!payload) return false;
+    delete stoppedWorker[workerName];
+    socket.emit("queue_add", payload);
+    clearSubmittedTags(workerName);
+    return true;
+}
+
 function stopWorker(workerName) {
+    stoppedWorker[workerName] = true;
     socket.emit("stop_worker", { worker: workerName });
     workerRunning[workerName] = false; renderRunBtn(workerName);
     let key = WORKER_TO_TAB[workerName];
@@ -2242,13 +3059,13 @@ function stopWorker(workerName) {
 async function loadApiSettings() {
     let resp = await fetch("/api/api-settings");
     let settings = await resp.json();
-    fetchExtensionsCatalog();
     document.getElementById("r34Key").value = settings.rule34_api_key || "";
     document.getElementById("r34Uid").value = settings.rule34_user_id || "";
     document.getElementById("danLogin").value = settings.danbooru_login || "";
     document.getElementById("danApiKey").value = settings.danbooru_api_key || "";
     document.getElementById("gelKey").value = settings.gelbooru_api_key || "";
     document.getElementById("gelUid").value = settings.gelbooru_user_id || "";
+    document.getElementById("gsApiKey").value = settings.gsbooru_api_key || "";
     document.getElementById("konaLogin").value = settings.konachan_login || "";
     document.getElementById("konaPassword").value = settings.konachan_password || "";
     document.getElementById("sankaLogin").value = settings.sanka_login || "";
@@ -2270,6 +3087,7 @@ async function saveApiSettings() {
         danbooru_api_key: document.getElementById("danApiKey").value.trim(),
         gelbooru_api_key: document.getElementById("gelKey").value.trim(),
         gelbooru_user_id: document.getElementById("gelUid").value.trim(),
+        gsbooru_api_key: document.getElementById("gsApiKey").value.trim(),
         konachan_login: document.getElementById("konaLogin").value.trim(),
         konachan_password: document.getElementById("konaPassword").value.trim(),
         sanka_login: document.getElementById("sankaLogin").value.trim(),
@@ -2284,16 +3102,33 @@ async function saveApiSettings() {
     };
     let resp = await fetch("/api/api-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     let result = await resp.json();
-    let statusEl = document.getElementById("apiSaveStatus");
-    statusEl.textContent = result.success ? "Saved!" : "Error!";
-    setTimeout(()=> statusEl.textContent = "", 2000);
+    return result.success ? "Saved!" : "Error!";
+}
+
+async function startPixivLogin() {
+    let statusEl = document.getElementById("pixivTokenStatus");
+    statusEl.textContent = "Getting login URL...";
+    try {
+        let resp = await fetch("/api/pixiv/oauth/start", { method: "POST" });
+        let result = await resp.json();
+        if (!result.success) { statusEl.textContent = result.error || "Failed to start login."; return; }
+        window.open(result.url, "_blank");
+        statusEl.textContent = "Log in, then paste the code from Network → callback?state=... ";
+        const a = document.createElement("a");
+        a.href = result.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = "(open URL again)";
+        a.style.textDecoration = "underline";
+        statusEl.appendChild(a);
+    } catch(e) { statusEl.textContent = "Failed: " + e; }
 }
 
 async function exchangePixivCookie() {
     let statusEl = document.getElementById("pixivTokenStatus");
     let cookie = document.getElementById("pixivCookie").value.trim();
-    if (!cookie) { statusEl.textContent = "Paste your PHPSESSID cookie first."; return; }
-    statusEl.textContent = "Exchanging via proxy...";
+    if (!cookie) { statusEl.textContent = "Paste the code (or PHPSESSID cookie) first."; return; }
+    statusEl.textContent = "Exchanging...";
     try {
         let resp = await fetch("/api/pixiv/exchange-cookie", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cookie: cookie }) });
         let result = await resp.json();
@@ -2312,248 +3147,298 @@ async function saveDownloadSettings() {
     globalNetConfig.retry_wait = document.getElementById("retryWait").value;
     globalNetConfig.anti_ban_pause = document.getElementById("antiBanPause").value;
     globalNetConfig.download_retries = document.getElementById("downloadRetries").value;
+    globalNetConfig.req_rate_limit = document.getElementById("reqRateLimit").value;
     if (document.getElementById("dedupEnabled")) globalNetConfig.dedup_enabled = document.getElementById("dedupEnabled").checked;
     await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
-    document.getElementById("dlSettingsStatus").textContent = "Saved!";
-    setTimeout(()=> document.getElementById("dlSettingsStatus").textContent = "", 2000);
+    return "Saved!";
 }
 
-// --- Extensions & Addons System ---
-function _escapeExtHtml(str) {
-    if (!str) return "";
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
-
-async function fetchExtensionsCatalog(isManualRefresh = false) {
-    const container = document.getElementById("extensionsListContainer");
-    if (!container) return;
-    if (isManualRefresh) {
-        container.innerHTML = '<div style="font-size: 12px; opacity: 0.7;">Checking GitHub catalog...</div>';
-    }
-
-    try {
-        const resp = await fetch("/api/extensions");
-        const data = await resp.json();
-        if (!data.success) {
-            container.innerHTML = `<div style="color: #ff6b6b; font-size: 12px;">Failed to load catalog: ${_escapeExtHtml(data.error || 'Unknown error')}</div>`;
-            return;
-        }
-
-        renderExtensionsList(data.extensions || []);
-        renderDynamicUIContributions(data.contributions || {});
-    } catch (e) {
-        container.innerHTML = `<div style="color: #ff6b6b; font-size: 12px;">Extensions service unreachable: ${_escapeExtHtml(e.message || String(e))}</div>`;
-    }
-}
-
-function renderExtensionsList(extensions) {
-    const container = document.getElementById("extensionsListContainer");
-    if (!container) return;
-
-    if (!extensions || extensions.length === 0) {
-        container.innerHTML = '<div style="font-size: 12px; opacity: 0.6;">No extensions available in catalog.</div>';
-        return;
-    }
-
-    let html = "";
-    for (const ext of extensions) {
-        const isInstalled = !!ext.installed;
-        const isEnabled = isInstalled && (ext.enabled !== false);
-        const isActive = isInstalled && !!ext.is_active;
-        const versionBadge = ext.version ? `<span class="ext-badge ext-badge-version">v${_escapeExtHtml(ext.version)}</span>` : "";
-        const statusBadge = !isInstalled 
-            ? `<span class="ext-badge ext-badge-available">Available on GitHub</span>`
-            : (isEnabled 
-                ? `<span class="ext-badge ext-badge-active">${isActive ? 'Active' : 'Enabled'}</span>` 
-                : `<span class="ext-badge ext-badge-disabled">Disabled</span>`);
-
-        html += `
-        <div class="extension-item-card ${isInstalled ? 'installed' : ''}">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
-                <div style="flex: 1; min-width: 260px;">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-                        <span style="font-size: 18px;">${ext.icon === 'bell' ? '🔔' : '🧩'}</span>
-                        <h4 style="margin: 0; font-size: 14px; color: var(--title-color);">${_escapeExtHtml(ext.name)}</h4>
-                        ${versionBadge}
-                        ${statusBadge}
-                    </div>
-                    <p style="margin: 0 0 6px 0; font-size: 12px; opacity: 0.85; line-height: 1.4;">${_escapeExtHtml(ext.description || '')}</p>
-                    <div style="font-size: 11px; opacity: 0.6;">
-                        Author: <b>${_escapeExtHtml(ext.author || 'RemLover-Dev')}</b>
-                        ${ext.repository ? ` &bull; Repo: <span style="color: var(--accent-color);">${_escapeExtHtml(ext.repository)}</span>` : ''}
-                    </div>
-                </div>
-                <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end; min-width: 150px;">
-                    ${!isInstalled ? `
-                        <button class="action-btn" id="btn-install-${_escapeExtHtml(ext.id)}" onclick="installExtension('${_escapeExtHtml(ext.repository || '')}', '${_escapeExtHtml(ext.id)}')" style="font-size: 12px; padding: 5px 12px; width: 100%;">
-                            ⬇️ Download & Install
-                        </button>
-                    ` : `
-                        <div style="display: flex; gap: 6px; width: 100%;">
-                            <button class="action-btn ${isEnabled ? 'btn-warn' : ''}" onclick="toggleExtension('${_escapeExtHtml(ext.id)}', ${!isEnabled})" style="font-size: 12px; padding: 4px 8px; flex: 1;">
-                                ${isEnabled ? '⏸️ Disable' : '▶️ Enable'}
-                            </button>
-                            <button class="action-btn btn-danger" onclick="uninstallExtension('${_escapeExtHtml(ext.id)}')" style="font-size: 12px; padding: 4px 8px;" title="Uninstall extension">
-                                🗑️
-                            </button>
-                        </div>
-                        <button class="action-btn" onclick="checkExtensionUpdate('${_escapeExtHtml(ext.id)}', '${_escapeExtHtml(ext.repository || '')}')" style="font-size: 11px; padding: 3px 8px; width: 100%; opacity: 0.85;">
-                            🔍 Check Updates
-                        </button>
-                    `}
-                    <span id="ext-status-${_escapeExtHtml(ext.id)}" style="font-size: 11px; color: var(--title-color);"></span>
-                </div>
-            </div>
-        </div>
-        `;
-    }
-
-    container.innerHTML = html;
-}
-
-function renderDynamicUIContributions(contributions) {
-    const navContainer = document.getElementById("dynamicExtensionNavButtons");
-    const panelsContainer = document.getElementById("dynamicExtensionPanelsContainer");
-    if (!navContainer || !panelsContainer) return;
-
-    navContainer.innerHTML = "";
-    panelsContainer.innerHTML = "";
-
-    const navTabs = (contributions && contributions.nav_tabs) || [];
-    for (const tab of navTabs) {
-        const btn = document.createElement("button");
-        btn.className = "tab-btn";
-        btn.id = `ext-nav-tab-${tab.id}`;
-        btn.innerHTML = `${tab.icon_svg || '🔔'} ${tab.label || tab.id}`;
-        btn.onclick = function() {
-            openTab(tab.id, this);
-        };
-        navContainer.appendChild(btn);
-    }
-
-    const panels = (contributions && contributions.panels) || [];
-    for (const p of panels) {
-        if (p.html) {
-            const wrapper = document.createElement("div");
-            wrapper.innerHTML = p.html;
-            while (wrapper.firstChild) {
-                panelsContainer.appendChild(wrapper.firstChild);
-            }
-        }
-    }
-}
-
-async function installExtension(repo, extId) {
-    const statusEl = document.getElementById(`ext-status-${extId}`);
-    const btn = document.getElementById(`btn-install-${extId}`);
-    if (statusEl) statusEl.textContent = "Downloading from GitHub...";
-    if (btn) { btn.disabled = true; btn.textContent = "⏳ Installing..."; }
-
-    try {
-        const resp = await fetch("/api/extensions/install", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ repo: repo, id: extId })
-        });
-        const result = await resp.json();
-        if (result.success) {
-            if (statusEl) statusEl.textContent = "Installed successfully!";
-            if (typeof showToast === "function") showToast("Extension installed and activated!", "success");
-        } else {
-            if (statusEl) statusEl.textContent = result.message || "Install failed";
-            if (typeof showToast === "function") showToast("Installation failed: " + (result.message || "Error"), "error");
-        }
-    } catch (e) {
-        if (statusEl) statusEl.textContent = "Install error: " + e;
-    } finally {
-        setTimeout(() => fetchExtensionsCatalog(), 1500);
-    }
-}
-
-async function toggleExtension(extId, enable) {
-    const statusEl = document.getElementById(`ext-status-${extId}`);
-    if (statusEl) statusEl.textContent = enable ? "Enabling..." : "Disabling...";
-
-    try {
-        const resp = await fetch("/api/extensions/toggle", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: extId, enabled: enable })
-        });
-        const result = await resp.json();
-        if (result.success) {
-            if (statusEl) statusEl.textContent = enable ? "Enabled!" : "Disabled!";
-        } else {
-            if (statusEl) statusEl.textContent = result.error || "Toggle failed";
-        }
-    } catch (e) {
-        if (statusEl) statusEl.textContent = "Error: " + e;
-    } finally {
-        setTimeout(() => fetchExtensionsCatalog(), 800);
-    }
-}
-
-async function uninstallExtension(extId) {
-    if (!confirm(`Are you sure you want to uninstall '${extId}'?`)) return;
-
-    const statusEl = document.getElementById(`ext-status-${extId}`);
-    if (statusEl) statusEl.textContent = "Uninstalling...";
-
-    try {
-        const resp = await fetch("/api/extensions/uninstall", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: extId })
-        });
-        const result = await resp.json();
-        if (result.success) {
-            if (statusEl) statusEl.textContent = "Uninstalled!";
-            if (typeof showToast === "function") showToast(`Extension '${extId}' removed.`, "info");
-        } else {
-            if (statusEl) statusEl.textContent = result.error || "Uninstall failed";
-        }
-    } catch (e) {
-        if (statusEl) statusEl.textContent = "Error: " + e;
-    } finally {
-        setTimeout(() => fetchExtensionsCatalog(), 800);
-    }
-}
-
-async function checkExtensionUpdate(extId, repo) {
-    const statusEl = document.getElementById(`ext-status-${extId}`);
-    if (statusEl) statusEl.textContent = "Checking GitHub...";
-
-    try {
-        const resp = await fetch("/api/extensions/check_update", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: extId, repo: repo })
-        });
-        const result = await resp.json();
-        if (result.success && result.update_info) {
-            const info = result.update_info;
-            if (info.has_update) {
-                statusEl.innerHTML = `<span style="color:#f1c40f;">Update available: v${_escapeExtHtml(info.latest_version)}!</span>`;
-            } else {
-                statusEl.textContent = "Up to date (v" + (info.installed_version || "1.0.0") + ")";
-            }
-        } else {
-            statusEl.textContent = "Check failed";
-        }
-    } catch (e) {
-        statusEl.textContent = "Error: " + e;
-    }
-    setTimeout(() => { if (statusEl && !statusEl.innerHTML.includes("Update available")) statusEl.textContent = ""; }, 4000);
+async function saveAllSettings() {
+    const st = document.getElementById('settingsSaveStatus');
+    const results = [await saveApiSettings(), await saveDownloadSettings(), await saveBlurRatings()];
+    const bad = results.find(r => r !== "Saved!");
+    if (st) { st.textContent = bad || "Saved!"; setTimeout(() => st.textContent = "", 2000); }
 }
 
 let historyTags = [];
 let favoriteTags = [];
 let imageHistory = [];
+// filenames whose imageHistory lookup missed — refetch once, not per click
+const viewerMetaMisses = new Set();
+let historyQuery = "";
+let historyDateFilter = null;  // calendar filter {y,mo,d,h,mm}, kept out of the search box
+let galleryDateFilter = null;  // same shape, for the Gallery tab
+let historyExpanded = false;
+let historySort = "newest";
+
+// history ratings encode differently per site (yande "rating:s" == Safe,
+// danbooru "rating:s" == Sensitive) — canonicalize before filtering/labels
+const HISTORY_RATING_DAN = {'rating:g':'safe','rating:s':'sensitive','rating:q':'questionable','rating:e':'explicit','rating:general':'safe','rating:sensitive':'sensitive','rating:questionable':'questionable','rating:explicit':'explicit','safe':'safe','sensitive':'sensitive','questionable':'questionable','explicit':'explicit','general':'safe'};
+const HISTORY_RATING_YANDE = {'rating:s':'safe','rating:q':'questionable','rating:e':'explicit','safe':'safe','questionable':'questionable','explicit':'explicit'};
+function historyRatingCanon(site, rating) {
+    if (!rating) return "";
+    const m = ['yande', 'kona', 'sankaku'].includes(site) ? HISTORY_RATING_YANDE : HISTORY_RATING_DAN;
+    return m[String(rating).toLowerCase()] || "";
+}
+function historyRatingLabel(site, rating) {
+    const c = historyRatingCanon(site, rating);
+    return c === 'explicit' ? 'NSFW' : c ? c.charAt(0).toUpperCase() + c.slice(1) : "";
+}
+function selectHistorySort(el, value) {
+    historySort = value;
+    const btn = document.querySelector('[onclick="toggleDropdown(\'histSortDropdown\')"]');
+    if (btn) btn.textContent = el.textContent.trim() + " \u25be";
+    const menu = document.getElementById("histSortDropdown");
+    if (menu) menu.classList.remove("open");
+    renderHistory();
+}
+function populateHistSourceDropdown() {
+    const menu = document.getElementById("histSourceDropdown");
+    if (!menu) return;
+    const sites = [...new Set(historyTags.map(x => String(x.site || "").toLowerCase()).filter(Boolean))].sort();
+    const key = sites.join(",");
+    if (menu.dataset.sites === key) return;
+    menu.dataset.sites = key;
+    const prev = getMultiSelectValues("histSourceDropdown");
+    const prevSet = prev && prev !== "__none__" ? prev.split(",") : [];
+    menu.innerHTML = `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>` +
+        sites.map(s => `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>${s}</span><input type="checkbox" value="${s}"></div>`).join("");
+    if (prevSet.length) {
+        menu.querySelectorAll('input[type="checkbox"]').forEach(c => { if (prevSet.includes(c.value)) c.checked = true; });
+        const all = menu.querySelector('input[value=""]');
+        if (all) all.checked = false;
+    }
+}
+
+function toggleHistoryExpanded() { historyExpanded = !historyExpanded; renderHistory(); }
+
+const HISTORY_MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function historyDayRange(y, mo, d) {
+    const from = new Date(y, mo, d).getTime();
+    return { from, to: from + 86400000 - 1 };
+}
+// date/time tokens in the search box filter BOTH history sections:
+// a full date = that calendar day, date + time = that hour (00:00 keeps the
+// whole day), a lone hour = past 24 hours
+function parseHistoryQuery(q) {
+    let s = " " + q.trim().toLowerCase().replace(/,/g, " ") + " ";
+    let range = null, m;
+    if ((m = s.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/))) {
+        if (+m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) { range = historyDayRange(+m[1], +m[2] - 1, +m[3]); s = s.replace(m[0], " "); }
+    }
+    if (!range && (m = s.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/))) {
+        const y = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : new Date().getFullYear();
+        if (+m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) { range = historyDayRange(y, +m[1] - 1, +m[2]); s = s.replace(m[0], " "); }
+    }
+    if (!range && (m = s.match(/\b([a-z]{3,9})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/))) {
+        const mo = HISTORY_MONTHS[m[1].slice(0, 3)];
+        if (mo !== undefined && +m[2] >= 1 && +m[2] <= 31) { range = historyDayRange(m[3] ? +m[3] : new Date().getFullYear(), mo, +m[2]); s = s.replace(m[0], " "); }
+    }
+    if (!range && (m = s.match(/\b(\d{1,2})\s+([a-z]{3,9})\.?(?:\s+(\d{4}))?\b/))) {
+        const mo = HISTORY_MONTHS[m[2].slice(0, 3)];
+        if (mo !== undefined && +m[1] >= 1 && +m[1] <= 31) { range = historyDayRange(m[3] ? +m[3] : new Date().getFullYear(), mo, +m[1]); s = s.replace(m[0], " "); }
+    }
+    // explicit time syntax is consumed even alongside a date; a lone
+    // hour-only query (e.g. "14") means the past 24 hours — with a date
+    // already picked, the time narrows that day to the selected hour
+    let tm = s.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/);
+    const tmHasColon = !!tm;
+    if (!tm) tm = s.match(/\b(\d{1,2})(am|pm)\b/);
+    if (tm) {
+        let th = +tm[1];
+        const ap = (tmHasColon ? (tm[3] || "") : (tm[2] || "")).toLowerCase();
+        if (ap === "pm" && th < 12) th += 12;
+        if (ap === "am" && th === 12) th = 0;
+        const tmin = tmHasColon ? +tm[2] : 0;
+        if (th <= 23) {
+            if (range && (th > 0 || tmin > 0)) {
+                const t0 = range.from + (th * 60 + tmin) * 60000;
+                range = { from: t0, to: t0 + 3599999 };
+            } else if (!range) {
+                range = { from: Date.now() - 86400000, to: Date.now() };
+            }
+            s = s.replace(tm[0], " ");
+        }
+    }
+    let toks = s.trim().split(/\s+/).filter(t => t && t !== "am" && t !== "pm");
+    if (!range && toks.length === 1 && /^\d{1,2}$/.test(toks[0]) && +toks[0] <= 23) {
+        range = { from: Date.now() - 86400000, to: Date.now() };
+        toks = [];
+    }
+    const terms = toks.map(t => t.replace(/_/g, " "));
+    return { terms, range };
+}
+function dateFilterRange(f) {
+    const from = new Date(f.y, f.mo, f.d, f.h || 0, f.mm || 0).getTime();
+    let to;
+    if (f.h == null) to = from + 86400000 - 1;       // no hour picked = whole day
+    else if (f.mm == null) to = from + 3600000 - 1;  // hour only = that hour
+    else to = from + 60000 - 1;                      // minute picked = that minute
+    return { from, to };
+}
+// box text terms + calendar filter; a calendar date wins over a typed date
+function historyQueryParts() {
+    const box = parseHistoryQuery(historyQuery || "");
+    return { terms: box.terms, range: historyDateFilter ? dateFilterRange(historyDateFilter) : box.range };
+}
+function applyDateParams(params, f) {
+    if (f) {
+        const r = dateFilterRange(f);
+        params.set("from_ts", r.from / 1000);
+        params.set("to_ts", r.to / 1000);
+    }
+    return params;
+}
+function historySearchInput(v) {
+    historyQuery = v;
+    imageHistoryVisible = 30;
+    renderHistory();
+    renderImageHistory();
+}
+// custom date+time picker (native datetime-local has no time UI in webkit)
+const HP_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const HP_DAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+let hp = null;
+function historyPickerClose() {
+    if (!hp) return;
+    hp.el.remove();
+    document.removeEventListener("mousedown", hp.onDoc, true);
+    document.removeEventListener("keydown", hp.onKey, true);
+    hp = null;
+}
+function openHistoryPicker(btn) {
+    if (hp) { historyPickerClose(); return; }
+    const target = btn.dataset.target || "history";
+    const now = new Date();
+    const el = document.createElement("div");
+    el.style.cssText = "position: fixed; z-index: 9999; width: 232px; padding: 10px; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); color: var(--text-color); font-size: 13px;";
+    document.body.appendChild(el);
+    const r = btn.getBoundingClientRect();
+    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
+    el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
+    // reopen on this target's current filter (or today)
+    const f = target === "gallery" ? galleryDateFilter : historyDateFilter;
+    hp = {
+        target,
+        vy: f ? f.y : now.getFullYear(),
+        vm: f ? f.mo : now.getMonth(),
+        sel: f ? { y: f.y, mo: f.mo, d: f.d } : null,
+        hi: f && f.h != null ? String(f.h).padStart(2, "0") : "",
+        mi: f && f.mm != null ? String(f.mm).padStart(2, "0") : "",
+        btn, el, onDoc: null, onKey: null,
+    };
+    hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
+    hp.onKey = (e) => { if (e.key === "Escape") historyPickerClose(); };
+    document.addEventListener("mousedown", hp.onDoc, true);
+    document.addEventListener("keydown", hp.onKey, true);
+    renderHistoryPicker();
+    // measured height > the 320 assumed above — re-clamp with the real one so
+    // the time row and footer never get cut off at the viewport edge
+    el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - el.offsetHeight - 8)) + "px";
+}
+function renderHistoryPicker() {
+    const s = hp;
+    const active = s.target === "gallery" ? galleryDateFilter : historyDateFilter;
+    const first = new Date(s.vy, s.vm, 1).getDay();
+    const n = new Date(s.vy, s.vm + 1, 0).getDate();
+    const now = new Date();
+    let days = "";
+    for (let i = 0; i < first; i++) days += "<span></span>";
+    for (let d = 1; d <= n; d++) {
+        const sel = s.sel && s.sel.y === s.vy && s.sel.mo === s.vm && s.sel.d === d;
+        const today = d === now.getDate() && s.vm === now.getMonth() && s.vy === now.getFullYear();
+        days += `<span onclick="hpPickDay(${d})" style="text-align:center; padding:4px 0; border-radius:4px; cursor:pointer; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}">${d}</span>`;
+    }
+    const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
+    const selStyle = "appearance: none; -webkit-appearance: none; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px; width: 44px; text-align: center; flex: none;";
+    s.el.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+            <button onclick="hpNavYear(-1)" style="${navBtn}">&laquo;</button>
+            <b style="font-weight: 600;">${s.vy}</b>
+            <button onclick="hpNavYear(1)" style="${navBtn}">&raquo;</button>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <button onclick="hpNav(-1)" style="${navBtn}">&lsaquo;</button>
+            <span style="font-weight: 600;">${HP_MONTHS[s.vm]}</span>
+            <button onclick="hpNav(1)" style="${navBtn}">&rsaquo;</button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: 11px; opacity: .6; margin-bottom: 4px;">${HP_DAYS.map(x => `<span>${x}</span>`).join("")}</div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
+        <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
+            <span style="opacity: .7;">Time</span>
+            <input type="text" value="${esc(s.hi)}" onchange="hpSetHour(this.value)" style="${selStyle}">
+            <span style="opacity: .7;">:</span>
+            <input type="text" value="${esc(s.mi)}" onchange="hpSetMin(this.value)" style="${selStyle}">
+        </div>
+        <div style=" display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px;">
+            ${active ? `<button onclick="hpClear()" style="background: transparent; color: inherit; border: 1px solid var(--border-color); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer;">Clear</button>` : ""}
+            <button onclick="hpApply()" ${s.sel ? "" : "disabled"} style="background: var(--accent-color); color: #fff; border: none; border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: ${s.sel ? "pointer" : "default"}; opacity: ${s.sel ? 1 : .4};">Search</button>
+        </div>`;
+}
+function hpNav(dir) {
+    const s = hp;
+    s.vm += dir;
+    if (s.vm < 0) { s.vm = 11; s.vy--; }
+    if (s.vm > 11) { s.vm = 0; s.vy++; }
+    renderHistoryPicker();
+}
+function hpNavYear(dir) {
+    hp.vy += dir;
+    renderHistoryPicker();
+}
+function hpPickDay(d) {
+    hp.sel = { y: hp.vy, mo: hp.vm, d };
+    renderHistoryPicker();
+}
+function hpSetHour(v) {
+    hp.hi = v;
+}
+function hpSetMin(v) {
+    hp.mi = v;
+}
+function hpApply() {
+    const s = hp;
+    if (!s || !s.sel) return;
+    const hi = (s.hi || "").trim(), mi = (s.mi || "").trim();
+    const f = { y: s.sel.y, mo: s.sel.mo, d: s.sel.d, h: null, mm: null };
+    if (/^\d{1,2}$/.test(hi) && +hi <= 23) {
+        f.h = +hi;
+        // anything but plain digits in the minute box = filter by hour only
+        if (/^\d{1,2}$/.test(mi) && +mi <= 59) f.mm = +mi;
+    }
+    if (s.target === "gallery") {
+        galleryDateFilter = f;
+        dateBtnState(s.btn, true);
+        loadGallery(1);
+    } else {
+        historyDateFilter = f;
+        dateBtnState(s.btn, true);
+        imageHistoryVisible = 30;
+        renderHistory();
+        renderImageHistory();
+    }
+    historyPickerClose();
+}
+function hpClear() {
+    const s = hp;
+    if (!s) return;
+    if (s.target === "gallery") {
+        galleryDateFilter = null;
+        dateBtnState(s.btn, false);
+        loadGallery(1);
+    } else {
+        historyDateFilter = null;
+        dateBtnState(s.btn, false);
+        imageHistoryVisible = 30;
+        renderHistory();
+        renderImageHistory();
+    }
+    historyPickerClose();
+}
+function dateBtnState(btn, active) {
+    if (btn) btn.style.borderColor = active ? "var(--accent-color)" : "";
+}
 
 async function loadTagsData() {
     try {
@@ -2563,13 +3448,20 @@ async function loadTagsData() {
             fetch("/api/favorites").then(r => r.json()),
             fetch("/api/image_history").then(r => r.json())
         ]);
-        historyTags = hist;
-        favoriteTags = favs;
-        imageHistory = imgHist;
-        renderHistory();
-        renderFavorites();
-        renderImageHistory();
-    } catch(e) {}
+        // refetch on tab open is only for staleness (favs toggled elsewhere) —
+        // rebuild only the sections whose data actually changed, or the archive
+        // replays its slide-in animation every time and looks like it reloaded
+        const h = JSON.stringify(hist) !== JSON.stringify(historyTags);
+        const f = JSON.stringify(favs) !== JSON.stringify(favoriteTags);
+        const i = JSON.stringify(imgHist) !== JSON.stringify(imageHistory);
+        if (!h && !f && !i) return;
+        if (h) historyTags = hist;
+        if (f) favoriteTags = favs;
+        if (i) imageHistory = imgHist;
+        if (h || f) renderHistory();
+        if (f) renderFavorites();
+        if (i) renderImageHistory();
+    } catch(e) { console.error("loadTagsData failed:", e); }
 }
 
 function isFavorite(site, tag) { return favoriteTags.some(x => x.site === site && x.tag === tag); }
@@ -2578,19 +3470,57 @@ function renderHistory() {
     let ui = document.getElementById("historyListUI");
     if(!ui) return;
     let currentScroll = ui.parentElement.scrollTop;
+    populateHistSourceDropdown();
+    // gallery-style query: underscores == spaces, split on spaces/commas,
+    // every term must match (multi-tag AND across site/tag/rating);
+    // date/time tokens in the query filter by searched_at instead
+    const { terms, range } = historyQueryParts();
+    const srcSel = getMultiSelectValues("histSourceDropdown");
+    const ratSel = getMultiSelectValues("histRatingDropdown");
+    const srcSet = srcSel && srcSel !== "__none__" ? srcSel.split(",") : null;
+    const ratSet = ratSel && ratSel !== "__none__" ? ratSel.split(",") : null;
+    let filtered = historyTags.filter(it => {
+        if (srcSet && !srcSet.includes(String(it.site || "").toLowerCase())) return false;
+        if (ratSet && !ratSet.includes(historyRatingCanon(it.site, it.rating))) return false;
+        if (range) {
+            const t = it.searched_at ? it.searched_at * 1000 : 0;
+            if (t < range.from || t > range.to) return false;
+        }
+        if (!terms.length) return true;
+        const hay = ((it.site || "") + " " + it.tag + " " + (it.rating || "")).toLowerCase().replace(/_/g, " ");
+        return terms.every(t => hay.includes(t));
+    });
+    if (historySort === "oldest") filtered.reverse();
+    const srcBtn = document.querySelector('[onclick="toggleDropdown(\'histSourceDropdown\')"]');
+    if (srcBtn) srcBtn.textContent = getMultiLabel("histSourceDropdown", "All Sources") + " \u25be";
+    const ratBtn = document.querySelector('[onclick="toggleDropdown(\'histRatingDropdown\')"]');
+    if (ratBtn) ratBtn.textContent = getMultiLabel("histRatingDropdown", "All Ratings") + " \u25be";
+    const list = historyExpanded ? filtered : filtered.slice(0, 10);
+    const wrap = document.getElementById("historyExpandWrap");
+    if (wrap) wrap.innerHTML = filtered.length > 10
+        ? `<button class="action-btn" style="padding: 4px 10px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); color: var(--title-color);" onclick="toggleHistoryExpanded()">${historyExpanded ? "Show Less" : `Show All (${filtered.length})`}</button>`
+        : "";
     let htmlStr = "";
     if (historyTags.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No search history yet.</p>";
     } else {
-        historyTags.forEach(item => {
+        if (list.length === 0) htmlStr += "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No matches.</p>";
+        list.forEach(item => {
             let isFav = isFavorite(item.site, item.tag);
             let heartBtn = heartIcon(isFav);
             let heartColor = isFav ? "#ff6b6b" : "var(--text-color)";
-            let heartBg = isFav ? "rgba(255, 107, 107, 0.2)" : "transparent";            const RATING_LABELS_DAN = {'rating:g':'Safe','rating:s':'Sensitive','rating:q':'Questionable','rating:e':'NSFW','rating:general':'Safe','rating:sensitive':'Sensitive','rating:questionable':'Questionable','rating:explicit':'NSFW','safe':'Safe','sensitive':'Sensitive','questionable':'Questionable','explicit':'NSFW','general':'Safe'};
-            const RATING_LABELS_YANDE = {'rating:s':'Safe','rating:q':'Questionable','rating:e':'NSFW','safe':'Safe','questionable':'Questionable','explicit':'NSFW'};
-            const _rl = ['yande', 'kona', 'sankaku'].includes(item.site) ? RATING_LABELS_YANDE : RATING_LABELS_DAN;
-            let ratingBadge = item.rating ? `<span style="color: #2dd4bf; font-size: 11px; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.4); padding: 2px 5px; border-radius: 4px; margin-left: 10px;">${_rl[item.rating] || item.rating}</span>` : "";
-            htmlStr += `<div style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, ""))}</span>${ratingBadge}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')">&times;</button></div></div>`;
+            let heartBg = isFav ? "rgba(255, 107, 107, 0.2)" : "transparent";
+            const _lab = historyRatingLabel(item.site, item.rating);
+            const _c = historyRatingCanon(item.site, item.rating);
+            const _nsfw = ratingBlurred(_c) || (!_c && item.site === 'rule34' && ratingBlurred('explicit'));
+            let ratingBadge = _lab ? `<span style="color: #2dd4bf; font-size: 11px; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.4); padding: 2px 5px; border-radius: 4px; margin-left: 10px;">${_lab}</span>` : "";
+            let timeSpan = "";
+            if (item.searched_at) {
+                const d = new Date(item.searched_at * 1000);
+                const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+                timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
+            }
+            htmlStr += `<div class="hist-item${_nsfw ? ' is-nsfw' : ''}" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${cleanTagDisplay(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim())}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -2606,7 +3536,7 @@ function renderFavorites() {
         return;
     }
     favoriteTags.forEach(item => {
-        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${item.site}]</span><span>${cleanTagDisplay(item.tag)}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${item.site}', '${item.tag}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
+        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(item.site)}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
     });
 }
 
@@ -2621,13 +3551,13 @@ async function toggleFavorite(site, tag) {
         favoriteTags = data.favorites;
         renderHistory();
         renderFavorites();
-    } catch(e) {}
+    } catch(e) { console.error("favorites save failed:", e); }
 }
 
 async function removeFromHistory(site, tag, rating) { await fetch("/api/history/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ site: site, tag: tag, rating: rating || "" }) }); await loadTagsData(); }
 async function clearHistory() { if(await customConfirm("Are you sure you want to delete all search history?", "Delete")) { await fetch("/api/history/clear", { method: "POST" }); await loadTagsData(); } }
 
-function jumpToSite(site, tag, rating) {
+function jumpToSite(site, tag, rating, excludeAI) {
     // ponytail: pill-based tabs take separate tags, not one joined string
     if (site === "zero") {
         currentZerochanTags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
@@ -2638,9 +3568,15 @@ function jumpToSite(site, tag, rating) {
     } else if (site === "rule34") {
         currentRule34Tags = String(tag || "").split(/\s+/).filter(Boolean);
         renderRule34Tags();
+        const exAI34 = document.getElementById('rule34-exclude-ai');
+        if (exAI34) exAI34.checked = excludeAI === true;
     } else if (site === "gelbooru") {
-        currentGelbooruTags = String(tag || "").split(/\s+/).filter(Boolean);
+        // the saved tag carries the AI exclusion — map it to the checkbox, never a pill
+        const hadAI = /\s*-ai[_ ]generated\b/i.test(tag || "");
+        currentGelbooruTags = String(tag || "").replace(/\s*-ai[_ ]generated\b/gi, "").trim().split(/\s+/).filter(Boolean);
         renderGelbooruTags();
+        const gelNoAI = document.getElementById('gelNoAI');
+        if (gelNoAI) gelNoAI.checked = hadAI;
     } else if (site === "eshuushuu") {
         currentEshuushuuTags = String(tag || "").split(/\s+/).filter(Boolean);
         renderEshuushuuTags();
@@ -2665,6 +3601,26 @@ function jumpToSite(site, tag, rating) {
     } else if (site === "anime_dl") {
         currentAnimeDlTags = String(tag || "").split("&&").map(t => t.trim()).filter(Boolean);
         renderAnimeDlTags();
+    } else if (site === "pixiv") {
+        // history stores "mode:value" — restore the mode dropdown instead of
+        // typing the prefix into the search box (search:artworks:123 ...)
+        const input = document.getElementById("pixivTag");
+        const modeSel = document.getElementById("pixivMode");
+        const m = String(tag || "").match(/^(search|artworks|bookmark|ranking):(.*)$/);
+        if (m && modeSel) {
+            if (m[1] === "ranking") {
+                if (m[2]) setSelectValue(document.getElementById("pixivRankingMode"), m[2]);
+                if (input) input.value = "";
+            } else if (input) {
+                input.value = m[2];
+            }
+            // dispatches change → updatePixivMode(), label stays truthful
+            setSelectValue(modeSel, m[1]);
+        } else if (input) {
+            input.value = tag || "";
+        }
+        const pixExAI = document.getElementById('pixiv-exclude-ai');
+        if (pixExAI) pixExAI.checked = excludeAI === true;
     }
     let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
@@ -2672,10 +3628,10 @@ function jumpToSite(site, tag, rating) {
     // labels like "e-shuushuu" never contain the key "eshuushuu"
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
-    if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
+    if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
     if (rating) {
         const rsId = RATING_INPUT_BY_WORKER[site];
-        if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) rsEl.value = rating; }
+        if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) setSelectValue(rsEl, rating); }
     }
 }
 
@@ -2690,6 +3646,22 @@ function getSafeThumbUrl(filepath, filename) {
 
 // تابع جدید هیستوری که دقیقاً کپی عکسی هست که دادی
 let imageHistoryVisible = 30;
+let imgHistFiltered = [];
+function filteredImageHistory() {
+    const { terms, range } = historyQueryParts();
+    return imageHistory.filter(img => {
+        if (range) {
+            const t = img.downloaded_at ? img.downloaded_at * 1000 : 0;
+            if (t < range.from || t > range.to) return false;
+        }
+        if (!terms.length) return true;
+        let allTags = [];
+        let tagsDict = normalizeTags(img.tags || {});
+        TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
+        const hay = ((img.site || "") + " " + (img.filepath || img.filename || "") + " " + allTags.join(" ")).toLowerCase().replace(/_/g, " ");
+        return terms.every(t => hay.includes(t));
+    });
+}
 function renderImageHistory() {
     let ui = document.getElementById("imageHistoryUI");
     if(!ui) return;
@@ -2698,7 +3670,7 @@ function renderImageHistory() {
     if (scroller && !scroller.dataset.histScroll) {
         scroller.dataset.histScroll = "1";
         scroller.addEventListener("scroll", () => {
-            if (imageHistoryVisible >= imageHistory.length) return;
+            if (imageHistoryVisible >= imgHistFiltered.length) return;
             if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) {
                 imageHistoryVisible += 30;
                 renderImageHistory();
@@ -2706,15 +3678,19 @@ function renderImageHistory() {
         });
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
+    imgHistFiltered = filteredImageHistory();
     let htmlStr = "";
     if (imageHistory.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No images downloaded yet.</p>";
+    } else if (imgHistFiltered.length === 0) {
+        htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No matches.</p>";
     } else {
         // ponytail: render in pages — full DOM + 100 thumb requests froze the tab
-        imageHistory.slice(0, imageHistoryVisible).forEach(img => {
+        imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => {
             let tagsStr = renderCategorizedTags(img.tags || {}, false);
 
             let ratingHtml = "";
+            let histRating = "";
             let allTags = [];
             let tagsDict = normalizeTags(img.tags || {});
             TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
@@ -2722,14 +3698,19 @@ function renderImageHistory() {
             let siteLower = (img.site || "").toLowerCase();
             if (siteLower === "rule34") {
                 ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+                histRating = "explicit";
             } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
                 ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+                histRating = "explicit";
             } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
                 ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
+                histRating = "sensitive";
             } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
                 ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
+                histRating = "questionable";
             } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g')) {
                 ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
+                histRating = "safe";
             }
 
             let thumbUrl = getSafeThumbUrl(img.filepath, img.filename);
@@ -2741,14 +3722,14 @@ function renderImageHistory() {
             let artistHtml = artistName ? `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
 
             htmlStr += `
-            <div class="image-card-log" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+            <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
             <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
             <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
-            <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}')" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
+            <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 25px;">
-            <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;"><span title="${safeFn}" style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:0.6;">${img.filename || "image"}</span>${artistHtml} ${siteBadge} ${ratingHtml}</div>
+            <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;">${artistHtml} ${siteBadge} ${ratingHtml}</div>
             <div class="hist-tags" style="display:flex; flex-wrap:wrap; gap:6px; max-height: 62px; overflow-y:auto; padding: 3px 4px 3px 2px; align-content:flex-start;">
             ${tagsStr}
             </div>
@@ -2758,8 +3739,10 @@ function renderImageHistory() {
     }
     ui.innerHTML = htmlStr;
     if (scroller) scroller.scrollTop = currentScroll;
-    // if the rendered list still doesn't fill the view, keep loading
-    if (imageHistoryVisible < imageHistory.length && scroller && scroller.scrollHeight <= scroller.clientHeight + 400) {
+    // if the rendered list still doesn't fill the view, keep loading —
+    // ponytail: never while hidden (clientHeight 0), or the startup render
+    // walks the whole history; the scroll listener pages from there
+    if (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
         imageHistoryVisible += 30;
         renderImageHistory();
     }
@@ -2775,7 +3758,7 @@ async function toggleImageHistoryFav(filename, btn) {
             const h = imageHistory.find(i => i.filename === filename);
             if (h) h.favourite = data.favourite;
         }
-    } catch(e) {}
+    } catch(e) { console.error("image-history favourite save failed:", e); }
 }
 async function clearImageHistory() { if(await customConfirm("Delete all image tag history?", "Delete")) { await fetch("/api/image_history/clear", { method: "POST" }); await loadTagsData(); } }
 
@@ -2788,15 +3771,53 @@ const gallerySelected = new Map(); // id -> filepath snapshot (survives search/f
 let _dragPaint = false;
 let _dragSelect = true;
 let _dragSuppressClick = false;
-let galleryBlurNsfw = localStorage.getItem('gallery_blur_nsfw') !== 'false';
+let _paintPending = false, _paintCard = null, _paintPt = [0, 0];
+// blur settings persist server-side in ui_config.json — localStorage dies with the app session
+let galleryBlurNsfw = storeGet('gallery_blur_nsfw') !== 'false';
+if (document.body) document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
+function persistUiConfig() {
+    fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+}
 function toggleGalleryBlur() {
     galleryBlurNsfw = !galleryBlurNsfw;
-    localStorage.setItem('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
+    uiConfig.gallery_blur_nsfw = galleryBlurNsfw ? 'true' : 'false';
+    persistUiConfig();
     const btn = document.getElementById("galleryBlurBtn");
     if (btn) btn.classList.toggle("active", galleryBlurNsfw);
-    const grid = document.getElementById("galleryGrid");
-    if (grid) grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
 }
+// which ratings get blurred — picked in Settings; default = old explicit+questionable behavior
+function getBlurRatings() {
+    const v = uiConfig.blur_ratings !== undefined ? uiConfig.blur_ratings : storeGet('blur_ratings');
+    return (v === null || v === undefined ? 'questionable explicit' : String(v)).split(/\s+/).filter(Boolean);
+}
+function ratingBlurred(canon) {
+    return ['safe', 'sensitive', 'questionable', 'explicit'].includes(canon) && getBlurRatings().includes(canon);
+}
+function applyBlurMarks() {
+    document.querySelectorAll('.image-card-log[data-rating]').forEach(c => c.classList.toggle('is-nsfw', ratingBlurred(c.dataset.rating)));
+}
+function saveBlurRatings() {
+    const on = [...document.querySelectorAll('.blur-rating-box:checked')].map(cb => cb.value);
+    uiConfig.blur_ratings = on.join(' ');
+    persistUiConfig();
+    applyBlurMarks();
+    renderGallery();
+    renderHistory();
+    renderImageHistory();
+    return "Saved!";
+}
+// re-apply everything once the server config has loaded
+async function syncBlurSettings() {
+    const gv = uiConfig.gallery_blur_nsfw !== undefined ? uiConfig.gallery_blur_nsfw : storeGet('gallery_blur_nsfw');
+    galleryBlurNsfw = gv !== 'false';
+    document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    const btn = document.getElementById("galleryBlurBtn");
+    if (btn) btn.classList.toggle("active", galleryBlurNsfw);
+    document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
+    applyBlurMarks();
+}
+document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
 
 function getGalleryImageRating(img) {
     if (!img) return "safe";
@@ -2812,27 +3833,14 @@ function getGalleryImageRating(img) {
     return "safe";
 }
 
-function toggleSelectMode() {
-    if (gallerySelectMode) {
-        exitSelectMode();
-    } else {
-        gallerySelectMode = true;
-        updateSelectBar();
-    }
-}
-
 function selectAllCurrentPage() {
-    if (!galleryState || !galleryState.images) return;
-    const ids = galleryState.images.map(img => img.id);
-    if (!ids.length) return;
-    const allSel = ids.every(id => gallerySelected.has(id));
-    if (allSel) {
-        ids.forEach(id => gallerySelected.delete(id));
-    } else {
-        galleryState.images.forEach(img => gallerySelected.set(img.id, img.filepath || ""));
-    }
+    if (!galleryState.images) return;
+    const idSet = new Set(galleryState.images.map(img => img.id));
+    const allSel = idSet.size > 0 && [...idSet].every(id => gallerySelected.has(id));
+    if (allSel) idSet.forEach(id => gallerySelected.delete(id));
+    else galleryState.images.forEach(img => gallerySelected.set(img.id, img.filepath || ""));
     document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => {
-        const on = !allSel && gallerySelected.has(card.dataset.id);
+        const on = allSel ? false : idSet.has(card.dataset.id);
         card.classList.toggle("selected", on);
         const box = card.querySelector(".gallery-card-select");
         if (box) box.checked = on;
@@ -2885,19 +3893,73 @@ function toggleDropdownCheck(el, event) {
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
 
     if (clickedCb === allCheck) {
-        // Clicking "All" toggles every individual item
-        const targetState = allCheck.checked;
-        itemChecks.forEach(c => c.checked = targetState);
+        // "All" is exclusive: it represents the whole set, so items show no checkmarks
+        itemChecks.forEach(c => c.checked = false);
     } else {
-        // Clicking an individual item updates "All" to checked only if all items are checked
+        // Clicking items drops "All"; if they end up covering everything, collapse to All
         const allItemsChecked = itemChecks.length > 0 && itemChecks.every(c => c.checked);
-        if (allCheck) allCheck.checked = allItemsChecked;
+        if (allCheck) {
+            allCheck.checked = allItemsChecked;
+            if (allItemsChecked) itemChecks.forEach(c => c.checked = false);
+        }
     }
 
     if (menu.id === 'sourceDropdown') onSourceChange();
     else if (menu.id === 'ratingDropdown') onRatingChange();
     else if (menu.id === 'typeDropdown') onTypeChange();
+    else if (menu.id === 'gelRatingDropdown') onGelRatingChange();
+    else if (menu.id === 'watcherRatingDropdown') onWatcherRatingChange();
+    else if (menu.id === 'danRatingDropdown') onDanRatingChange();
+    else if (menu.id === 'gsRatingDropdown') onGsRatingChange();
+    else if (menu.id === 'konaRatingDropdown') onKonaRatingChange();
+    else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
+    else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
+    else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
 }
+
+function updateMultiRatingBtn(menuId) {
+    const btn = document.querySelector('[onclick="toggleDropdown(\'' + menuId + '\')"]');
+    if (btn) btn.textContent = getMultiLabel(menuId, 'All Ratings') + ' ▾';
+}
+
+function onMultiRatingChange(menuId, hiddenId) {
+    const menu = document.getElementById(menuId);
+    const hidden = document.getElementById(hiddenId);
+    if (!menu || !hidden) return;
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    const checkedItems = itemChecks.filter(c => c.checked);
+    const allCheck = menu.querySelector('input[value=""]');
+    // zero checked means the same as All — normalize so the value stays truthful
+    if (checkedItems.length === 0 && allCheck) allCheck.checked = true;
+    hidden.value = checkedItems.map(c => c.value).join(' ');
+    updateMultiRatingBtn(menuId);
+}
+
+function onGelRatingChange() { onMultiRatingChange('gelRatingDropdown', 'gelbooruRating'); }
+function onDanRatingChange() { onMultiRatingChange('danRatingDropdown', 'danRating'); }
+function onGsRatingChange() { onMultiRatingChange('gsRatingDropdown', 'gsbooruRating'); }
+function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaRating'); }
+function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
+function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
+function onSankakuRatingChange() { onMultiRatingChange('sankakuRatingDropdown', 'sankakuRating'); }
+
+// jumpToSite writes the hidden input's value directly for history restores;
+// keep the checkboxes and button label in sync with it
+document.addEventListener('DOMContentLoaded', function () {
+    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown']].forEach(function (pair) {
+        const hidden = document.getElementById(pair[0]);
+        if (!hidden) return;
+        hidden.addEventListener('change', function () {
+            const menu = document.getElementById(pair[1]);
+            if (!menu) return;
+            const vals = this.value.split(/\s+/).filter(Boolean);
+            menu.querySelectorAll('input[type="checkbox"]').forEach(c => {
+                c.checked = c.value === '' ? vals.length === 0 : vals.includes(c.value);
+            });
+            updateMultiRatingBtn(pair[1]);
+        });
+    });
+});
 
 function updateRatingDropdown() {
     const sourceChecks = [...document.querySelectorAll('#sourceDropdown input[type="checkbox"]')].filter(c => c.value !== '');
@@ -2952,7 +4014,9 @@ function getMultiSelectValues(id) {
     if (allCheck && allCheck.checked) return '';
     const checkedVals = itemChecks.filter(c => c.checked).map(c => c.value);
     if (checkedVals.length === itemChecks.length && itemChecks.length > 0) {
+        // every item selected == All; keep only All's checkmark
         if (allCheck) allCheck.checked = true;
+        itemChecks.forEach(c => c.checked = false);
         return '';
     }
     if (checkedVals.length === 0) return '__none__';
@@ -2983,11 +4047,11 @@ function getMultiLabel(id, defaultLabel) {
 
 function getGalleryTargetTileWidth() {
     const w = window.innerWidth;
-    if (w >= 3840) return 170; // 4K / UHD
-    if (w >= 2560) return 140; // 1440p / 2K
-    if (w >= 1920) return 120; // 1080p -> ~10-12 columns
-    if (w >= 1400) return 118; // Desktop -> ~10 columns
-    return 112; // Standard / smaller laptop displays -> ~8-9 columns
+    if (w >= 3840) return 200; // 4K / UHD
+    if (w >= 2560) return 170; // 1440p / 2K
+    if (w >= 1920) return 155; // 1080p
+    if (w >= 1400) return 150; // Desktop
+    return 140; // Standard / smaller laptop displays
 }
 
 function getGridEstimatedWidth(grid) {
@@ -3024,19 +4088,38 @@ function galleryPerPage() {
     const targetW = getGalleryTargetTileWidth();
     galleryCols = Math.max(2, Math.floor(availW / targetW));
     if (grid) grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
-    let rows;
     try {
-        const gap = window.innerWidth >= 2560 ? 12 : 10;
-        const availH = getGridEstimatedHeight();
-        const actualTileW = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
-        rows = Math.max(1, Math.floor((availH + gap) / (actualTileW + gap)));
+        const w = window.innerWidth;
+        const gap = w >= 3840 ? 14 : w >= 2560 ? 12 : w >= 1920 ? 10 : 8;
+        // ponytail: grid is flex:1, so its box is a real measured height — guessing (-120)
+        // overshoots on wrapped toolbars and forces a scroll
+        const cs = grid ? getComputedStyle(grid) : null;
+        const padY = cs ? (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) : 0;
+        const availH = (grid && grid.clientHeight > 80) ? grid.clientHeight - padY : getGridEstimatedHeight();
+        const tile = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
+        const floorR = Math.max(1, Math.floor((availH + gap) / (tile + gap)));
+        const rowHFor = r => (availH - (r - 1) * gap) / r;
+        // ponytail: square tiles always leave <1 row of dead space — try floor and floor+1
+        // rows and take the one whose natural height stays within ±15% of square: that
+        // fills the panel exactly; past that we'd rather keep cards near-square
+        const cands = [floorR, floorR + 1]
+            .map(r => ({ r: r, rh: rowHFor(r) }))
+            .filter(c => c.rh >= tile * 0.85 && c.rh <= tile * 1.15);
+        let rows = floorR, rowH = Math.min(rowHFor(floorR), tile * 1.15);
+        if (cands.length) {
+            cands.sort((a, b) => Math.abs(a.rh - tile) - Math.abs(b.rh - tile));
+            rows = cands[0].r;
+            rowH = cands[0].rh;
+        }
+        if (grid) grid.style.setProperty('--gal-row-h', rowH + 'px');
+        // ponytail: no 24-item floor — it added a row the grid can't show, i.e. a scrollbar
+        return Math.min(400, galleryCols * rows);
     } catch (e) {
-        rows = Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10)));
+        return Math.min(400, galleryCols * Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10))));
     }
-    return Math.min(400, Math.max(24, galleryCols * rows));
 }
 let galleryReqId = 0;
-async function loadGallery(page) {
+async function loadGallery(page, remeasured) {
     const reqId = ++galleryReqId;
     const reqW = window.innerWidth;
     if (page) currentGalleryPage = page;
@@ -3047,16 +4130,26 @@ async function loadGallery(page) {
     const rating = getMultiSelectValues('ratingDropdown');
     const params = new URLSearchParams({ search, site, sort, type, rating, page: currentGalleryPage, per_page: galleryPerPage() });
     if (galleryFavFilter) params.set("favourites", "true");
+    applyDateParams(params, galleryDateFilter);
     try {
         let resp = await fetch(`/api/gallery?${params}`);
         const data = await resp.json();
         if (reqId !== galleryReqId) return;
         // viewport moved mid-flight (fast zoom switch) → refetch for the settled size
         if (window.innerWidth !== reqW) return loadGallery(page);
+        const prevViewId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
         galleryState = data;
+        // server clamps page to total_pages — trust its answer, not our guess
+        if (data.page) currentGalleryPage = data.page;
+        reanchorGalleryViewer(prevViewId);
         renderGallery();
+        // empty-state hides pagination (grid box grows ~44px) so per_page above was
+        // measured against the wrong height — re-measure with pagination restored and
+        // refetch once if the stale per_page overshoots the grid (scrollbar bug)
+        const pp = galleryPerPage();
+        if (!remeasured && data.images && data.images.length > pp) return loadGallery(page, true);
         populateGallerySiteFilter();
-    } catch (e) {}
+    } catch (e) { console.error("loadGallery failed:", e); }
 }
 async function loadGalleryPage(page, callback) {
     const reqId = ++galleryReqId;
@@ -3068,27 +4161,32 @@ async function loadGalleryPage(page, callback) {
     const rating = getMultiSelectValues('ratingDropdown');
     const params = new URLSearchParams({ search, site, sort, type, rating, page, per_page: galleryPerPage() });
     if (galleryFavFilter) params.set("favourites", "true");
+    applyDateParams(params, galleryDateFilter);
     try {
         let resp = await fetch(`/api/gallery?${params}`);
         const data = await resp.json();
         if (reqId !== galleryReqId) return;
         if (window.innerWidth !== reqW) return loadGalleryPage(page, callback);
+        const prevViewId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
         galleryState = data;
-        currentGalleryPage = page;
+        if (data.page) currentGalleryPage = data.page;
+        reanchorGalleryViewer(prevViewId);
         if (callback) callback();
-    } catch (e) {}
+    } catch (e) { console.error("loadGalleryPage failed:", e); }
 }
 function resetGalleryFilters() {
     const s = document.getElementById("gallerySearch");
     if (s) s.value = "";
     galleryFavFilter = false;
+    galleryDateFilter = null;
+    dateBtnState(document.getElementById("galleryDateWrap"), false);
     const favBtn = document.getElementById("galleryFavBtn");
     if (favBtn) favBtn.classList.remove("active");
 
     ['sourceDropdown', 'typeDropdown', 'ratingDropdown'].forEach(id => {
         const menu = document.getElementById(id);
         if (menu) {
-            menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+            menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = cb.value === '');
         }
     });
     const srcBtn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
@@ -3106,7 +4204,10 @@ function renderGallery() {
     const grid = document.getElementById("galleryGrid");
     const pagination = document.getElementById("galleryPagination");
     if (!grid) return;
-    grid.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    // keep the page-jump input alive across background re-renders (downloads
+    // fire update_history -> loadGallery while the user is typing a page no.)
+    const jumpFocused = document.activeElement && document.activeElement.classList
+        && document.activeElement.classList.contains('gallery-page-jump');
     const blurBtn = document.getElementById("galleryBlurBtn");
     if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
 
@@ -3139,13 +4240,15 @@ function renderGallery() {
             detail = "No downloaded images found in the gallery folder. Download some images or click Rescan.";
         }
 
+        const safeHint = escapeHtml(hint);
+        const safeDetail = escapeHtml(detail);
         grid.innerHTML = `<div class="gallery-empty-state" style="grid-column: 1 / -1; width: 100%; padding: 60px 20px; text-align: center; color: var(--text-color); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
             <div style="font-size: 36px; opacity: 0.6;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg></div>
-            <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${hint}</div>
-            <div style="font-size: 13px; opacity: 0.65; max-width: 480px; line-height: 1.5;">${detail}</div>
+            <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${safeHint}</div>
+            <div style="font-size: 13px; opacity: 0.65; max-width: 480px; line-height: 1.5;">${safeDetail}</div>
             <button class="action-btn" onclick="resetGalleryFilters()" style="margin-top: 8px; padding: 6px 18px; font-size: 13px; cursor: pointer;">Reset All Filters</button>
         </div>`;
-        pagination.innerHTML = '';
+        if (!jumpFocused) pagination.innerHTML = '';
         return;
     }
     let html = '';
@@ -3153,8 +4256,10 @@ function renderGallery() {
         const fp = (img.filepath || '').replace(/\\/g, '/');
         const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
         const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
-        const src = `/api/gallery/thumb/${encodeURI(fp)}`;
-        const imgTag = `<img src="${src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
+        // per-segment encoding: encodeURI leaves "#"/"?" raw, which truncates
+        // the request at the fragment — filepaths can legitimately contain them
+        const src = `/api/gallery/thumb/${fp.split('/').map(encodeURIComponent).join('/')}`;
+        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
 
@@ -3169,17 +4274,19 @@ function renderGallery() {
         else if (isQuestionable) ratingBadge = '<span class="gallery-card-badge rating questionable">16+</span>';
 
         const siteBadge = ''; // User requested: do not show site name on cards
-        const nsfwOverlay = isExplicit ? '<div class="gallery-card-nsfw-overlay"><span class="nsfw-pill">🔞 NSFW</span><span class="nsfw-hint">Hover to view</span></div>' : '';
-        const nsfwClass = isExplicit ? ' is-nsfw' : '';
+        // which ratings blur is user-chosen in Settings (default explicit + questionable)
+        const isBlurTarget = ratingBlurred(rating);
+        const nsfwClass = isBlurTarget ? ' is-nsfw' : '';
         const favCls = img.favourite ? ' is-fav' : '';
+        const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${img.id}', this.checked)">`;
 
-        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${nsfwOverlay}${ratingBadge}${siteBadge}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
+        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
     });
     // pin the column count so the last row is always full
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
     grid.innerHTML = html;
     const countPill = `<span class="gallery-count-pill"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg>${total}</span>`;
-    if (total_pages <= 1) { pagination.innerHTML = countPill; return; }
+    if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; return; }
     let pHtml = '';
     if (page > 2) pHtml += '<button onclick="loadGallery(1)">«</button>';
     if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+')">‹</button>';
@@ -3191,7 +4298,8 @@ function renderGallery() {
     if (page < total_pages) pHtml += '<button onclick="loadGallery('+(page+1)+')">›</button>';
     if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+')">»</button>';
     pHtml += countPill;
-    pagination.innerHTML = pHtml;
+    if (!jumpFocused) pagination.innerHTML = pHtml;
+    updateSelectBar();
 }
 function paginationRange(current, total) {
     if (total <= 7) return Array.from({length: total}, (_,i)=>i+1);
@@ -3215,24 +4323,50 @@ function pageJumpInput(btn) {
     function go() {
         if (done) return; done = true;
         // ponytail: digits only — negatives and junk never survive the input filter
-        const n = parseInt(String(input.value).replace(/\D/g, ''), 10);
+        const n = parseInt(String(faToEnDigits(input.value)).replace(/\D/g, ''), 10);
+        // blur first: renderGallery skips its rebuild while the jump input is
+        // focused, so let go of it before reloading
+        input.blur();
         if (!isNaN(n)) loadGallery(Math.min(Math.max(n, 1), total));
         else renderGallery();
     }
-    input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, ''); });
+    input.addEventListener('input', () => { input.value = faToEnDigits(input.value).replace(/\D/g, ''); });
     input.addEventListener('keydown', e => {
         e.stopPropagation();
         if (e.key === 'Enter') go();
-        else if (e.key === 'Escape') { done = true; renderGallery(); }
+        else if (e.key === 'Escape') { done = true; input.blur(); renderGallery(); }
     });
     input.addEventListener('blur', go);
 }
 function toggleFavFilter() { galleryFavFilter = !galleryFavFilter; document.getElementById("galleryFavBtn").classList.toggle("active", galleryFavFilter); loadGallery(1); }
-async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) {} }
+function onGalleryFavBtn() {
+    if (gallerySelectMode) favouriteSelected();
+    else toggleFavFilter();
+}
+// edit mode: heart toggles the favourite flag on every selected image in one
+// batch request — same as pressing each card's heart; selection survives pages
+async function favouriteSelected() {
+    const ids = [...gallerySelected.keys()];
+    if (!ids.length) return;
+    try {
+        await fetch("/api/gallery/favourite_batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    } catch (e) { console.error("favourite batch save failed:", e); }
+    loadGallery();
+}
+async function toggleGalleryFav(id) { try { let resp = await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) }); if (resp.ok) loadGallery(); } catch (e) { console.error("favourite save failed:", e); } }
 let viewerIndex = -1;
+// background refetches (new download, delete, resize) replace galleryState.images
+// and shift every index — re-find the open image by id so viewerIndex keeps
+// pointing at it, otherwise Next lands on whatever slid into the old slot
+// (typically the freshly downloaded image).
+function reanchorGalleryViewer(prevId) {
+    if (viewerIndex < 0 || !prevId) return;
+    const at = galleryState.images.findIndex(i => i.id === prevId);
+    viewerIndex = at >= 0 ? at : Math.min(viewerIndex, galleryState.images.length - 1);
+}
 let viewerZoom = 1;
-function openGalleryViewer(id) {
-    if (gallerySelectMode) {
+function openGalleryViewer(id, force) {
+    if (gallerySelectMode && !force) {
         if (_dragSuppressClick) {
             _dragSuppressClick = false;
             return;
@@ -3246,20 +4380,43 @@ function openGalleryViewer(id) {
     showViewerImage();
 }
 
+// card checkbox: checking it (from anywhere) enters edit/select mode
+function galleryCardSelectClick(id, on) {
+    if (on && !gallerySelectMode) gallerySelectMode = true;
+    setGallerySelected(id, on);
+}
+
 function updateSelectBar() {
+    // pin toolbar height to its normal-mode height BEFORE the select bar is
+    // shown below — capture after that and the wrapped select bar inflates it
+    {
+        const tab = document.getElementById("Gallery");
+        if (tab) {
+            const wasActive = tab.classList.contains("select-active");
+            if (gallerySelectMode !== wasActive) {
+                const tb = tab.querySelector(".gallery-toolbar");
+                if (tb) tb.style.minHeight = gallerySelectMode ? tb.offsetHeight + "px" : "";
+            }
+        }
+    }
     const bar = document.getElementById("gallerySelectBar");
     if (bar) bar.style.display = gallerySelectMode ? "flex" : "none";
-    const btn = document.getElementById("gallerySelectModeBtn");
-    if (btn) btn.classList.toggle("active", gallerySelectMode);
     const countEl = document.getElementById("gallerySelectCount");
     if (countEl) countEl.textContent = gallerySelected.size + " selected";
+    // page button reflects state: whole page selected → it deselects
     const spBtn = document.getElementById("gallerySelectPageBtn");
-    if (spBtn && galleryState && galleryState.images) {
+    if (spBtn && galleryState.images) {
         const ids = galleryState.images.map(i => i.id);
         spBtn.textContent = (ids.length > 0 && ids.every(id => gallerySelected.has(id))) ? "Deselect Page" : "Select Page";
     }
+    // heart = favourite-only filter normally, bulk "favourite selected" in edit mode
+    const favBtn = document.getElementById("galleryFavBtn");
+    if (favBtn) favBtn.title = gallerySelectMode ? "Favorite selected" : "Favorites only";
     const grid = document.getElementById("galleryGrid");
     if (grid) grid.classList.toggle("select-mode", gallerySelectMode);
+    // top bar compacts while the select bar is out (height pinned at entry above)
+    const tab = document.getElementById("Gallery");
+    if (tab) tab.classList.toggle("select-active", gallerySelectMode);
 }
 
 function setGallerySelected(id, on) {
@@ -3285,6 +4442,7 @@ function toggleGallerySelected(id) { setGallerySelected(id, !gallerySelected.has
 
 function galleryCardContextmenu(e, id) {
     e.preventDefault();
+    if (gallerySelectMode) { openGalleryViewer(id, true); return; }
     gallerySelectMode = true;
     toggleGallerySelected(id);
 }
@@ -3294,33 +4452,10 @@ function exitSelectMode() {
     gallerySelected.clear();
     _dragPaint = false;
     _dragSuppressClick = false;
+    _paintPending = false;
     updateSelectBar();
     document.querySelectorAll('#galleryGrid .gallery-card').forEach(card => card.classList.remove('selected'));
     document.querySelectorAll('#galleryGrid .gallery-card-select').forEach(b => b.checked = false);
-}
-
-async function selectFavourite() {
-    const ids = [...gallerySelected.keys()];
-    if (!ids.length) return;
-    try {
-        const resp = await fetch("/api/gallery/favourite_batch", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ids: ids })
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.ok && data.success) {
-            const count = data.updated || ids.length;
-            const stateText = data.favourite ? "Added" : "Removed";
-            showToast(`${stateText} ${count} image${count > 1 ? "s" : ""} ${data.favourite ? "to" : "from"} favorites`, { icon: heartIcon(data.favourite) });
-            loadGallery();
-        } else {
-            showToast("Failed to update favorites", { warn: true, icon: WARN_ICON });
-        }
-    } catch (e) {
-        console.error("Batch favorite error:", e);
-        showToast("Favorite failed: " + (e.message || e), { warn: true, icon: WARN_ICON });
-    }
 }
 
 async function selectCopy() {
@@ -3362,19 +4497,76 @@ document.addEventListener('keydown', function(e) {
     exitSelectMode();
 }, true);
 
+// gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
+// (the image viewer above keeps ←/→ for next/prev image while it is open)
+// While a key is held, pages render normally but with placeholder thumbs so the
+// traversal stays visible without fetching previews for every page passed over.
+let _galNavTimer = null;
+let galleryPagingFast = false;
+function galleryPageNav(page) {
+    const first = _galNavTimer === null;   // single press = normal render with thumbs
+    clearTimeout(_galNavTimer);
+    if (!first) galleryPagingFast = true;  // key held: placeholder thumbs while traversing
+    _galNavTimer = setTimeout(() => {
+        _galNavTimer = null;
+        if (galleryPagingFast) {
+            galleryPagingFast = false;
+            loadGallery(currentGalleryPage);   // settled: real thumbnails for this page
+        }
+    }, 200);
+    loadGallery(page);
+}
+document.addEventListener('keydown', function(e) {
+    const gal = document.getElementById('Gallery');
+    if (!gal || gal.style.display === 'none') return;
+    const viewer = document.getElementById('galleryViewer');
+    if (viewer && viewer.style.display === 'flex') return;
+    if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    let page = null;
+    const k = e.key.toLowerCase();
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || k === 'd') page = currentGalleryPage + 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || k === 'a') page = currentGalleryPage - 1;
+    if (page === null || page < 1 || page > (galleryState.total_pages || 1)) return;
+    e.preventDefault();
+    galleryPageNav(page);
+});
+
 // drag-paint: hold left button and sweep across cards to select/deselect
 document.addEventListener('mousedown', function(e) {
-    if (!gallerySelectMode || e.button !== 0) return;
+    if (e.button !== 0) { _paintPending = false; return; }
     const card = e.target.closest && e.target.closest('.gallery-card');
-    if (!card || !card.dataset.id || e.target.closest('.gallery-card-heart')) {
+    if (!card || !card.dataset.id || e.target.closest('.gallery-card-heart, .gallery-card-select')) {
         _dragSuppressClick = false;
+        _paintPending = false;
         return;
     }
     e.preventDefault(); // block native image drag
+    if (gallerySelectMode) {
+        _dragPaint = true;
+        _dragSelect = !gallerySelected.has(card.dataset.id);
+        _dragSuppressClick = true;
+        setGallerySelected(card.dataset.id, _dragSelect);
+        return;
+    }
+    // normal mode: arm a pending paint; a plain click still opens the viewer,
+    // only a real drag (threshold below) promotes into select mode
+    _paintPending = true;
+    _paintCard = card.dataset.id;
+    _paintPt = [e.clientX, e.clientY];
+}, true);
+
+// promote an armed drag from normal mode into select mode (paint mode)
+document.addEventListener('mousemove', function(e) {
+    if (!_paintPending || _dragPaint) return;
+    if (Math.hypot(e.clientX - _paintPt[0], e.clientY - _paintPt[1]) < 6) return;
+    _paintPending = false;
+    gallerySelectMode = true;
     _dragPaint = true;
-    _dragSelect = !gallerySelected.has(card.dataset.id);
+    _dragSelect = !gallerySelected.has(_paintCard);
     _dragSuppressClick = true;
-    setGallerySelected(card.dataset.id, _dragSelect);
+    setGallerySelected(_paintCard, _dragSelect);
 }, true);
 
 document.addEventListener('mouseover', function(e) {
@@ -3384,8 +4576,8 @@ document.addEventListener('mouseover', function(e) {
     setGallerySelected(card.dataset.id, _dragSelect);
 });
 
-document.addEventListener('mouseup', function() { _dragPaint = false; });
-window.addEventListener('blur', function() { _dragPaint = false; });
+document.addEventListener('mouseup', function() { _dragPaint = false; _paintPending = false; });
+window.addEventListener('blur', function() { _dragPaint = false; _paintPending = false; });
 
 // ctrl/cmd+A: select all images on the current page (again = clear)
 document.addEventListener('keydown', function(e) {
@@ -3399,26 +4591,65 @@ document.addEventListener('keydown', function(e) {
     if (viewer && viewer.style.display === 'flex') return;
     if (document.querySelector('.custom-confirm-overlay')) return;
     e.preventDefault();
-    if (!gallerySelectMode) {
-        gallerySelectMode = true;
-        updateSelectBar();
+    gallerySelectMode = true;
+    const ids = galleryState.images.map(i => i.id);
+    const allSelected = ids.length > 0 && ids.every(id => gallerySelected.has(id));
+    if (allSelected) gallerySelected.clear();
+    else {
+        ids.forEach(id => {
+            if (gallerySelected.has(id)) return;
+            const img = galleryState.images.find(i => i.id === id);
+            if (img) gallerySelected.set(id, img.filepath || "");
+        });
     }
-    selectAllCurrentPage();
+    renderGallery();
+    updateSelectBar();
 }, true);
 
-function openFullImage(filepath, filename) {
+// Del key: same action as the gallery toolbar Delete button
+// (the image viewer wires its own Del while open — skip here to avoid doubles)
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Delete') return;
+    const gal = document.getElementById('Gallery');
+    if (!gal || gal.style.display === 'none') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    const viewer = document.getElementById('galleryViewer');
+    if (viewer && viewer.style.display === 'flex') return;
+    if (document.querySelector('.custom-confirm-overlay')) return;
+    if (!gallerySelectMode || !gallerySelected.size) return;
+    e.preventDefault();
+    selectDelete();
+}, true);
+
+function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once
     let clean = filepath || "";
     try { clean = decodeURIComponent(clean); } catch (e) {}
-    let url = clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
-    // always use the in-app viewer — new tabs don't exist in the desktop app
-    openViewerSingle(url, filename || "image");
+    return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
 }
-// single-image viewer mode (history/log previews): no gallery context,
-// so nav/fav/delete/copy stay hidden and their shortcuts are inert
+function openFullImage(filepath, filename, el) {
+    const url = fullImageUrl(filepath, filename);
+    // log images and history cards: hand the viewer their siblings so ←/→ walks them
+    let list = null, idx = -1;
+    const box = el && el.closest ? (el.closest('.console-log') || el.closest('#imageHistoryUI')) : null;
+    if (box && filepath) {
+        const imgs = [...box.querySelectorAll('img[data-ofi]')];
+        idx = imgs.indexOf(el);
+        if (idx >= 0) list = imgs.map(i => i.dataset.ofi);
+    }
+    // always use the in-app viewer — new tabs don't exist in the desktop app
+    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null);
+}
+
 let viewerSingle = false;
+let viewerSingleList = [];
+let viewerSingleIdx = -1;
 let viewerSingleUrl = "";
 let viewerSingleFilename = "";
+// log/history box the viewer was opened from — lets steps re-read the live
+// DOM so images downloaded after open stay reachable
+let viewerSingleBoxId = null;
 // Viewer resource: the loaded raster image is the single source of truth for
 // both display and Copy — one fetch produces one Blob, shown via an object
 // URL and reused by the clipboard. Videos keep their direct-URL <video> path.
@@ -3472,14 +4703,18 @@ function loadViewerRaster(url, filename) {
     p.catch(() => {});
     return p;
 }
-function openViewerSingle(url, filename) {
+function openViewerSingle(url, filename, list, idx, boxId) {
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
     viewerSingle = true;
+    viewerSingleBoxId = boxId || null;
+    viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
+    viewerSingleIdx = viewerSingleList.length ? idx : -1;
     viewerSingleUrl = url;
     viewerSingleFilename = filename || "image";
     viewer.classList.add("single");
+    viewer.classList.toggle("has-list", viewerSingleList.length > 1);
     const ext = ((filename || "").split('.').pop() || "").toLowerCase();
     if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) {
         viewerImg.style.display = 'none';
@@ -3496,12 +4731,27 @@ function openViewerSingle(url, filename) {
     }
     const metaPanel = document.getElementById("galleryViewerMeta");
     if (metaPanel) {
-        const entry = (typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === filename) : null)
-        || { filename: filename, filepath: "", site: "", tags: {} };
-        metaPanel.innerHTML = viewerMetaHtml(entry, true);
-        document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
+        const emptyEntry = { filename: filename, filepath: "", site: "", tags: {} };
+        const fillMeta = (entry) => {
+            metaPanel.innerHTML = viewerMetaHtml(entry, true);
+            document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
+        };
+        const lookup = () => (typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === filename) : null);
+        const found = lookup();
+        if (found) fillMeta(found);
+        else if (viewerMetaMisses.has(filename)) fillMeta(emptyEntry);
+        else {
+            // freshly downloaded: imageHistory can lag the download (update_history
+            // is coalesced) — refetch once so the tag box fills on first open
+            viewerMetaMisses.add(filename);
+            fetch("/api/image_history").then(r => r.json()).then(h => {
+                if (Array.isArray(h)) imageHistory = h;
+                fillMeta(lookup() || emptyEntry);
+            }).catch(() => fillMeta(emptyEntry));
+        }
     }
     viewer.style.display = 'flex';
+    updateViewerNav();
 }
 function viewerMetaHtml(img, tagsClickable) {
     let tagsHtml = renderCategorizedTags(img.tags || {}, tagsClickable);
@@ -3528,7 +4778,7 @@ function viewerMetaHtml(img, tagsClickable) {
 
     return `
     <div class="g-meta-header">
-    <div class="g-meta-title" title="${escJs(img.filename || "image")}">${img.filename || "image"} <span class="g-expand-hint">Hover to see tags ▼</span></div>
+    <div class="g-meta-title"><span class="g-expand-hint" style="margin-left:0;">Hover to see tags ▼</span></div>
     <div class="g-meta-badges">${artistHtml} ${siteBadge} ${ratingHtml}</div>
     </div>
     <div class="g-meta-tags">${tagsHtml}</div>
@@ -3545,7 +4795,7 @@ function showViewerImage() {
     let vw = document.querySelector('.gallery-video-wrap');
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
-    const fullSrc = safeFp ? `/api/gallery/file/${encodeURI(safeFp)}` : '';
+    const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
@@ -3593,8 +4843,7 @@ function showViewerImage() {
         const fsBtn = ctrls.querySelector('.gv-fs-btn');
         fsBtn.onclick = (e) => { e.stopPropagation(); if (!document.fullscreenElement && !document.webkitFullscreenElement) { if (video.requestFullscreen) video.requestFullscreen(); else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen(); } else { if (document.exitFullscreen) document.exitFullscreen(); else if (document.webkitExitFullscreen) document.webkitExitFullscreen(); } };
         function fsIcon() { fsBtn.innerHTML = (document.fullscreenElement || document.webkitFullscreenElement) ? '&#x2715;' : '&#x26F6;'; }
-        document.addEventListener('fullscreenchange', fsIcon);
-        document.addEventListener('webkitfullscreenchange', fsIcon);
+        _setFsIconHandler(fsIcon);
         video.play();
     } else if (fullSrc) { loadViewerRaster(fullSrc, img.filename); }
     else { clearViewerResource(); viewerImg.style.display = ''; }
@@ -3607,9 +4856,77 @@ function showViewerImage() {
     }
 
     viewer.style.display = 'flex';
+    updateViewerNav();
 }
-function closeGalleryViewer() { clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single"); viewerSingle = false; viewerSingleUrl = ""; viewerSingleFilename = ""; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
-function viewerNav(dir) { if (viewerSingle) return; const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
+// one fullscreenchange listener at a time: fsIcon is a fresh closure per
+// video shown, so plain addEventListener leaked one listener per image view
+let _fsIconHandler = null;
+function _setFsIconHandler(fn) {
+    if (_fsIconHandler) {
+        document.removeEventListener('fullscreenchange', _fsIconHandler);
+        document.removeEventListener('webkitfullscreenchange', _fsIconHandler);
+        _fsIconHandler = null;
+    }
+    if (fn) {
+        _fsIconHandler = fn;
+        document.addEventListener('fullscreenchange', fn);
+        document.addEventListener('webkitfullscreenchange', fn);
+    }
+}
+function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function updateViewerNav() {
+    // boundary buttons: no prev on the first image, no next on the last one
+    const v = document.getElementById("galleryViewer");
+    if (!v) return;
+    if (viewerSingle) {
+        const moreHistory = viewerSingleBoxId === "imageHistoryUI"
+            && imageHistoryVisible < imgHistFiltered.length;
+        v.classList.toggle("at-start", viewerSingleIdx <= 0);
+        v.classList.toggle("at-end", viewerSingleList.length > 0
+            && viewerSingleIdx >= viewerSingleList.length - 1 && !moreHistory);
+    } else {
+        v.classList.toggle("at-start", currentGalleryPage <= 1 && viewerIndex <= 0);
+        v.classList.toggle("at-end", currentGalleryPage >= (galleryState.total_pages || 1)
+            && viewerIndex >= galleryState.images.length - 1);
+    }
+}
+function refreshViewerSingleList() {
+    // re-read the origin box so images downloaded after the viewer opened are
+    // reachable, and flip has-list on when the count crosses to 2
+    if (!viewerSingle || !viewerSingleBoxId) return;
+    const box = document.getElementById(viewerSingleBoxId);
+    if (!box) return;
+    const fresh = [...box.querySelectorAll('img[data-ofi]')].map(i => i.dataset.ofi);
+    const at = fresh.indexOf(viewerSingleList[viewerSingleIdx]);
+    if (at < 0) return; // current card left the log (cleared/capped) — keep snapshot
+    viewerSingleList = fresh;
+    viewerSingleIdx = at;
+    document.getElementById("galleryViewer").classList.toggle("has-list", fresh.length > 1);
+    updateViewerNav();
+}
+function viewerNav(dir) {
+    if (viewerSingle) {
+        // log previews carry their sibling list — walk it like the gallery
+        refreshViewerSingleList();
+        // stepping past the last rendered archive card pulls the next page in
+        if (dir > 0 && viewerSingleBoxId === "imageHistoryUI"
+                && viewerSingleIdx >= viewerSingleList.length - 1
+                && imageHistoryVisible < imgHistFiltered.length) {
+            imageHistoryVisible += 30;
+            renderImageHistory();
+            refreshViewerSingleList();
+        }
+        if (!viewerSingleList.length) return;
+        const n = viewerSingleIdx + dir;
+        if (n < 0) return;
+        if (n >= viewerSingleList.length) { showToast("Last image"); return; }
+        const p = viewerSingleList[n];
+        let clean = p; try { clean = decodeURIComponent(p); } catch (e) {}
+        const fn = (clean.split('/').pop() || "image");
+        openViewerSingle(fullImageUrl(p, fn), fn, viewerSingleList, n, viewerSingleBoxId);
+        return;
+    }
+    const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
 function toggleViewerFav() {
     if (viewerSingle) {
         fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) })
@@ -3684,7 +5001,6 @@ function toggleViewerFav() {
                 filename = img.filename;
             }
             if (/\.(mp4|webm|mov|avi|mkv)$/i.test(filename || "") || (!viewerResource.blob && !viewerResource.loadPromise)) {
-                showToast("Copying...", { icon: COPY_ICON });
                 await copyToClipboard(url, filename);
                 return;
             }
@@ -3700,7 +5016,6 @@ function toggleViewerFav() {
                 }
             }
             if (generation !== viewerResource.generation) { showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON }); return; }
-            showToast("Copying...", { icon: COPY_ICON });
             await copyToClipboard(viewerResource.url || url, viewerResource.filename || filename);
         } catch (e) { showToast("Copy failed: " + (e && e.message || e), { warn: true, icon: WARN_ICON }); }
         finally { _copyBusy = false; }
@@ -3820,9 +5135,16 @@ function toggleViewerFav() {
         if (e.key === 'Escape') {
             if (viewer.classList.contains("focus")) {
                 viewer.classList.remove("focus");
+                syncFocusCursor();
             } else {
                 closeGalleryViewer();
             }
+        }
+        else if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey
+                 && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
+            // f toggles focus mode (same as the 👁 button); skip when typing
+            viewer.classList.toggle("focus");
+            syncFocusCursor();
         }
         else if (e.key === 'ArrowLeft') viewerNav(-1);
         else if (e.key === 'ArrowRight') viewerNav(1);
@@ -3835,6 +5157,25 @@ function toggleViewerFav() {
             copyViewerImage();
         }
     }, true);
+
+    // focus mode hides the cursor; moving it brings it back for 5s of idle
+    let _focusCursorTimer = null;
+    function syncFocusCursor() {
+        const viewer = document.getElementById("galleryViewer");
+        if (!viewer) return;
+        clearTimeout(_focusCursorTimer);
+        if (viewer.classList.contains("focus")) viewer.classList.add("cursor-hidden");
+        else viewer.classList.remove("cursor-hidden");
+    }
+    document.addEventListener("mousemove", function() {
+        const viewer = document.getElementById("galleryViewer");
+        if (!viewer || !viewer.classList.contains("focus")) return;
+        viewer.classList.remove("cursor-hidden");
+        clearTimeout(_focusCursorTimer);
+        _focusCursorTimer = setTimeout(function() {
+            if (viewer.classList.contains("focus")) viewer.classList.add("cursor-hidden");
+        }, 5000);
+    });
     let _resizeTimer = null;
     window.addEventListener('resize', function() {
         clearTimeout(_resizeTimer);
@@ -3897,21 +5238,26 @@ function toggleViewerFav() {
     document.getElementById("galleryViewerImg").addEventListener('mousedown', function(e) { if (viewerZoom <= 1 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (localStorage.getItem('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { localStorage.setItem('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
-    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) { console.error("gallery import failed:", e); } }
+    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" }); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
     let _siteFilterSeq = 0;
     async function populateGallerySiteFilter() {
         const seq = ++_siteFilterSeq;
         const container = document.getElementById("sourceDropdown");
         if (!container) return;
+        // rebuild wipes innerHTML, which would snap an open, scrolled menu to the top
+        const prevScroll = container.scrollTop;
         const prevSelected = getMultiSelectValues('sourceDropdown');
-        container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
         const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') });
         if (galleryFavFilter) params.set("favourites", "true");
+        applyDateParams(params, galleryDateFilter);
         try {
             let resp = await fetch(`/api/gallery/sources?${params}`);
             const counts = await resp.json();
             if (seq !== _siteFilterSeq) return;
+            // wipe only after the seq check — a stale or failed call used to
+            // destroy a menu a newer call had already rebuilt
+            container.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>';
             const sorted = Object.entries(counts).sort((a,b) => a[0].localeCompare(b[0]));
             
             const allSelectedBefore = !prevSelected || prevSelected === '';
@@ -3921,7 +5267,7 @@ function toggleViewerFav() {
                 const div = document.createElement("div");
                 div.className = "dd-item";
                 div.onclick = function(e) { toggleDropdownCheck(this, e); };
-                const isChecked = allSelectedBefore || selList.includes(site);
+                const isChecked = !allSelectedBefore && selList.includes(site);
                 div.innerHTML = `<span>${siteLabel(site)} (${count})</span><input type="checkbox" value="${site}" ${isChecked ? 'checked' : ''}>`;
                 container.appendChild(div);
             });
@@ -3935,13 +5281,16 @@ function toggleViewerFav() {
                     container.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
                 } else {
                     const itemCbs = [...container.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
-                    allCb.checked = itemCbs.length > 0 && itemCbs.every(c => c.checked);
+                    const allItems = itemCbs.length > 0 && itemCbs.every(c => c.checked);
+                    allCb.checked = allItems;
+                    if (allItems) itemCbs.forEach(c => c.checked = false);
                 }
             }
-        } catch (e) {}
+        } catch (e) { console.error("site filter load failed:", e); }
         const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
         if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
         updateSourceDropdown();
+        container.scrollTop = prevScroll;
     }
     function toggleDropdown(id) { const menu = document.getElementById(id); document.querySelectorAll('.gallery-dropdown-menu.open').forEach(m => { if (m.id !== id) m.classList.remove('open'); }); menu.classList.toggle('open'); }
     function onSourceChange() {
@@ -4018,6 +5367,10 @@ function toggleViewerFav() {
                 } else {
                     closeGalleryViewer();
                 }
+                // refetch the current page so the next page's first image
+                // slides in to fill the vacated slot (viewerIndex still lands
+                // on the same image after the shifted refetch)
+                loadGallery();
             }
         } catch (e) {
             console.error("Delete error", e);
@@ -4028,6 +5381,7 @@ function toggleViewerFav() {
     function toggleFocusMode() {
         const viewer = document.getElementById("galleryViewer");
         if (viewer) viewer.classList.toggle("focus");
+        syncFocusCursor();
     }
 
     document.addEventListener("DOMContentLoaded", function() {

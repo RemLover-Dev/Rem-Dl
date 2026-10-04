@@ -27,5 +27,5 @@ EXPOSE 5000
 #   docker run -d -p 5000:5000 \
 #     -v "$(pwd)/Rems Dl:/app/Rems Dl" \
 #     -v "$(pwd)/database:/app/database" \
-#     ghcr.io/remlover-dev/rem-dl:latest
+#     ghcr.io/remlover-dev/rems-dl:latest
 CMD ["python", "Rems_Dl.py"]

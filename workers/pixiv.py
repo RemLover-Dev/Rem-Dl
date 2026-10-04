@@ -18,7 +18,6 @@
 # proxy/TLS framework, added ugoira-to-GIF conversion via Pillow.
 
 import os
-import re
 import io
 import time
 import hashlib
@@ -32,8 +31,9 @@ import requests
 from core.shared import (
     BaseDownloader, save_history, add_to_gallery, send_tags,
     check_duplicate, MASTER_FOLDER, sanitize_path_component,
-    sanitize_filename, safe_ensure_dir
+    sanitize_filename, safe_ensure_dir, pace_session
 )
+from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
 
 CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
@@ -44,10 +44,11 @@ RATING_CODES = {0: "General", 1: "R18", 2: "R18G"}
 class PixivAppAPI:
     """Minimal Pixiv App API (adapted from gallery-dl PixivAppAPI)."""
 
-    def __init__(self, session, log_fn, refresh_token):
+    def __init__(self, session, log_fn, refresh_token, stop_event=None):
         self.session = session
         self.log = log_fn
         self.refresh_token = refresh_token
+        self.stop_event = stop_event
         self.user = None
         self._token = None
         self._token_expires = 0
@@ -64,7 +65,8 @@ class PixivAppAPI:
         if self._token and now < self._token_expires:
             return
         if not self.refresh_token:
-            raise ValueError("PIXIV_REFRESH_TOKEN missing — paste your pixiv.net PHPSESSID cookie in Settings → Pixiv and click 'Get token from cookie'")
+            _log_token_hint()
+            raise ValueError("PIXIV_REFRESH_TOKEN missing — Settings → Pixiv → 'Get login URL' → log in → paste the code from Network 'callback?state=...' → 'Get token'")
 
         self.log("Refreshing access token")
         url = "https://oauth.secure.pixiv.net/auth/token"
@@ -84,7 +86,8 @@ class PixivAppAPI:
         resp = self.session.post(url, data=data, headers=headers, timeout=30)
         if resp.status_code >= 400:
             self.log(f"Auth failed: {resp.text[:200]}")
-            raise ValueError("Invalid refresh token")
+            _log_token_hint()
+            raise ValueError("Invalid refresh token — get a new one in Settings → Pixiv (steps above / in the pixiv log)")
 
         body = resp.json()["response"]
         self.user = body["user"]
@@ -95,72 +98,78 @@ class PixivAppAPI:
 
     def _call(self, endpoint, params=None):
         url = "https://app-api.pixiv.net" + endpoint
+        rate_strikes = 0
+
+        def rate_limited():
+            # stop_event-aware 300s wait — a blocking time.sleep(300) here
+            # made stop take up to 5 min; 3 strikes and we give up for good
+            nonlocal rate_strikes
+            rate_strikes += 1
+            if rate_strikes > 3:
+                raise Exception("Pixiv rate limited repeatedly — giving up.")
+            self.log("Rate limited - waiting 300s")
+            deadline = time.time() + 300
+            while time.time() < deadline:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    return True
+                time.sleep(5)
+            return False
+
         while True:
             self.login()
             resp = self.session.get(url, params=params, timeout=30)
             if resp.status_code in (403, 429):
-                self.log("Rate limited - waiting 300s")
-                time.sleep(300)
+                if rate_limited():
+                    return {}
                 continue
             resp.raise_for_status()
             data = resp.json()
             if "error" not in data:
+                rate_strikes = 0
                 return data
             err = data["error"]
             msg = (
                 err.get("user_message") or err.get("message") or str(err)
                 if isinstance(err, dict) else str(err))
             if "rate limit" in msg.lower():
-                self.log("Rate limited - waiting 300s")
-                time.sleep(300)
+                if rate_limited():
+                    return {}
                 continue
             raise Exception(f"Pixiv API error: {msg}")
-
-    def _paginate(self, endpoint, params, key="illusts", limit=0):
-        items = []
-        while True:
-            data = self._call(endpoint, params)
-            items.extend(data.get(key, []))
-            if limit > 0 and len(items) >= limit:
-                items = items[:limit]
-                break
-            if not data.get("next_url"):
-                break
-            qs = data["next_url"].rpartition("?")[2]
-            params = dict(
-                (k, unquote(v)) for part in qs.split("&") if "=" in part
-                for k, v in [part.split("=", 1)]
-            )
-        return items
-
-    def user_illusts(self, user_id, limit=0):
-        return self._paginate("/v1/user/illusts", {"user_id": str(user_id)}, limit=limit)
-
-    def user_bookmarks(self, user_id, restrict="public", limit=0):
-        return self._paginate("/v1/user/bookmarks/illust", {
-            "user_id": str(user_id), "restrict": restrict}, limit=limit)
-
-    def search(self, word, sort="date_desc",
-               target="partial_match_for_tags",
-               date_start=None, date_end=None, limit=0):
-        params = {"word": word, "sort": sort,
-                  "search_target": target}
-        if date_start:
-            params["start_date"] = date_start
-        if date_end:
-            params["end_date"] = date_end
-        return self._paginate("/v1/search/illust", params, limit=limit)
-
-    def ranking(self, mode="day", date=None, limit=0):
-        params = {"mode": mode}
-        if date:
-            params["date"] = date
-        return self._paginate("/v1/illust/ranking", params, limit=limit)
 
     def ugoira_meta(self, illust_id):
         data = self._call("/v1/ugoira/metadata",
                           {"illust_id": str(illust_id)})
         return data.get("ugoira_metadata", {})
+
+
+def _encode_ugoira(resp, frames, gif_path):
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        names = zf.namelist()
+        frame_images = []
+        delays = []
+        for f in frames:
+            fname = f.get("file", "")
+            delay = f.get("delay", 50)
+            if not fname or fname not in names:
+                continue
+            try:
+                img = Image.open(io.BytesIO(zf.read(fname)))
+                frame_images.append(img.convert("RGBA"))
+                delays.append(delay)
+            except Exception:
+                continue
+
+    if not frame_images:
+        return False
+    frame_images[0].save(
+        gif_path,
+        save_all=True,
+        append_images=frame_images[1:],
+        duration=delays,
+        loop=0,
+    )
+    return True
 
 
 class PixivWorker(BaseDownloader):
@@ -178,6 +187,8 @@ class PixivWorker(BaseDownloader):
             p = self.net_config.get("proxy_url")
             self.api_session.proxies = {"http": p, "https": p}
         self.api_session.verify = self.net_config.get("verify_tls", False)
+        # login/_call/ugoira zip all funnel through this session — pace it
+        pace_session(self.api_session)
 
         self.exclude_manga = "-manga" in self.exclusions
         self.only_ugoira = "-image" in self.exclusions and "-ugoira" not in self.exclusions
@@ -188,18 +199,24 @@ class PixivWorker(BaseDownloader):
         else:
             self.mode = "artworks"
             self.value = self.raw_tag
-        self._artist_resolved = False
-
+        # pixiv search has no '-' exclusion (word is a plain tag AND) —
+        # strip dashes from the query, drop matching works client-side
+        self.exclude_tags = []
+        if self.mode == "search":
+            words = self.value.split()
+            self.exclude_tags = [w[1:].lower() for w in words
+                                 if w.startswith("-") and w[1:]]
+            kept = " ".join(w for w in words if not w.startswith("-"))
+            if self.exclude_tags and kept:
+                self.value = kept
+        safe_mode = sanitize_path_component(self.mode, fallback="artworks")
         safe_value = sanitize_path_component(self.value, fallback="pixiv")
-        if self.mode == "ranking":
-            self.tag_dir = os.path.join(self.site_root, "ranking", safe_value)
-        else:
-            self.tag_dir = os.path.join(self.site_root, safe_value)
+        self.tag_dir = os.path.join(self.site_root, safe_mode, safe_value)
         safe_ensure_dir(self.tag_dir)
 
     def _api_instance(self):
         if self._api is None:
-            self._api = PixivAppAPI(self.api_session, self.log, self.refresh_token)
+            self._api = PixivAppAPI(self.api_session, self.log, self.refresh_token, self.stop_event)
         return self._api
 
     async def scraper_task(self):
@@ -234,13 +251,14 @@ class PixivWorker(BaseDownloader):
             if not works:
                 self.log("No more posts found.")
                 break
-            if self.mode == "artworks" and self.value.isdigit() and not self._artist_resolved:
-                self._resolve_artist_dir(works)
-            for work in works:
+            # page-local index: `collected < len(works)` compared the RUNNING
+            # total against one page's size, so pacing stopped entirely after
+            # page 1 and later pages downloaded with no anti-ban pause
+            for page_i, work in enumerate(works):
                 if self.stop_event.is_set() or (need and collected >= need):
                     break
                 collected += await self._process_work(work)
-                if collected < len(works) and (need == 0 or collected < need):
+                if page_i + 1 < len(works) and (need == 0 or collected < need):
                     await asyncio.sleep(self.anti_ban_pause)
             if need and collected >= need:
                 break
@@ -262,25 +280,6 @@ class PixivWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def _resolve_artist_dir(self, works):
-        # ponytail: the artist name rides free in the works payload — no extra API call
-        self._artist_resolved = True
-        name = ""
-        for w in works or []:
-            name = ((w.get("user") or {}).get("name") or "").strip()
-            if name:
-                break
-        old = self.tag_dir
-        if name:
-            safe = sanitize_path_component(name, fallback="artist")
-            self.tag_dir = os.path.join(MASTER_FOLDER, "Artists", safe)
-            self.log(f"Artist: {name}")
-        safe_ensure_dir(self.tag_dir)
-        try:
-            if old != self.tag_dir and os.path.isdir(old) and not os.listdir(old):
-                os.rmdir(old)
-        except Exception:
-            pass
     async def _process_work(self, work):
         work_id = work.get("id")
         if not work_id:
@@ -294,6 +293,9 @@ class PixivWorker(BaseDownloader):
             return 0
 
         tags = [t["name"] for t in work.get("tags", [])]
+        if self.exclude_tags and any(t.lower() in self.exclude_tags
+                                     for t in tags):
+            return 0
         if "-ai" in self.exclusions or "ai" in self.exclusions:
             if any(tag in ("ai_generated", "ai") for tag in tags):
                 return 0
@@ -405,54 +407,31 @@ class PixivWorker(BaseDownloader):
                 headers={"Referer": "https://www.pixiv.net/"})
             resp.raise_for_status()
 
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-                names = zf.namelist()
-                frame_images = []
-                delays = []
-                for f in frames:
-                    fname = f.get("file", "")
-                    delay = f.get("delay", 50)
-                    if not fname or fname not in names:
-                        continue
-                    try:
-                        img = Image.open(io.BytesIO(zf.read(fname)))
-                        frame_images.append(img.convert("RGBA"))
-                        delays.append(delay)
-                    except Exception:
-                        continue
-
-            if not frame_images:
-                self.log(f"No frames extracted from ugoira {work_id}")
-                return False
-
             safe_ensure_dir(rating_dir)
             gif_name = sanitize_filename(f"{work_id}.gif", fallback=f"pixiv_{work_id}.gif")
             gif_path = os.path.join(rating_dir, gif_name)
 
-            frame_images[0].save(
-                gif_path,
-                save_all=True,
-                append_images=frame_images[1:],
-                duration=delays,
-                loop=0,
-            )
+            if not await asyncio.to_thread(_encode_ugoira, resp, frames, gif_path):
+                self.log(f"No frames extracted from ugoira {work_id}")
+                return False
 
             # persistent perceptual-hash dedup (see core/shared.py)
-            dup = check_duplicate(gif_path, self.name, work_id)
+            dup = await asyncio.to_thread(check_duplicate, gif_path, self.name, work_id)
             if dup is not None and dup.is_duplicate:
                 try:
                     os.remove(gif_path)
                 except OSError:
                     pass
-                self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {gif_name} not saved")
+                self.duplicate_count += 1
+                self._remember_filename(gif_name)
                 return False
 
             self.downloaded_count += 1
             self.dl_history.add(gif_name)
-            save_history(self.site_root, self.dl_history)
+            await asyncio.to_thread(save_history, self.site_root, self.dl_history)
             rel = os.path.relpath(gif_path, MASTER_FOLDER)
-            add_to_gallery(self.name, gif_name, rel, tags, artists)
-            send_tags(self.name, gif_name, tags, artists, rel)
+            await asyncio.to_thread(add_to_gallery, self.name, gif_name, rel, tags, artists)
+            await asyncio.to_thread(send_tags, self.name, gif_name, tags, artists, rel)
             self.log(f"[SUCCESS] Ugoira -> GIF: {gif_name}")
             return True
 
@@ -460,8 +439,6 @@ class PixivWorker(BaseDownloader):
             self.log(f"Ugoira conversion failed for {work_id}: {e}")
             return False
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 
 def worker_pixiv(tag, amount, rating, exclusions, net_config, exclude_ai=False):

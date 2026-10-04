@@ -10,7 +10,7 @@ Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Waifu.im, Nekos.best, N
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-5.4.0-ff9ff3.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-5.3.0-ff9ff3.svg)](CHANGELOG.md)
 
 [English](README.md) | [فارسی](README_fa.md) | [Linux & Docker](#-run-on-linux--docker)
 
@@ -51,13 +51,13 @@ Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Waifu.im, Nekos.best, N
 
 ### 0. No-setup option: download a prebuilt release
 
-Grab the latest `Rems_Dl-Windows.zip` (`.exe`, WebView2 is preinstalled on Windows 10/11) or `Rems_Dl-Linux.tar.gz` from [GitHub Releases](../../releases). Unzip, run, done -- no Python needed. A Docker image (`ghcr.io/remlover-dev/rem-dl:latest`) is published there too for hosts where you want zero system dependencies (see [Run on Linux / Docker](#-run-on-linux--docker)).
+Grab the latest `Rems_Dl-Windows.zip` (`.exe`, WebView2 is preinstalled on Windows 10/11) or `Rems_Dl-Linux.tar.gz` from [GitHub Releases](../../releases). Unzip, run, done -- no Python needed. A Docker image (`ghcr.io/remlover-dev/rems-dl:latest`) is published there too for hosts where you want zero system dependencies (see [Run on Linux / Docker](#-run-on-linux--docker)).
 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/RemLover-Dev/Rem-Dl
-cd Rem-Dl
+git clone https://github.com/RemLover-Dev/Rems-Dl
+cd Rems-Dl
 ```
 
 ### 2. Install Dependencies
@@ -272,8 +272,8 @@ update-desktop-database ~/.local/share/applications/
 
 ### 4. Running from Source on Linux
 ```bash
-git clone https://github.com/RemLover-Dev/Rem-Dl.git
-cd Rem-Dl
+git clone https://github.com/RemLover-Dev/Rems-Dl.git
+cd Rems-Dl
 pip install -r requirements.txt
 python Rems_Dl.py
 ```
@@ -291,11 +291,11 @@ python Rems_Dl.py
 ### 6. Running with Docker (Zero Host Dependencies)
 Pull and run the official image:
 ```bash
-docker pull ghcr.io/remlover-dev/rem-dl:latest
+docker pull ghcr.io/remlover-dev/rems-dl:latest
 docker run -d -p 5000:5000 \
   -v "$(pwd)/Rems Dl:/app/Rems Dl" \
   -v "$(pwd)/database:/app/database" \
-  --name rems-dl-app ghcr.io/remlover-dev/rem-dl:latest
+  --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
 Then open `http://localhost:5000` in your browser.
 

@@ -21,7 +21,7 @@
                 <button class="tab-btn active" onclick="openTab('Main', this)">MAIN</button>
                 <button class="tab-btn" onclick="openTab('Gallery', this)">Gallery</button>
                 <button class="tab-btn" onclick="openTab('History', this)">History</button>
-                <div id="dynamicExtensionNavButtons" style="display: contents;"></div>
+                <button class="tab-btn" onclick="openTab('Notifications', this)" title="Notifications"><svg width="20" height="20" viewBox="-0.5 -0.5 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.35em;"><path stroke-width="1.25" d="M11.25 5A3.75 3.75 0 0 0 3.75 5c0 4.375 -1.875 5.625 -1.875 5.625h11.25s-1.875 -1.25 -1.875 -5.625"/><path stroke-width="1.25" d="M8.58125 13.125a1.25 1.25 0 0 1 -2.1625 0"/></svg><span id="notifDot" class="notif-dot" style="display:none;"></span></button>
             </div>
             
             <div class="tab-group-title" onclick="toggleMenu('group-downloaders')">Downloaders <span class="chevron">▼</span></div>
@@ -114,8 +114,8 @@
             <!-- E-Shuushuu Tab -->
             <div id="EShuushuu" class="tab-content" style="display: none;">
                 <h2>E-Shuushuu Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input type="text" id="eshuushuuTag" placeholder="e.g. rem" autocomplete="off" style="flex:1;" onkeydown="if(event.key==='Enter') addEshuushuuTag()">
@@ -123,9 +123,9 @@
                         </div>
                         <div id="eshuushuuTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>User ID:</label>
+                    <label style="padding-top: 8px;">User ID:</label>
                     <input type="text" id="eshuushuuUser" placeholder="Optional" style="width: 100px;">
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="eshuushuuLimit" value="50" min="0" style="width: 80px;">
                     <button id="runBtn_eshuushuu" class="action-btn" onclick="toggleWorker('eshuushuu')">START</button>
                 </div>
@@ -151,13 +151,17 @@
                     </div>
                     <label>Limit:</label>
                     <input type="number" id="nekosapiLimit" value="50" min="0" style="width: 80px;">
-                    <select id="nekosapiRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="safe">Safe</option>
-                        <option value="suggestive">Suggestive</option>
-                        <option value="borderline">Questionable</option>
-                        <option value="explicit">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('nekosapiRatingDropdown')">All Ratings ▾</button>
+                        <div id="nekosapiRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="safe"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Suggestive</span><input type="checkbox" value="suggestive"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="borderline"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="explicit"></div>
+                        </div>
+                        <input type="hidden" id="nekosapiRating" value="">
+                    </div>
                     <button id="runBtn_nekosapi" class="action-btn" onclick="toggleWorker('nekosapi')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_nekosapi" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
@@ -174,8 +178,8 @@
             <!-- Nekosia Tab (UI Ready) -->
             <div id="Nekosia" class="tab-content" style="display: none;">
                 <h2>Nekosia Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input type="text" id="nekosiaTag" placeholder="e.g. maid" autocomplete="off" style="flex:1;" onkeydown="if(event.key==='Enter') addNekosiaTag()">
@@ -183,7 +187,7 @@
                         </div>
                         <div id="nekosiaTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="nekosiaLimit" value="50" min="0" style="width: 80px;">
                     <select id="nekosiaRating" style="width: 130px;">
                         <option value="safe">Safe</option>
@@ -269,13 +273,17 @@
                     </div>
                     <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="danLimit" value="50" min="0" style="width: 80px;">
-                    <select id="danRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:g">Safe</option>
-                        <option value="rating:s">Sensitive</option>
-                        <option value="rating:q">Questionable</option>
-                        <option value="rating:e">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('danRatingDropdown')">All Ratings ▾</button>
+                        <div id="danRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:g"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                        </div>
+                        <input type="hidden" id="danRating" value="">
+                    </div>
                     <button id="runBtn_dan" class="action-btn" onclick="toggleWorker('dan')">START</button>
                 </div>
                 <div class="input-group" style="margin-top: 10px; font-size: 14px; position: relative; padding-right: 90px;">
@@ -307,6 +315,11 @@
                         </div>
                     </div>
                     <input type="text" id="gallerySearch" placeholder="Search tags, filename..." onkeydown="if(event.key==='Enter')loadGallery(1)">
+                    <span id="galleryDateWrap" title="Filter by date and time" data-target="gallery" onclick="openHistoryPicker(this)" style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; border: 1px solid var(--border-color); border-radius: 6px; background: var(--input-bg); color: var(--text-color); cursor: pointer;">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" shape-rendering="geometricPrecision" style="pointer-events: none;">
+                            <path d="M7.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M7.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M7.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M21.5 3h-2.75a0.25 0.25 0 0 1 -0.25 -0.25V1a1 1 0 0 0 -2 0v4.75a0.75 0.75 0 0 1 -1.5 0V3.5a0.5 0.5 0 0 0 -0.5 -0.5H8.25A0.25 0.25 0 0 1 8 2.75V1a1 1 0 0 0 -2 0v4.75a0.75 0.75 0 0 1 -1.5 0V3.5A0.5 0.5 0 0 0 4 3H2.5a2 2 0 0 0 -2 2v17a2 2 0 0 0 2 2h19a2 2 0 0 0 2 -2V5a2 2 0 0 0 -2 -2Zm0 18.5a0.5 0.5 0 0 1 -0.5 0.5H3a0.5 0.5 0 0 1 -0.5 -0.5v-12A0.5 0.5 0 0 1 3 9h18a0.5 0.5 0 0 1 0.5 0.5Z" fill="currentColor" fill-rule="evenodd"></path>
+                        </svg>
+                    </span>
                     <div class="gallery-dropdown">
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('sortDropdown')">Newest First ▾</button>
                         <div id="sortDropdown" class="gallery-dropdown-menu">
@@ -318,34 +331,32 @@
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('typeDropdown')">All Types ▾</button>
                         <div id="typeDropdown" class="gallery-dropdown-menu">
                             <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Images</span><input type="checkbox" value="image" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>GIFs</span><input type="checkbox" value="gif" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Videos</span><input type="checkbox" value="video" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Images</span><input type="checkbox" value="image"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>GIFs</span><input type="checkbox" value="gif"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Videos</span><input type="checkbox" value="video"></div>
                         </div>
                     </div>
                     <div class="gallery-dropdown">
                         <button class="gallery-dropdown-btn" onclick="toggleDropdown('ratingDropdown')">All Ratings ▾</button>
                         <div id="ratingDropdown" class="gallery-dropdown-menu">
                             <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="safe" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="sensitive" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="questionable" checked></div>
-                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="explicit" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="safe"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="sensitive"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="questionable"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="explicit"></div>
                         </div>
                     </div>
-                    <button id="gallerySelectModeBtn" class="gallery-select-toggle-btn" onclick="toggleSelectMode()" title="Select Mode: choose multiple images to copy or delete"><svg width="1.15em" height="1.15em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.15em;"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="2"/><path d="M8 12l3 3 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <span>Select</span></button>
-                    <button id="galleryBlurBtn" class="gallery-blur-btn active" onclick="toggleGalleryBlur()" title="Toggle NSFW blur protection"><span class="blur-icon">🔞</span> <span>Blur NSFW</span></button>
-                    <button id="galleryFavBtn" class="gallery-fav-btn" onclick="toggleFavFilter()" title="Favorites only"><svg width="1.3em" height="1.3em" viewBox="-1 -1 18 18" shape-rendering="geometricPrecision" style="display:block; vertical-align:middle;"><path fill="currentColor" stroke="none" d="M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z"/></svg></button>
+                    <button id="galleryBlurBtn" class="gallery-blur-btn active" onclick="toggleGalleryBlur()" title="Toggle NSFW blur protection"><svg class="blur-icon" width="18" height="18" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M12 3.3333466666666665h0.6666666666666666v0.6666666666666666c0 0.17681333333333332 0.07026666666666666 0.34637999999999997 0.19526666666666664 0.47140666666666664 0.125 0.12502666666666667 0.2946 0.19526 0.47139999999999993 0.19526 0.17679999999999998 0 0.34639999999999993 -0.07023333333333333 0.47139999999999993 -0.19526 0.125 -0.12502666666666667 0.19526666666666664 -0.2945933333333333 0.19526666666666664 -0.47140666666666664v-0.6666666666666666h0.6666666666666666c0.17679999999999998 0 0.34639999999999993 -0.07023333333333333 0.47139999999999993 -0.19526 0.125 -0.12502666666666667 0.19526666666666664 -0.2945933333333333 0.19526666666666664 -0.47140666666666664 0 -0.17680666666666667 -0.07026666666666666 -0.34637999999999997 -0.19526666666666664 -0.47139999999999993 -0.125 -0.12502666666666667 -0.2946 -0.19526666666666664 -0.47139999999999993 -0.19526666666666664h-0.6666666666666666v-0.6666666666666666c0 -0.17680666666666667 -0.07026666666666666 -0.34637999999999997 -0.19526666666666664 -0.47139999999999993 -0.125 -0.12502666666666667 -0.2946 -0.19526666666666664 -0.47139999999999993 -0.19526666666666664 -0.17679999999999998 0 -0.34639999999999993 0.07024 -0.47139999999999993 0.19526666666666664 -0.125 0.12502 -0.19526666666666664 0.2945933333333333 -0.19526666666666664 0.47139999999999993v0.6666666666666666h-0.6666666666666666c-0.17679999999999998 0 -0.34639999999999993 0.07024 -0.47139999999999993 0.19526666666666664 -0.125 0.12502 -0.19526666666666664 0.2945933333333333 -0.19526666666666664 0.47139999999999993 0 0.17681333333333332 0.07026666666666666 0.34637999999999997 0.19526666666666664 0.47140666666666664 0.125 0.12502666666666667 0.2946 0.19526 0.47139999999999993 0.19526Zm-7.333333333333333 1.3333333333333333V11.333333333333332c0 0.17679999999999998 0.07024 0.34639999999999993 0.19526666666666664 0.47139999999999993 0.12502 0.12506666666666666 0.2945933333333333 0.19526666666666664 0.47139999999999993 0.19526666666666664 0.17681333333333332 0 0.34637999999999997 -0.0702 0.47140666666666664 -0.19526666666666664C5.929766666666667 11.679733333333333 6 11.510133333333332 6 11.333333333333332V4.6666799999999995c0 -0.17680666666666667 -0.07023333333333333 -0.34637999999999997 -0.19526 -0.47139999999999993 -0.12502666666666667 -0.12502666666666667 -0.2945933333333333 -0.19526666666666664 -0.47140666666666664 -0.19526666666666664 -0.17680666666666667 0 -0.34637999999999997 0.07024 -0.47139999999999993 0.19526666666666664 -0.12502666666666667 0.12502 -0.19526666666666664 0.2945933333333333 -0.19526666666666664 0.47139999999999993Zm9.733333333333333 1.3333333333333333c-0.0858 0.017493333333333333 -0.16733333333333333 0.051719999999999995 -0.23986666666666667 0.10072666666666666 -0.0726 0.04900666666666667 -0.13479999999999998 0.11183333333333334 -0.18306666666666666 0.18488 -0.048333333333333325 0.07305333333333333 -0.08173333333333332 0.15490666666666666 -0.0984 0.24087999999999998 -0.016666666666666666 0.08597333333333332 -0.0162 0.17436666666666667 0.0013333333333333333 0.26016666666666666 0.26026666666666665 1.2641333333333333 0.106 2.578533333333333 -0.43993333333333334 3.7480666666666664 -0.5459333333333333 1.1694666666666667 -1.4544 2.131733333333333 -2.5906666666666665 2.7439999999999998 -1.1361999999999999 0.6122 -2.4395333333333333 0.8417333333333332 -3.716533333333333 0.6545333333333333 -1.2769933333333332 -0.18726666666666664 -2.4595866666666666 -0.7812666666666666 -3.3722199999999996 -1.6938666666666666 -0.9126333333333332 -0.9126666666666666 -1.5066533333333334 -2.0952666666666664 -1.6938866666666668 -3.3722666666666665 -0.1872333333333333 -1.277 0.042300000000000004 -2.580333333333333 0.6545333333333333 -3.71654 0.6122266666666667 -1.1362066666666666 1.57452 -2.044713333333333 2.7440266666666666 -2.590653333333333C6.634826666666666 2.014 7.949199999999999 1.8597199999999998 9.213333333333333 2.120013333333333c0.17679999999999998 0.035366666666666664 0.36039999999999994 -0.00096 0.5104666666666666 -0.10097999999999999 0.15 -0.10002 0.2542 -0.25554 0.2895333333333333 -0.43235333333333337 0.03533333333333333 -0.17680666666666667 -0.0009333333333333333 -0.3604266666666667 -0.10099999999999999 -0.5104533333333333 -0.09999999999999999 -0.15003333333333332 -0.2555333333333333 -0.25417999999999996 -0.4323333333333333 -0.2895466666666666 -0.48786666666666667 -0.0909 -0.9838666666666667 -0.13111133333333333 -1.48 -0.12 -1.4503933333333334 0 -2.86822 0.4300933333333333 -4.07418 1.2358933333333333 -1.20596 0.8057933333333334 -2.1458933333333334 1.9511066666666665 -2.7009333333333334 3.291093333333333 -0.55504 1.3399933333333334 -0.7002673333333332 2.8144666666666667 -0.4173066666666666 4.237 0.2829533333333333 1.4225333333333332 0.9813866666666666 2.7291999999999996 2.0069733333333333 3.7548 1.0255866666666666 1.0255999999999998 2.3322599999999998 1.7239999999999998 3.7547866666666665 2.0069999999999997 1.4225266666666665 0.2829333333333333 2.896993333333333 0.13773333333333332 4.2369933333333325 -0.41733333333333333s2.485333333333333 -1.495 3.2911333333333332 -2.7009333333333334C14.903266666666667 10.868266666666665 15.333333333333332 9.450399999999998 15.333333333333332 8c0.0013999999999999998 -0.4926 -0.04773333333333333 -0.9840666666666666 -0.14666666666666667 -1.4666533333333334 -0.015933333333333334 -0.087 -0.04906666666666666 -0.16996 -0.09746666666666666 -0.24403333333333332 -0.048333333333333325 -0.07407333333333332 -0.11093333333333333 -0.13778666666666667 -0.18413333333333332 -0.18742666666666666 -0.07319999999999999 -0.049633333333333335 -0.1556 -0.08420666666666667 -0.24226666666666666 -0.10169999999999998 -0.08673333333333333 -0.017486666666666664 -0.17606666666666665 -0.017546666666666665 -0.2628 -0.0001733333333333333Zm-7.066666666666666 0V6.666666666666666c0.0029333333333333334 0.49339999999999995 0.18813333333333332 0.9682666666666666 0.52 1.3333333333333333 -0.33186666666666664 0.3651333333333333 -0.5170666666666666 0.84 -0.52 1.3333333333333333v0.6666666666666666c0 0.5304666666666666 0.21073333333333333 1.0391333333333332 0.5858 1.4142000000000001C8.2942 11.789333333333333 8.802933333333332 12 9.333333333333332 12h0.6666666666666666c0.5304666666666666 0 1.0391333333333332 -0.21066666666666667 1.4142000000000001 -0.5858C11.789266666666666 11.039133333333334 12 10.530466666666666 12 10v-0.6666666666666666c-0.0029333333333333334 -0.4933333333333333 -0.18813333333333332 -0.9682 -0.52 -1.3333333333333333 0.33186666666666664 -0.36506666666666665 0.5170666666666666 -0.8399333333333333 0.52 -1.3333333333333333v-0.6666533333333333c0 -0.5304333333333333 -0.21073333333333333 -1.03914 -0.5858 -1.414213333333333 -0.37506666666666666 -0.37507333333333337 -0.8837333333333333 -0.5857866666666667 -1.4142000000000001 -0.5857866666666667h-0.6666666666666666c-0.5304 0 -1.0391333333333332 0.21071333333333334 -1.4142000000000001 0.5857866666666667C7.544066666666667 4.960873333333333 7.333333333333333 5.4695800000000006 7.333333333333333 6.0000133333333325ZM10.666666666666666 10c0 0.17679999999999998 -0.07026666666666666 0.34639999999999993 -0.19526666666666664 0.47139999999999993 -0.125 0.12506666666666666 -0.2946 0.19526666666666664 -0.47139999999999993 0.19526666666666664h-0.6666666666666666c-0.17679999999999998 0 -0.34639999999999993 -0.0702 -0.47139999999999993 -0.19526666666666664C8.736933333333333 10.3464 8.666666666666666 10.1768 8.666666666666666 10v-0.6666666666666666c0 -0.17679999999999998 0.07026666666666666 -0.34633333333333327 0.19526666666666664 -0.47139999999999993 0.125 -0.125 0.2946 -0.19526666666666664 0.47139999999999993 -0.19526666666666664h0.6666666666666666c0.17679999999999998 0 0.34639999999999993 0.07026666666666666 0.47139999999999993 0.19526666666666664 0.125 0.12506666666666666 0.19526666666666664 0.2946 0.19526666666666664 0.47139999999999993v0.6666666666666666Zm0 -3.9999866666666666V6.666666666666666c0 0.17679999999999998 -0.07026666666666666 0.34639999999999993 -0.19526666666666664 0.47139999999999993 -0.125 0.12506666666666666 -0.2946 0.19526666666666664 -0.47139999999999993 0.19526666666666664h-0.6666666666666666c-0.17679999999999998 0 -0.34639999999999993 -0.0702 -0.47139999999999993 -0.19526666666666664C8.736933333333333 7.013066666666667 8.666666666666666 6.843466666666666 8.666666666666666 6.666666666666666v-0.6666533333333333c0 -0.17680666666666667 0.07026666666666666 -0.34637999999999997 0.19526666666666664 -0.47139999999999993 0.125 -0.12502666666666667 0.2946 -0.19526666666666664 0.47139999999999993 -0.19526666666666664h0.6666666666666666c0.17679999999999998 0 0.34639999999999993 0.07024 0.47139999999999993 0.19526666666666664 0.125 0.12502 0.19526666666666664 0.2945933333333333 0.19526666666666664 0.47139999999999993Z"/></svg> <span>Blur NSFW</span></button>
+                    <button id="galleryFavBtn" class="gallery-fav-btn" onclick="onGalleryFavBtn()" title="Favorites only"><svg width="1.3em" height="1.3em" viewBox="-1 -1 18 18" shape-rendering="geometricPrecision" style="display:block; vertical-align:middle;"><path fill="currentColor" stroke="none" d="M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z"/></svg></button>
                     <button class="action-btn" onclick="rescanGallery()" title="Scan download folder for new images" style="display:inline-flex; align-items:center; gap:6px;"><svg width="1.2em" height="1.2em" viewBox="0 0 24 24" fill="none" style="display:block;"><path fill="currentColor" d="M12 3c2.4856 0.0001 4.735 1.00787 6.3633 2.63574l0.9297 -0.92871c0.6299 -0.62982 1.7069 -0.18374 1.707 0.70703V9c0 0.55228 -0.4477 1 -1 1h-3.5859c-0.8908 -0.00012 -1.3369 -1.07709 -0.7071 -1.70703l1.2422 -1.24317C15.6821 5.78291 13.9319 5.0001 12 5c-3.86582 0.0002 -7 3.13413 -7 7 0 3.8659 3.13418 6.9998 7 7 3.5687 -0.0002 6.5158 -2.6721 6.9463 -6.124 0.0685 -0.5479 0.5683 -0.9365 1.1162 -0.8682 0.5477 0.0687 0.9364 0.5684 0.8682 1.1162C20.3768 17.5644 16.5901 20.9998 12 21c-4.97039 -0.0002 -9 -4.0296 -9 -9 0 -4.97044 4.02961 -8.9998 9 -9"></path></svg></button>
-                </div>
                 <div id="gallerySelectBar" class="gallery-select-bar" style="display:none">
                     <span id="gallerySelectCount" class="gallery-select-count">0 selected</span>
                     <button class="action-btn" onclick="selectAllCurrentPage()" id="gallerySelectPageBtn" title="Select all on this page">Select Page</button>
                     <button class="action-btn" onclick="clearSelection()" title="Deselect all">Clear</button>
-                    <button class="action-btn" onclick="selectFavourite()" title="Toggle favorite for selected images"><svg width="1em" height="1em" viewBox="-1 -1 18 18" fill="none" style="vertical-align:-0.15em;"><path fill="currentColor" stroke="none" d="M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z"/></svg> Favorite</button>
                     <button class="action-btn" onclick="selectCopy()" title="Copy selected images to clipboard"><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none" style="vertical-align:-0.15em;"><path fill="currentColor" fill-rule="evenodd" d="M17.55 0.68C19.06 0.59 21.21 0.5 24 0.5s4.94 0.09 6.45 0.18c0.91 0.06 1.73 0.43 2.34 1.01 1.97 0.09 3.63 0.2 4.98 0.31 3.52 0.29 6.26 3 6.55 6.54 0.27 3.26 0.54 8.44 0.54 15.96s-0.27 12.7-0.54 15.96c-0.29 3.54-3.03 6.25-6.55 6.54-3.05 0.25-7.69 0.5-13.91 0.5s-10.86-0.25-13.91-0.5c-3.52-0.29-6.27-3-6.55-6.54C3.27 37.2 3 32.02 3 24.5s0.27-12.7 0.54-15.96c0.29-3.54 3.03-6.25 6.55-6.54 1.35-0.11 3.01-0.22 4.98-0.31 0.61-0.58 1.42-0.96 2.34-1.01zM14.16 5.74c-1.45 0.08-2.69 0.17-3.74 0.25-1.59 0.13-2.77 1.31-2.89 2.88C7.27 12.01 7 17.09 7 24.5s0.27 12.49 0.53 15.63c0.12 1.57 1.3 2.75 2.89 2.88 2.94 0.24 7.47 0.49 13.58 0.49s10.64-0.25 13.58-0.49c1.59-0.13 2.77-1.31 2.89-2.88 0.26-3.14 0.53-8.22 0.53-15.63s-0.27-12.49-0.53-15.63c-0.12-1.57-1.3-2.75-2.89-2.88-1.05-0.08-2.29-0.17-3.74-0.25-0.03 0.45-0.07 0.87-0.11 1.25-0.16 1.72-1.48 3.11-3.25 3.26-1.41 0.13-3.53 0.25-6.48 0.25s-5.08-0.12-6.48-0.25c-1.77-0.15-3.09-1.54-3.25-3.26-0.04-0.38-0.08-0.8-0.11-1.25z" clip-rule="evenodd"/></svg> Copy</button>
                     <button class="action-btn stop-btn" onclick="selectDelete()" title="Delete selected images from disk"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.15em;"><path fill="currentColor" d="M15.22 0c0.22 0 0.44 0.07 0.61 0.21 0.18 0.14 0.3 0.33 0.36 0.55L16.62 3H24v2h-3v16c0 0.8-0.32 1.56-0.88 2.12S18.8 24 18 24H6c-0.8 0-1.56-0.32-2.12-0.88C3.32 22.56 3 21.8 3 21V5H0V3h7.38L7.81 0.76c0.05-0.22 0.18-0.41 0.36-0.55C8.34 0.07 8.56 0 8.78 0zM8 19h2V8H8zm6-11v11h2V8z"/></svg> Delete</button>
-                    <button class="action-btn" onclick="exitSelectMode()" title="Exit select mode">✕ Done</button>
+                    <button class="action-btn" onclick="exitSelectMode()" title="Exit select mode"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.15em;"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg> Done</button>
+                </div>
                 </div>
                 <div id="galleryGrid"></div>
                 <div id="galleryPagination" class="gallery-pagination"></div>
@@ -353,24 +364,28 @@
 
             <div id="Gelbooru" class="tab-content" style="display: none;">
                 <h2>Gelbooru Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 9px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="gelbooruTag" placeholder="e.g. 1girl blue_hair" onkeydown="if(event.key==='Enter') addGelbooruTag()">
                             <div id="gelbooruAutosuggest" class="autosuggest-dropdown" style="display:none; right: 0;"></div>
                         </div>
-                        <div id="gelbooruTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
+                        <div id="gelbooruTagsContainer" class="tag-visualizer" style="margin-top: 0; align-items: center;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 9px;">Limit:</label>
                     <input type="number" id="gelbooruLimit" value="50" min="0" style="width: 80px;">
-                    <select id="gelbooruRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:g">Safe</option>
-                        <option value="rating:s">Sensitive</option>
-                        <option value="rating:q">Questionable</option>
-                        <option value="rating:e">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('gelRatingDropdown')">All Ratings ▾</button>
+                        <div id="gelRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:g"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                        </div>
+                        <input type="hidden" id="gelbooruRating" value="">
+                    </div>
                     <button id="runBtn_gelbooru" class="action-btn" onclick="toggleWorker('gelbooru')">START</button>
                 </div>
                 <div class="input-group" style="margin-top: 10px; font-size: 14px; position: relative; padding-right: 90px;">
@@ -395,8 +410,8 @@
 
             <div id="Gsbooru" class="tab-content" style="display: none;">
                 <h2>Gsbooru Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="gsbooruTag" placeholder="e.g. 1girl blue_hair" onkeydown="if(event.key==='Enter') addGsbooruTag()">
@@ -404,14 +419,18 @@
                         </div>
                         <div id="gsbooruTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="gsbooruLimit" value="50" min="0" style="width: 80px;">
-                    <select id="gsbooruRating" style="width: 130px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:g">Safe</option>
-                        <option value="rating:s">Sensitive</option>
-                        <option value="rating:q">Questionable</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('gsRatingDropdown')">All Ratings ▾</button>
+                        <div id="gsRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:g"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                        </div>
+                        <input type="hidden" id="gsbooruRating" value="">
+                    </div>
                     <button id="runBtn_gsbooru" class="action-btn" onclick="toggleWorker('gsbooru')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_gsbooru" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
@@ -426,15 +445,47 @@
 
             <div id="History" class="tab-content" style="display: none;">
                 <div class="options-scroll">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
                         <h2>Tag Search History</h2>
-                        <button class="action-btn stop-btn" onclick="clearHistory()">Clear All History</button>
+                        <button class="action-btn stop-btn" onclick="clearHistory()">Clear</button>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px;">
+                        <div class="gallery-dropdown">
+                            <button class="gallery-dropdown-btn" onclick="toggleDropdown('histSourceDropdown')">All Sources ▾</button>
+                            <div id="histSourceDropdown" class="gallery-dropdown-menu">
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>
+                            </div>
+                        </div>
+                        <div class="gallery-dropdown">
+                            <button class="gallery-dropdown-btn" onclick="toggleDropdown('histSortDropdown')">Newest First ▾</button>
+                            <div id="histSortDropdown" class="gallery-dropdown-menu">
+                                <div class="dd-item" onclick="selectHistorySort(this, 'newest')"><span>Newest First</span></div>
+                                <div class="dd-item" onclick="selectHistorySort(this, 'oldest')"><span>Oldest First</span></div>
+                            </div>
+                        </div>
+                        <div class="gallery-dropdown">
+                            <button class="gallery-dropdown-btn" onclick="toggleDropdown('histRatingDropdown')">All Ratings ▾</button>
+                            <div id="histRatingDropdown" class="gallery-dropdown-menu">
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>Safe</span><input type="checkbox" value="safe"></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>Sensitive</span><input type="checkbox" value="sensitive"></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>Questionable</span><input type="checkbox" value="questionable"></div>
+                                <div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>NSFW</span><input type="checkbox" value="explicit"></div>
+                            </div>
+                        </div>
+                        <input type="text" id="historySearch" placeholder="Search tags" oninput="historySearchInput(this.value)" style="background: var(--input-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 13px; color: var(--text-color); outline: none; width: 220px; min-width: 180px; max-width: 320px; flex: 1;">
+                        <span id="historyDateWrap" title="Search by date and time" data-target="history" onclick="openHistoryPicker(this)" style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; border: 1px solid var(--border-color); border-radius: 6px; background: var(--input-bg); color: var(--text-color); cursor: pointer;">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" shape-rendering="geometricPrecision" style="pointer-events: none;">
+                                <path d="M7.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M7.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M7.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M21.5 3h-2.75a0.25 0.25 0 0 1 -0.25 -0.25V1a1 1 0 0 0 -2 0v4.75a0.75 0.75 0 0 1 -1.5 0V3.5a0.5 0.5 0 0 0 -0.5 -0.5H8.25A0.25 0.25 0 0 1 8 2.75V1a1 1 0 0 0 -2 0v4.75a0.75 0.75 0 0 1 -1.5 0V3.5A0.5 0.5 0 0 0 4 3H2.5a2 2 0 0 0 -2 2v17a2 2 0 0 0 2 2h19a2 2 0 0 0 2 -2V5a2 2 0 0 0 -2 -2Zm0 18.5a0.5 0.5 0 0 1 -0.5 0.5H3a0.5 0.5 0 0 1 -0.5 -0.5v-12A0.5 0.5 0 0 1 3 9h18a0.5 0.5 0 0 1 0.5 0.5Z" fill="currentColor" fill-rule="evenodd"></path>
+                            </svg>
+                        </span>
+                        <span id="historyExpandWrap" style="display: flex; align-items: center;"></span>
                     </div>
                     <div id="historyListUI" style="display: flex; flex-direction: column; gap: 8px;"></div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px; margin-bottom: 15px;">
                         <h2 style="color: var(--accent-color);">Downloaded Images Archive</h2>
-                        <button class="action-btn stop-btn" onclick="clearImageHistory()">Clear Archive</button>
+                        <button class="action-btn stop-btn" onclick="clearImageHistory()">Clear</button>
                     </div>
                     <div id="imageHistoryUI" style="display: flex; flex-direction: column; gap: 15px;"></div>
                 </div>
@@ -442,8 +493,8 @@
 
             <div id="Kona" class="tab-content" style="display: none;">
                 <h2>Konachan Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="konaTag" placeholder="e.g. rem blue_hair" onkeydown="if(event.key==='Enter') addKonaTag()">
@@ -451,14 +502,18 @@
                         </div>
                         <div id="konaTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="konaLimit" value="50" min="0" style="width: 80px;">
-                    <select id="konaRating" style="width: 110px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:s">Safe</option>
-                        <option value="rating:q">Questionable</option>
-                        <option value="rating:e">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('konaRatingDropdown')">All Ratings ▾</button>
+                        <div id="konaRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                        </div>
+                        <input type="hidden" id="konaRating" value="">
+                    </div>
                     <button id="runBtn_kona" class="action-btn" onclick="toggleWorker('kona')">START</button>
                 </div>
                 <div class="input-group" style="margin-top: 10px; font-size: 14px; position: relative; padding-right: 90px;">
@@ -556,94 +611,100 @@
 
                     <div class="settings-cards-grid">
                         <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Rule34 Credentials</h3>
-                            <div class="field-row"><label>API Key:</label><input type="password" id="r34Key" placeholder="Rule34 API Key" style="flex:1;"></div>
-                            <div class="field-row"><label>User ID:</label><input type="text" id="r34Uid" placeholder="Rule34 User ID" style="flex:1;"></div>
-                        </div>
-
-                        <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Danbooru Credentials</h3>
                             <div class="field-row"><label>Username:</label><input type="text" id="danLogin" placeholder="Danbooru Username" style="flex:1;"></div>
                             <div class="field-row"><label>API Key:</label><input type="password" id="danApiKey" placeholder="Danbooru API Key" style="flex:1;"></div>
                             <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">danbooru.donmai.us → My Account → API Key. Note: free Member accounts still cap at 2 search tags.</div>
                         </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Gelbooru Credentials</h3>
                             <div class="field-row"><label>API Key:</label><input type="password" id="gelKey" placeholder="Gelbooru API Key" style="flex:1;"></div>
                             <div class="field-row"><label>User ID:</label><input type="text" id="gelUid" placeholder="Gelbooru User ID" style="flex:1;"></div>
                         </div>
-
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Gsbooru Credentials</h3>
+                            <div class="field-row"><label>API Key:</label><input type="password" id="gsApiKey" placeholder="Gsbooru API Key" style="flex:1;"></div>
+                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">gsbooru.org → account settings → API Keys (shown once at creation). Required for scanning via the official JSON API.</div>
+                        </div>
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Konachan Credentials</h3>
                             <div class="field-row"><label>Username:</label><input type="text" id="konaLogin" placeholder="Konachan Username" style="flex:1;"></div>
                             <div class="field-row"><label>Password:</label><input type="password" id="konaPassword" placeholder="Password" style="flex:1;"></div>
                         </div>
-
-                        <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Sankaku Credentials</h3>
-                            <div class="field-row"><label>Login:</label><input type="text" id="sankaLogin" placeholder="Email / Username" style="flex:1;"></div>
-                            <div class="field-row"><label>Password:</label><input type="password" id="sankaPassword" placeholder="Password" style="flex:1;"></div>
-                        </div>
-
-                        <div class="settings-card">
-                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Zerochan Credentials</h3>
-                            <div class="field-row"><label>Username:</label><input type="text" id="zeroLogin" placeholder="Zerochan Username" style="flex:1;"></div>
-                            <div class="field-row"><label>Password:</label><input type="password" id="zeroPassword" placeholder="Zerochan Password" style="flex:1;"></div>
-                        </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Pinterest Login</h3>
                             <div class="field-row"><label>Cookies:</label><input type="text" id="pinterestCookies" placeholder="Cookies file path (optional)" style="flex:1;"></div>
                             <div class="field-row"><label>Email:</label><input type="email" id="pinterestEmail" placeholder="Email (fallback)" style="flex:1;"></div>
                             <div class="field-row"><label>Password:</label><input type="password" id="pinterestPassword" placeholder="Password" style="flex:1;"></div>
                         </div>
-
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Pixiv Credentials</h3>
                             <div class="field-row"><label>Refresh Token:</label><input type="password" id="pixivToken" placeholder="PIXIV_REFRESH_TOKEN" style="flex:1;"></div>
-                            <div class="field-row"><label>Cookie:</label><input type="password" id="pixivCookie" placeholder="PHPSESSID=... (from pixiv.net login)" style="flex:1;"></div>
+                            <div class="field-row"><label>Cookie:</label><input type="password" id="pixivCookie" placeholder="PHPSESSID=... or the code from callback?state=..." style="flex:1;"></div>
                             <div class="field-row" style="align-items: center; gap: 12px;">
-                                <button class="action-btn" onclick="exchangePixivCookie()"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg> Get token from cookie</button>
+                                <button class="action-btn" onclick="startPixivLogin()">Get login URL</button>
+                                <button class="action-btn" onclick="exchangePixivCookie()"><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg> Get token</button>
                                 <span id="pixivTokenStatus" style="font-size: 12px; color: var(--title-color);"></span>
                             </div>
-                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">Log in to pixiv.net in your browser → F12 → Application → Cookies → copy <b>PHPSESSID</b> → paste above. Uses your proxy (127.0.0.1:10808).</div>
+                            <div style="font-size: 11px; opacity: 0.7; margin-top: 6px;">
+                                Same flow as <code>gallery-dl oauth:pixiv</code>:<br>
+                                1. Click <b>Get login URL</b> (opens <code>https://app-api.pixiv.net/web/v1/login?client=pixiv-android</code> with a code challenge) and log in.<br>
+                                2. F12 → Network → select the last <code>callback?state=...</code> entry.<br>
+                                3. Copy its <code>code</code> query value (the whole callback URL works too), paste above, click <b>Get token</b>. The code expires ~30s after login.<br>
+                                Alternative: paste your <code>PHPSESSID</code> cookie instead of a code (uses your proxy only if "Use Proxy" is on).
+                            </div>
+                        </div>
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Rule34 Credentials</h3>
+                            <div class="field-row"><label>API Key:</label><input type="password" id="r34Key" placeholder="Rule34 API Key" style="flex:1;"></div>
+                            <div class="field-row"><label>User ID:</label><input type="text" id="r34Uid" placeholder="Rule34 User ID" style="flex:1;"></div>
+                        </div>
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Sankaku Credentials</h3>
+                            <div class="field-row"><label>Login:</label><input type="text" id="sankaLogin" placeholder="Email / Username" style="flex:1;"></div>
+                            <div class="field-row"><label>Password:</label><input type="password" id="sankaPassword" placeholder="Password" style="flex:1;"></div>
+                        </div>
+                        <div class="settings-card">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Zerochan Credentials</h3>
+                            <div class="field-row"><label>Username:</label><input type="text" id="zeroLogin" placeholder="Zerochan Username" style="flex:1;"></div>
+                            <div class="field-row"><label>Password:</label><input type="password" id="zeroPassword" placeholder="Zerochan Password" style="flex:1;"></div>
                         </div>
 
-                        <div class="settings-card" style="grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 16px;">
-                            <button class="action-btn" onclick="saveApiSettings()">💾 Save All API Keys</button>
-                            <span id="apiSaveStatus" style="font-size: 13px; color: var(--title-color);"></span>
+
+<div class="settings-card" style="grid-column: 1 / -1;">
+                            <h3>Blur Ratings</h3>
+                            <div style="font-size: 13px; opacity: 0.85; margin-bottom: 10px;">Pick which ratings get blurred in Gallery, History and download logs, then press Save Settings. Hover an item to reveal it.</div>
+                            <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px;">
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="safe" style="width: 18px; height: 18px; cursor: pointer;"> Safe</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="sensitive" style="width: 18px; height: 18px; cursor: pointer;"> Sensitive</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="questionable" style="width: 18px; height: 18px; cursor: pointer;"> Questionable</label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;"><input type="checkbox" class="blur-rating-box" value="explicit" style="width: 18px; height: 18px; cursor: pointer;"> Explicit (NSFW)</label>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Keybinds</h3>
+                            <div class="field-row"><label>Fullscreen:</label><input type="text" id="fullscreenKey" readonly value="F11" placeholder="Click, then press a key" onclick="startFullscreenKeyCapture()" onkeydown="return captureFullscreenKey(event)" onblur="cancelFullscreenKeyCapture()" style="width: 140px; text-align: center; cursor: pointer;"></div>
                         </div>
 
                         <div class="settings-card" style="grid-column: 1 / -1;">
-                            <h3>⚙️ Download Parameters</h3>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px;">
+                            <h3><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M18.98 2.458c0.805 -0.423 2.358 -0.958 5.02 -0.958s4.215 0.535 5.022 0.958c0.612 0.32 0.97 0.83 1.174 1.256 0.29 0.605 0.925 1.97 1.48 3.449a18.483 18.483 0 0 1 3.063 1.771c1.56 -0.26 3.061 -0.39 3.731 -0.443 0.47 -0.036 1.09 0.02 1.675 0.39 0.77 0.486 2.01 1.563 3.34 3.869 1.332 2.306 1.644 3.918 1.681 4.828 0.029 0.69 -0.233 1.255 -0.5 1.645a44.816 44.816 0 0 1 -2.25 3.01 18.738 18.738 0 0 1 0 3.534 44.867 44.867 0 0 1 2.25 3.01c0.267 0.39 0.529 0.954 0.5 1.645 -0.037 0.91 -0.35 2.522 -1.68 4.828 -1.332 2.306 -2.572 3.383 -3.341 3.87 -0.584 0.37 -1.204 0.425 -1.675 0.389a44.829 44.829 0 0 1 -3.731 -0.443 18.478 18.478 0 0 1 -3.063 1.771 44.816 44.816 0 0 1 -1.48 3.449c-0.204 0.426 -0.562 0.935 -1.174 1.256 -0.807 0.422 -2.36 0.958 -5.022 0.958 -2.662 0 -4.215 -0.535 -5.022 -0.958 -0.612 -0.32 -0.97 -0.83 -1.174 -1.256 -0.29 -0.605 -0.925 -1.97 -1.48 -3.449a18.48 18.48 0 0 1 -3.063 -1.771c-1.56 0.26 -3.062 0.39 -3.732 0.443 -0.47 0.036 -1.09 -0.02 -1.674 -0.39 -0.77 -0.486 -2.01 -1.563 -3.34 -3.869 -1.332 -2.306 -1.645 -3.918 -1.682 -4.828 -0.028 -0.69 0.234 -1.255 0.5 -1.645a44.84 44.84 0 0 1 2.25 -3.01 18.727 18.727 0 0 1 0 -3.534 44.844 44.844 0 0 1 -2.25 -3.01c-0.266 -0.39 -0.528 -0.954 -0.5 -1.645 0.038 -0.91 0.35 -2.522 1.681 -4.828 1.331 -2.306 2.572 -3.383 3.341 -3.87 0.584 -0.37 1.204 -0.425 1.675 -0.389 0.67 0.052 2.17 0.184 3.73 0.443a18.48 18.48 0 0 1 3.064 -1.771 44.852 44.852 0 0 1 1.48 -3.449c0.204 -0.426 0.562 -0.935 1.174 -1.256ZM32 24a8 8 0 1 1 -16 0 8 8 0 0 1 16 0Z"/></svg> Download Parameters</h3>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 12px;">
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">API Timeout (s)</label><input type="number" id="apiTimeout" value="10" style="width: 100%;"></div>
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Retry Wait (s)</label><input type="number" id="retryWait" value="5" style="width: 100%;"></div>
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Anti-Ban Pause (s)</label><input type="number" id="antiBanPause" value="3" step="0.5" style="width: 100%;"></div>
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Download Retries</label><input type="number" id="downloadRetries" value="3" min="1" style="width: 100%;"></div>
+                                <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Request Limit (req/s)</label><input type="number" id="reqRateLimit" value="4" min="1" max="100" style="width: 100%;"></div>
                             </div>
                             <div class="field-row" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 10px;">
                                 <input type="checkbox" id="dedupEnabled" checked style="width: 18px; height: 18px; cursor: pointer;">
                                 <label for="dedupEnabled" style="font-size: 13px; opacity: 0.95; cursor: pointer;">Enable Perceptual Image Deduplication (automatically skip duplicates & re-uploads across scrapers)</label>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
-                                <button class="action-btn" onclick="saveDownloadSettings()">💾 Save Download Settings</button>
-                                <span id="dlSettingsStatus" style="font-size: 13px; color: var(--title-color);"></span>
-                            </div>
                         </div>
 
-                        <div class="settings-card" style="grid-column: 1 / -1;" id="extensionsSettingsCard">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                                <h3 style="margin: 0;">🧩 Extensions & Addons</h3>
-                                <button class="action-btn" onclick="fetchExtensionsCatalog(true)" style="padding: 4px 10px; font-size: 12px;">🔄 Refresh Catalog</button>
-                            </div>
-                            <p style="font-size: 12px; color: var(--text-color); opacity: 0.8; margin-top: 0; margin-bottom: 12px;">
-                                Extend Rems Dl with companion modules and background services from GitHub or local sources.
-                            </p>
-                            <div id="extensionsListContainer" style="display: flex; flex-direction: column; gap: 12px;">
-                                <div style="font-size: 12px; opacity: 0.6;">Loading available extensions...</div>
-                            </div>
+                        <div class="settings-card" style="grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 16px;">
+                            <button class="action-btn" onclick="saveAllSettings()"><svg width="1em" height="1em" viewBox="-1 -1 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M4.875 0.000507706C4.49342 0.0104768 4.12949 0.165624 3.85789 0.435009l-0.00144 0.001442L0.436447 3.85645l-0.000003 0 -0.00144 0.00145c-0.277116 0.27939 -0.43334264 0.65649 -0.4349995595 1.05H0V12.5c0 0.3978 0.158035 0.7794 0.43934 1.0607C0.720644 13.842 1.10217 14 1.5 14l0.63361 0V9.5c0 -0.34137 0.16522 -0.63802 0.40467 -0.83561 0.23602 -0.19478 0.53448 -0.28939 0.82624 -0.28939h7.27088c0.2918 0 0.5903 0.09461 0.8263 0.28939 0.2394 0.19759 0.4047 0.49424 0.4047 0.83561V14l0.6336 0c0.3978 0 0.7794 -0.158 1.0607 -0.4393S14 12.8978 14 12.5v-11c0 -0.39782 -0.158 -0.779351 -0.4393 -1.060656C13.2794 0.15804 12.8978 0.0000044107 12.5 0.0000044107L11.8664 0v3.5c0 0.32845 -0.1506 0.6227 -0.3827 0.82488 -0.2294 0.19978 -0.5242 0.30012 -0.8165 0.30012H6.07414c-0.29227 0 -0.58703 -0.10034 -0.81644 -0.30012C5.02555 4.1227 4.875 3.82845 4.875 3.5V0.000507706ZM10.6164 0H6.125v3.375h4.4914V0Zm0 14H3.38361V9.625h7.23279V14Z"/></svg> Save Settings</button>
+                            <span id="settingsSaveStatus" style="font-size: 13px; color: var(--title-color);"></span>
                         </div>
                     </div>
                 </div>
@@ -655,7 +716,7 @@
                     <label>URL or Query:</label>
                     <input type="text" id="pinterestTag" placeholder="Board URL, pin URL, or search query" style="width: 400px;">
                     <label>Limit:</label>
-                    <input type="number" id="pinterestLimit" value="30" min="0" style="width: 80px;">
+                    <input type="number" id="pinterestLimit" value="50" min="0" style="width: 80px;">
                     <label>Min W:</label>
                     <input type="number" id="pinterestMinW" value="0" min="0" style="width: 70px;">
                     <label>Min H:</label>
@@ -678,7 +739,63 @@
                 </div>
             </div>
 
-            <!-- PIXIV DOWNLOADER -->
+            <div id="Notifications" class="tab-content" style="display: none;">
+                <div class="options-scroll">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
+                        <div style="display: flex; gap: 12px; align-items: center;">
+                            <h2>Notifications</h2>
+                            <select id="notifSource" onchange="onNotifSourceChange(this)" style="width: 160px;"></select>
+                        </div>
+                        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <span id="notifPixivControls" style="display: none; gap: 12px; align-items: center; flex-wrap: wrap;">
+                                <label style="font-size: 13px;">Check every <input type="number" id="notifInterval" min="60" max="120" step="1" style="width: 64px;" onchange="saveNotifInterval(this)"> min</label>
+                                <button class="action-btn" onclick="checkPixivNow()">Check now</button>
+                            </span>
+                            <button class="action-btn stop-btn" onclick="clearNotifications()">Clear</button>
+                        </div>
+                    </div>
+                    <div id="notifStatus" style="font-size: 12px; opacity: 0.7; margin-bottom: 12px;"></div>
+                    <div id="gelWatcherPanel" style="display:none; margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border-color);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <h3 style="font-size: 15px; margin-bottom: 0;">Gelbooru Tag Watcher</h3>
+                            <button class="action-btn" onclick="checkGelWatchersNow()">Check now</button>
+                        </div>
+                        <div class="input-group" style="align-items: flex-start; margin-bottom: 6px;">
+                            <label style="padding-top: 9px;">Watch tags:</label>
+                            <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+                                <div style="display:flex; gap:6px; position: relative;">
+                                    <input style="flex:1;" autocomplete="off" type="text" id="watcherTag" placeholder="e.g. 1girl solo" onkeydown="if(event.key==='Enter') addWatcherTag()">
+                                    <div id="watcherAutosuggest" class="autosuggest-dropdown" style="display:none; right: 0;"></div>
+                                </div>
+                                <div id="watcherTagsContainer" class="tag-visualizer" style="margin-top: 0; align-items: center;"></div>
+                            </div>
+                            <div class="gallery-dropdown" style="margin-right: 6px;">
+                                <button class="gallery-dropdown-btn" onclick="toggleDropdown('watcherRatingDropdown')">All Ratings ▾</button>
+                                <div id="watcherRatingDropdown" class="gallery-dropdown-menu">
+                                    <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                                    <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:g"></div>
+                                    <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Sensitive</span><input type="checkbox" value="rating:s"></div>
+                                    <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                                    <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                                </div>
+                                <input type="hidden" id="watcherGelRating" value="">
+                            </div>
+                            <label style="padding-top: 9px;">Every:</label>
+                            <select id="watcherInterval" style="width: 90px;">
+                                <option value="5">5 min</option>
+                                <option value="10">10 min</option>
+                                <option value="15">15 min</option>
+                                <option value="30">30 min</option>
+                                <option value="60">60 min</option>
+                            </select>
+                            <button class="action-btn" id="watcherSaveBtn" onclick="saveGelWatcher()">Add Watcher</button>
+                            <button class="action-btn stop-btn" id="watcherCancelBtn" style="display:none;" onclick="cancelGelWatcherEdit()">Cancel</button>
+                        </div>
+                        <div id="gelWatcherList" style="display:flex; flex-direction:column; gap:8px; margin-top:6px;"></div>
+                    </div>
+                    <div id="notifList" class="notif-list" style="margin-top: 16px;"></div>
+                </div>
+            </div>
             <div id="Pixiv" class="tab-content" style="display: none;">
                 <h2>Pixiv Downloader</h2>
                 <div class="input-group" style="margin-bottom: 10px;">
@@ -753,7 +870,7 @@
                                 <option value="id">Newest (ID)</option>
                                 <option value="score">Score</option>
                             </select>
-                            <select id="rule34SortOrder" style="margin-left: 6px; padding: 2px 6px; font-size: 12px; height: 26px; width: 60px;">
+                            <select id="rule34SortOrder" style="margin-left: 6px; padding: 2px 22px 2px 6px; font-size: 12px; height: 26px; width: 76px;">
                                 <option value="desc">Desc</option>
                                 <option value="asc">Asc</option>
                             </select>
@@ -796,8 +913,8 @@
 
             <div id="Safe" class="tab-content" style="display: none;">
                 <h2>Safebooru Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="safeTag" placeholder="e.g. 1girl blue_hair" onkeydown="if(event.key==='Enter') addSafeTag()">
@@ -805,7 +922,7 @@
                         </div>
                         <div id="safeTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="safeLimit" value="50" min="0" style="width: 80px;">
                     <button id="runBtn_safe" class="action-btn" onclick="toggleWorker('safe')">START</button>
                 </div>
@@ -822,8 +939,8 @@
 
             <div id="Sankaku" class="tab-content" style="display: none;">
                 <h2>Sankaku Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="sankakuTag" placeholder="e.g. rem blue_hair" onkeydown="if(event.key==='Enter') addSankakuTag()">
@@ -831,15 +948,19 @@
                         </div>
                         <div id="sankakuTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="sankakuLimit" value="50" min="0" style="width: 80px;">
-                    <select id="sankakuRating" style="width: 110px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:s">Safe</option>
-                        <option value="rating:q">Questionable</option>
-                        <option value="rating:e">NSFW</option>
-                    </select>
-                    <input type="checkbox" id="sankakuHideBooks"> <label for="sankakuHideBooks">Hide Books/Pools</label>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('sankakuRatingDropdown')">All Ratings ▾</button>
+                        <div id="sankakuRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                        </div>
+                        <input type="hidden" id="sankakuRating" value="">
+                    </div>
+                    <input type="checkbox" id="sankakuHideBooks" style="margin-top: 8px;"> <label for="sankakuHideBooks" style="padding-top: 8px;">Hide Books/Pools</label>
                     <button id="runBtn_sankaku" class="action-btn" onclick="toggleWorker('sankaku')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_sankaku" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
@@ -876,8 +997,8 @@
 
             <div id="Yande" class="tab-content" style="display: none;">
                 <h2>Yande.re Downloader</h2>
-                <div class="input-group">
-                    <label>Tags:</label>
+                <div class="input-group" style="align-items: flex-start;">
+                    <label style="padding-top: 8px;">Tags:</label>
                     <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                         <div style="display:flex; gap:6px; position: relative;">
                             <input style="flex:1;" autocomplete="off" type="text" id="yandeTag" placeholder="e.g. rem blue_hair" onkeydown="if(event.key==='Enter') addYandeTag()">
@@ -885,14 +1006,18 @@
                         </div>
                         <div id="yandeTagsContainer" class="tag-visualizer" style="margin-top: 0;"></div>
                     </div>
-                    <label>Limit:</label>
+                    <label style="padding-top: 8px;">Limit:</label>
                     <input type="number" id="yandeLimit" value="50" min="0" style="width: 80px;">
-                    <select id="yandeRating" style="width: 110px;">
-                        <option value="">All Ratings</option>
-                        <option value="rating:s">Safe</option>
-                        <option value="rating:q">Questionable</option>
-                        <option value="rating:e">NSFW</option>
-                    </select>
+                    <div class="gallery-dropdown" style="margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('yandeRatingDropdown')">All Ratings ▾</button>
+                        <div id="yandeRatingDropdown" class="gallery-dropdown-menu">
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Safe</span><input type="checkbox" value="rating:s"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>Questionable</span><input type="checkbox" value="rating:q"></div>
+                            <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>NSFW</span><input type="checkbox" value="rating:e"></div>
+                        </div>
+                        <input type="hidden" id="yandeRating" value="">
+                    </div>
                     <button id="runBtn_yande" class="action-btn" onclick="toggleWorker('yande')">START</button>
                 </div>
                 <div class="dual-progress-container" id="dualProgress_yande" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
@@ -931,8 +1056,6 @@
                     <div id="consoleLog_zero" class="console-log"></div>
                 </div>
             </div>
-
-            <div id="dynamicExtensionPanelsContainer"></div>
 
         </div>
         </div>

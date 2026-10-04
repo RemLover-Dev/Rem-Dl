@@ -11,15 +11,6 @@ class NekosBestWorker(BaseWorker):
         self.cat_dir = os.path.join(self.site_root, safe_cat)
         safe_ensure_dir(self.cat_dir)
 
-    def get_tags(self):
-        return [self.category]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
-
     async def scraper_task(self):
         self.log(f"Initializing worker for category: '{self.category}'")
 
@@ -77,8 +68,6 @@ class NekosBestWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_nekos_best(category, amount, net_config):
     worker = NekosBestWorker(category, amount, net_config)

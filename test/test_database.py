@@ -38,10 +38,34 @@ class TestDatabaseManager:
         assert len(hist) == 1
         assert hist[0]["site"] == "zero"
         assert hist[0]["tag"] == "test_tag"
-        
+        assert hist[0]["searched_at"] > 0
+
+        # re-searching the same tag keeps one entry and refreshes it
+        DatabaseManager.add_tag_history("zero", "other_tag")
+        DatabaseManager.add_tag_history("zero", "test_tag")
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["tag"] == "test_tag"
+
         DatabaseManager.remove_tag_history("zero", "test_tag")
         hist2 = DatabaseManager.load_tag_history()
-        assert len(hist2) == 0
+        assert len(hist2) == 1
+        DatabaseManager.remove_tag_history("zero", "other_tag")
+        assert len(DatabaseManager.load_tag_history()) == 0
+
+    def test_tag_history_exclude_ai_flag(self, db_env):
+        DatabaseManager.add_tag_history("rule34", "rem")
+        assert DatabaseManager.load_tag_history()[0]["exclude_ai"] is False
+
+        DatabaseManager.add_tag_history("rule34", "rem", "", True)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 1
+        assert hist[0]["exclude_ai"] is True
+
+        DatabaseManager.add_tag_history("rule34", "rem", "", False)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 1
+        assert hist[0]["exclude_ai"] is False
 
     def test_favorites_operations(self, db_env):
         # Add to favorites
@@ -55,3 +79,16 @@ class TestDatabaseManager:
         DatabaseManager.toggle_favorite("safe", "cute")
         favs2 = DatabaseManager.load_favorites()
         assert len(favs2) == 0
+
+    def test_image_history_keeps_entries_past_100(self, db_env):
+        # the old [:100] trim deleted the oldest entries on every download
+        seed = [{"site": "zero", "filename": f"old{i}.png", "tags": {}, "downloaded_at": float(i)}
+                for i in range(150)]
+        DatabaseManager.save_image_history(seed)
+
+        DatabaseManager.add_image_history("zero", "new.png", [], [])
+
+        hist = DatabaseManager.load_image_history()
+        assert len(hist) == 151
+        assert hist[0]["filename"] == "new.png"
+        assert hist[-1]["filename"] == "old149.png"

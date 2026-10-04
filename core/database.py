@@ -1,6 +1,9 @@
 import os
 import json
 import sys
+import threading
+import time
+import atexit
 
 
 def _app_base_dir():
@@ -12,11 +15,24 @@ def _app_base_dir():
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 
+# every JSON store here is read-modify-written from worker threads and
+# request handlers at once — one re-entrant lock spans load->mutate->save,
+# and save_json writes atomically so a crash can't truncate a store
+_DB_LOCK = threading.RLock()
+
 TAG_HISTORY_FILE = os.path.join(DATABASE_DIR, "tag_history.json")
 FAV_TAGS_FILE = os.path.join(DATABASE_DIR, "fav_tags.json")
 IMAGE_HISTORY_FILE = os.path.join(DATABASE_DIR, "image_history.json")
 UI_CONFIG_FILE = os.path.join(DATABASE_DIR, "ui_config.json")
 LEARNED_TAGS_FILE = os.path.join(DATABASE_DIR, "user_learned_tags.json")
+
+# image history is the download hot path: keep the parsed list in memory and
+# batch disk writes like gallery (_GALLERY_FLUSH_EVERY); flush_image_history()
+# persists whatever is still pending
+_hist_cache = None
+_hist_dirty = 0
+_HIST_FLUSH_EVERY = 10
+_learned_cache = None
 
 
 class DatabaseManager:
@@ -25,18 +41,26 @@ class DatabaseManager:
     # --- User Learned Tags (Smart Low-Memory Tag Cache) ---
     @staticmethod
     def load_learned_tags():
-        if os.path.exists(LEARNED_TAGS_FILE):
-            try:
-                with open(LEARNED_TAGS_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                return {}
-        return {}
+        global _learned_cache
+        with _DB_LOCK:
+            if _learned_cache is None:
+                _learned_cache = {}
+                if os.path.exists(LEARNED_TAGS_FILE):
+                    try:
+                        with open(LEARNED_TAGS_FILE, 'r', encoding='utf-8') as f:
+                            _learned_cache = json.load(f)
+                    except Exception:
+                        _learned_cache = {}
+            return _learned_cache
 
     @staticmethod
     def save_learned_tags(data):
-        with open(LEARNED_TAGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+        global _learned_cache
+        with _DB_LOCK:
+            _learned_cache = data
+            # write-through: saves only happen on a genuinely new tag
+            with open(LEARNED_TAGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
 
     @staticmethod
     def add_learned_tag(site, tag):
@@ -44,13 +68,14 @@ class DatabaseManager:
         tag = str(tag).strip()
         if not tag or len(tag) < 2:
             return
-        tags = DatabaseManager.load_learned_tags()
-        site_list = tags.setdefault(site, [])
-        if tag not in site_list:
-            site_list.insert(0, tag)
-            # Bound per-site learned tags to top 500 to keep memory negligible (< 100 KB)
-            tags[site] = site_list[:500]
-            DatabaseManager.save_learned_tags(tags)
+        with _DB_LOCK:
+            tags = DatabaseManager.load_learned_tags()
+            site_list = tags.setdefault(site, [])
+            if tag not in site_list:
+                site_list.insert(0, tag)
+                # Bound per-site learned tags to top 500 to keep memory negligible (< 100 KB)
+                tags[site] = site_list[:500]
+                DatabaseManager.save_learned_tags(tags)
 
     @staticmethod
     def get_learned_suggestions(site, query, limit=20):
@@ -63,18 +88,22 @@ class DatabaseManager:
 
     @staticmethod
     def load_json(filepath):
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                return []
-        return []
+        with _DB_LOCK:
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception:
+                    return []
+            return []
 
     @staticmethod
     def save_json(filepath, data):
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+        with _DB_LOCK:
+            tmp = filepath + ".tmp"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(tmp, filepath)
 
     # --- Tag History ---
     @staticmethod
@@ -86,21 +115,28 @@ class DatabaseManager:
         DatabaseManager.save_json(TAG_HISTORY_FILE, data)
 
     @staticmethod
-    def add_tag_history(site, tag, rating=""):
-        hist = DatabaseManager.load_tag_history()
-        entry = {"site": site, "tag": tag, "rating": rating or ""}
-        if entry not in hist:
-            hist.insert(0, entry)
+    def add_tag_history(site, tag, rating="", exclude_ai=False):
+        with _DB_LOCK:
+            hist = DatabaseManager.load_tag_history()
+            rating = rating or ""
+            # re-searching the same tag refreshes it: move to top with a new stamp
+            hist = [x for x in hist
+                    if not (x.get("site") == site and x.get("tag") == tag
+                            and (x.get("rating") or "") == rating)]
+            hist.insert(0, {"site": site, "tag": tag, "rating": rating,
+                            "searched_at": time.time(),
+                            "exclude_ai": bool(exclude_ai)})
             DatabaseManager.save_tag_history(hist)
 
     @staticmethod
     def remove_tag_history(site, tag, rating=None):
-        hist = DatabaseManager.load_tag_history()
-        if rating is None:
-            hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag)]
-        else:
-            hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag and (x.get("rating") or "") == rating)]
-        DatabaseManager.save_tag_history(hist)
+        with _DB_LOCK:
+            hist = DatabaseManager.load_tag_history()
+            if rating is None:
+                hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag)]
+            else:
+                hist = [x for x in hist if not (x["site"] == site and x["tag"] == tag and (x.get("rating") or "") == rating)]
+            DatabaseManager.save_tag_history(hist)
 
     @staticmethod
     def clear_tag_history():
@@ -109,45 +145,87 @@ class DatabaseManager:
     # --- Image History ---
     @staticmethod
     def load_image_history():
+        global _hist_cache, _hist_dirty
         from core.shared import tags_dict_from_lists
-        data = DatabaseManager.load_json(IMAGE_HISTORY_FILE)
-        changed = False
-        for entry in data:
-            tags = entry.get("tags")
-            if isinstance(tags, list):
-                entry["tags"] = tags_dict_from_lists(tags, entry.get("artists", []))
-                changed = True
-        if changed:
-            DatabaseManager.save_image_history(data)
-        return data
+        with _DB_LOCK:
+            if _hist_cache is None:
+                data = DatabaseManager.load_json(IMAGE_HISTORY_FILE)
+                changed = False
+                for entry in data:
+                    tags = entry.get("tags")
+                    if isinstance(tags, list):
+                        entry["tags"] = tags_dict_from_lists(tags, entry.get("artists", []))
+                        changed = True
+                if changed:
+                    DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
+                _hist_cache = data
+            return _hist_cache
 
     @staticmethod
     def save_image_history(data):
-        DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
+        global _hist_cache, _hist_dirty
+        with _DB_LOCK:
+            _hist_cache = data
+            if not data:  # clear writes through so a stale cache can't resurrect it
+                _hist_dirty = 0
+                DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
+            else:
+                _hist_dirty += 1
+                if _hist_dirty >= _HIST_FLUSH_EVERY:
+                    _hist_dirty = 0
+                    DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
+
+    @staticmethod
+    def flush_image_history():
+        global _hist_dirty
+        with _DB_LOCK:
+            if _hist_cache is not None and _hist_dirty:
+                DatabaseManager.save_json(IMAGE_HISTORY_FILE, _hist_cache)
+                _hist_dirty = 0
 
     @staticmethod
     def add_image_history(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         from core.shared import tags_dict_from_lists
-        hist = DatabaseManager.load_image_history()
-        tags_dict = tags_dict_from_lists(tags_list, artist_list, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-        entry = {
-            "site": worker_name,
-            "filename": filename,
-            "tags": dict(tags_dict),
-            "filepath": filepath
-        }
-        hist.insert(0, entry)
-        hist = hist[:100]
-        DatabaseManager.save_image_history(hist)
+        with _DB_LOCK:
+            hist = DatabaseManager.load_image_history()
+            tags_dict = tags_dict_from_lists(tags_list, artist_list, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+            entry = {
+                "site": worker_name,
+                "filename": filename,
+                "tags": dict(tags_dict),
+                "filepath": filepath,
+                "downloaded_at": time.time()
+            }
+            hist.insert(0, entry)
+            # ponytail: unbounded like gallery.json (~830B/entry — a few MB
+            # rewritten per add at normal rates); move to sqlite if it outgrows that
+            DatabaseManager.save_image_history(hist)
 
     @staticmethod
     def remove_image_history(filename):
-        hist = [x for x in DatabaseManager.load_image_history() if x.get("filename") != filename]
-        DatabaseManager.save_image_history(hist)
+        with _DB_LOCK:
+            hist = [x for x in DatabaseManager.load_image_history() if x.get("filename") != filename]
+            DatabaseManager.save_image_history(hist)
 
     @staticmethod
     def clear_image_history():
         DatabaseManager.save_image_history([])
+
+    @staticmethod
+    def recat_image_history(caches):
+        """Move history entries' tags to the category their site's cache knows."""
+        from core.shared import recategorize_tags
+        with _DB_LOCK:
+            hist = DatabaseManager.load_image_history()
+            n = 0
+            for entry in hist:
+                if isinstance(entry, dict) and recategorize_tags(entry.get("tags"), entry.get("site"), caches):
+                    n += 1
+            if n:
+                DatabaseManager.save_image_history(hist)
+                # rare maintenance op — persist now, don't wait for a batch flush
+                DatabaseManager.flush_image_history()
+            return n
 
     # --- Favorites ---
     @staticmethod
@@ -160,36 +238,38 @@ class DatabaseManager:
 
     @staticmethod
     def toggle_favorite(site, tag):
-        favs = DatabaseManager.load_favorites()
-        entry = {"site": site, "tag": tag}
-        if entry in favs:
-            favs.remove(entry)
-        else:
-            favs.append(entry)
-        DatabaseManager.save_favorites(favs)
-        return favs
+        with _DB_LOCK:
+            favs = DatabaseManager.load_favorites()
+            entry = {"site": site, "tag": tag}
+            if entry in favs:
+                favs.remove(entry)
+            else:
+                favs.append(entry)
+            DatabaseManager.save_favorites(favs)
+            return favs
 
     # --- UI Config ---
     @staticmethod
     def load_ui_config():
-        config = DatabaseManager.load_json(UI_CONFIG_FILE)
-        if not config or not isinstance(config, dict):
-            config = DatabaseManager._default_ui_config()
-            DatabaseManager.save_ui_config(config)
-            return config
-        # Migrate older configs: ensure new keys exist without wiping user data.
-        defaults = DatabaseManager._default_ui_config()
-        changed = False
-        for key, val in defaults.items():
-            if key not in config:
-                config[key] = val
-                changed = True
-        if changed:
-            try:
+        with _DB_LOCK:
+            config = DatabaseManager.load_json(UI_CONFIG_FILE)
+            if not config or not isinstance(config, dict):
+                config = DatabaseManager._default_ui_config()
                 DatabaseManager.save_ui_config(config)
-            except Exception:
-                pass
-        return config
+                return config
+            # Migrate older configs: ensure new keys exist without wiping user data.
+            defaults = DatabaseManager._default_ui_config()
+            changed = False
+            for key, val in defaults.items():
+                if key not in config:
+                    config[key] = val
+                    changed = True
+            if changed:
+                try:
+                    DatabaseManager.save_ui_config(config)
+                except Exception:
+                    pass
+            return config
 
     @staticmethod
     def save_ui_config(data):
@@ -200,6 +280,7 @@ class DatabaseManager:
         return {
             "theme_mode": "dark",
             "mute_auth_warnings": False,
+            "pixiv_watch_minutes": 90,
             "wallpapers": {
                 "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"},
                 "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"},
@@ -267,6 +348,7 @@ class SettingsManager:
             "retry_wait": int(os.getenv("RETRY_WAIT", "5")),
             "anti_ban_pause": float(os.getenv("ANTI_BAN_PAUSE", "3.0")),
             "download_retries": int(os.getenv("DOWNLOAD_RETRIES", "3")),
+            "req_rate_limit": float(os.getenv("REQ_RATE_LIMIT", "4")),
             "dedup_enabled": os.getenv("DEDUP_ENABLED", "true").lower() == "true"
         }
 
@@ -325,13 +407,19 @@ class SettingsManager:
             "RETRY_WAIT": str(self.config['retry_wait']),
             "ANTI_BAN_PAUSE": str(self.config['anti_ban_pause']),
             "DOWNLOAD_RETRIES": str(self.config['download_retries']),
-            "DEDUP_ENABLED": str(self.config.get('dedup_enabled', True)).lower()
+            "DEDUP_ENABLED": str(self.config.get('dedup_enabled', True)).lower(),
+            "REQ_RATE_LIMIT": str(self.config['req_rate_limit'])
         }
         self._upsert_env_keys(env_keys)
         os.environ["DEDUP_ENABLED"] = env_keys["DEDUP_ENABLED"]
+        # the rate gate reads the env live — apply changes without a restart
+        os.environ["REQ_RATE_LIMIT"] = env_keys["REQ_RATE_LIMIT"]
 
     def save_api_settings(self, data):
-        keys_to_save = {
+        # Everything (keys, passwords, cookies included) goes back to .env so
+        # it survives an app restart via load_dotenv. .env is gitignored;
+        # cleartext on disk is the accepted trade-off for a local desktop app.
+        env_keys = {
             "RULE34_API_KEY": data.get("rule34_api_key", ""),
             "RULE34_USER_ID": data.get("rule34_user_id", ""),
             "GELBOORU_API_KEY": data.get("gelbooru_api_key", ""),
@@ -348,10 +436,11 @@ class SettingsManager:
             "PIXIV_REFRESH_TOKEN": data.get("pixiv_refresh_token", ""),
             "PIXIV_COOKIE": data.get("pixiv_cookie", ""),
             "DANBOORU_LOGIN": data.get("danbooru_login", ""),
-            "DANBOORU_API_KEY": data.get("danbooru_api_key", "")
+            "DANBOORU_API_KEY": data.get("danbooru_api_key", ""),
+            "GSBOORU_API_KEY": data.get("gsbooru_api_key", "")
         }
-        self._upsert_env_keys(keys_to_save)
-        for k, v in keys_to_save.items():
+        self._upsert_env_keys(env_keys)
+        for k, v in env_keys.items():
             os.environ[k] = v
 
     def load_api_settings(self):
@@ -363,24 +452,28 @@ class SettingsManager:
                     if "=" in line and not line.startswith("#"):
                         k, v = line.split("=", 1)
                         config[k.strip()] = v.strip()
+        # runtime env (set by save_api_settings / load_dotenv) wins over file
+        resolved = dict(config)
+        resolved.update(os.environ)
         return {
-            "rule34_api_key": config.get("RULE34_API_KEY", ""),
-            "rule34_user_id": config.get("RULE34_USER_ID", ""),
-            "gelbooru_api_key": config.get("GELBOORU_API_KEY", ""),
-            "gelbooru_user_id": config.get("GELBOORU_USER_ID", ""),
-            "konachan_login": config.get("KONACHAN_USERNAME", ""),
-            "konachan_password": config.get("KONACHAN_PASSWORD", ""),
-            "sanka_login": config.get("SANKA_LOGIN", ""),
-            "sanka_password": config.get("SANKA_PASSWORD", ""),
-            "zerochan_login": config.get("ZEROCHAN_LOGIN", config.get("ZEROCHAN_USERNAME", "")),
-            "zerochan_password": config.get("ZEROCHAN_PASSWORD", ""),
-            "pinterest_cookies": config.get("PINTEREST_COOKIES", ""),
-            "pinterest_email": config.get("PINTEREST_EMAIL", ""),
-            "pinterest_password": config.get("PINTEREST_PASSWORD", ""),
-            "pixiv_refresh_token": config.get("PIXIV_REFRESH_TOKEN", ""),
-            "pixiv_cookie": config.get("PIXIV_COOKIE", ""),
-            "danbooru_login": config.get("DANBOORU_LOGIN", ""),
-            "danbooru_api_key": config.get("DANBOORU_API_KEY", "")
+            "rule34_api_key": resolved.get("RULE34_API_KEY", ""),
+            "rule34_user_id": resolved.get("RULE34_USER_ID", ""),
+            "gelbooru_api_key": resolved.get("GELBOORU_API_KEY", ""),
+            "gelbooru_user_id": resolved.get("GELBOORU_USER_ID", ""),
+            "konachan_login": resolved.get("KONACHAN_USERNAME", ""),
+            "konachan_password": resolved.get("KONACHAN_PASSWORD", ""),
+            "sanka_login": resolved.get("SANKA_LOGIN", ""),
+            "sanka_password": resolved.get("SANKA_PASSWORD", ""),
+            "zerochan_login": resolved.get("ZEROCHAN_LOGIN", resolved.get("ZEROCHAN_USERNAME", "")),
+            "zerochan_password": resolved.get("ZEROCHAN_PASSWORD", ""),
+            "pinterest_cookies": resolved.get("PINTEREST_COOKIES", ""),
+            "pinterest_email": resolved.get("PINTEREST_EMAIL", ""),
+            "pinterest_password": resolved.get("PINTEREST_PASSWORD", ""),
+            "pixiv_refresh_token": resolved.get("PIXIV_REFRESH_TOKEN", ""),
+            "pixiv_cookie": resolved.get("PIXIV_COOKIE", ""),
+            "danbooru_login": resolved.get("DANBOORU_LOGIN", ""),
+            "danbooru_api_key": resolved.get("DANBOORU_API_KEY", ""),
+            "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", "")
         }
 
 
@@ -391,4 +484,8 @@ def get_settings(base_dir=None):
     if _settings_instance is None:
         _settings_instance = SettingsManager(base_dir)
     return _settings_instance
+
+# same batched-write trap as gallery.json: a lost image_history record takes
+# the tags with it, so flush on every exit path that runs atexit
+atexit.register(DatabaseManager.flush_image_history)
 
