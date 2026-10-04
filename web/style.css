@@ -939,13 +939,7 @@ body.blur-nsfw .image-card-log.is-nsfw img {
 body.blur-nsfw .image-card-log.is-nsfw:hover img {
     filter: blur(0);
 }
-body.blur-nsfw .hist-item.is-nsfw .hist-tag {
-    display: inline-block;
-    filter: blur(7px);
-}
-body.blur-nsfw .hist-item.is-nsfw:hover .hist-tag {
-    filter: none;
-}
+/* history rows: text stays readable — blur is for images, not tag names */
 
 .gallery-card-heart {
     position: absolute;

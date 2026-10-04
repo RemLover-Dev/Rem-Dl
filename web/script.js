@@ -76,15 +76,17 @@ function normalizeTags(tagsInput) {
 // standalone lowercase roman numerals (iii -> III); runs before first-letter cap
 // so "iii" doesn't become "Iii". Validated roman so "filmi"/"cd-ish" junk is safe.
 const _ROMAN_RE = /^m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
-function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' ').replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
-// history rows: zero is comma-joined; free-text/pick sites (anime_dl, eshuushuu,
-// pixiv, pinterest, nekosapi) keep spaces INSIDE one tag — only comma-split them;
-// underscore-joined boorus are space-joined, split on spaces and commas
-const HISTORY_NOSPACE_SPLIT = ["anime_dl", "eshuushuu", "pixiv", "pinterest", "nekosapi", "zero"];
+// leading "-" (exclude markers) must not block the first-letter cap: -kafka -> -Kafka
+function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' ').replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return s.replace(/^([^\p{L}]*)(\p{L})/u, (_, pre, c) => pre + c.toUpperCase()).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
+// history rows & queue pills: zero is comma-joined; free-text/pick sites
+// (anime_dl, eshuushuu, pixiv, pinterest, nekosapi) keep spaces INSIDE one tag
+// — only comma-split them; underscore-joined boorus are space-joined, split on
+// spaces and commas. Each tag gets its own first-letter cap.
+const NOSPACE_SPLIT_SITES = ["anime_dl", "eshuushuu", "pixiv", "pinterest", "nekosapi", "zero"];
 function displayTagList(raw, site) {
     const s = String(raw || "").trim();
     if (!s) return "";
-    const parts = HISTORY_NOSPACE_SPLIT.includes(String(site || "")) ? s.split(/,/) : s.split(/[\s,]+/);
+    const parts = NOSPACE_SPLIT_SITES.includes(String(site || "")) ? s.split(/,/) : s.split(/[\s,]+/);
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
 function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
@@ -2307,7 +2309,7 @@ function renderQueueChip(data) {
         chip.onclick = toggleQueueList;
         const text = document.createElement("span");
         if (acts.length) {
-            text.textContent = `▶ ${siteLabel(site)}: ${cleanTagDisplay(acts[0].tag)}`;
+            text.textContent = `▶ ${siteLabel(site)}: ${displayTagList(acts[0].tag, site)}`;
             text.title = `${acts[0].site} — ${acts[0].tag}`;
         } else {
             text.textContent = `${siteLabel(site)}: ${items.length} queued`;
@@ -2352,7 +2354,7 @@ function renderQueueChip(data) {
 
             const label = document.createElement("span");
             label.className = "queue-label";
-            label.textContent = cleanTagDisplay(j.tag);
+            label.textContent = displayTagList(j.tag, j.site);
             label.title = `${j.site} — ${j.tag}`;
 
             const x = document.createElement("button");
