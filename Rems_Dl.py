@@ -1400,15 +1400,29 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
     if search:
         # ponytail: commas separate tags so multi-word tags need no underscores;
         # underscore == space on both sides (lowered at intake);
-        # "-term" excludes — image dropped if any tag contains the rest
-        terms = [t.strip().replace("_", " ") for t in search.split(",") if t.strip()]
-        pos = [q for q in terms if not (q.startswith("-") and len(q) > 1)]
-        neg = [q[1:] for q in terms if q.startswith("-") and len(q) > 1]
+        # 'tag' or "tag" matches the whole tag exactly (so bra won't hit braid),
+        # bare terms stay substring; leading "-" excludes
+        terms = []
+        for part in search.split(","):
+            p = part.strip()
+            if not p:
+                continue
+            neg = False
+            if p.startswith("-") and len(p) > 1:
+                neg, p = True, p[1:].strip()
+            exact = False
+            if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"":
+                exact, p = True, p[1:-1]
+            p = p.replace("_", " ").strip()
+            if p:
+                terms.append((p, neg, exact))
         def _matches(img):
-            tags = [t.lower().replace("_", " ") for t in _get_all_tags(img)]
-            if not all(any(q in t for t in tags) for q in pos):
-                return False
-            return not any(any(q in t for t in tags) for q in neg)
+            tags = [t.lower().replace("_", " ").strip() for t in _get_all_tags(img)]
+            for q, neg, exact in terms:
+                hit = (q in tags) if exact else any(q in t for t in tags)
+                if hit == neg:
+                    return False
+            return True
         images = [i for i in images if _matches(i)]
     if site_filters:
         images = [i for i in images if i.get("site", "").lower() in site_filters]
