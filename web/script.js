@@ -836,7 +836,7 @@ function renderGelWatcherList() {
             </div>
             <button class="action-btn" onclick="editGelWatcher('${w.watcher_id}')">Edit</button>
             <button class="action-btn" onclick="toggleGelWatcher('${w.watcher_id}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
-            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')" title="Delete watcher" style="display: inline-flex; align-items: center; justify-content: center; line-height: 1; font-size: 15px; padding: 8px 16px;">×</button>
+            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')" title="Delete watcher" style="display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>`;
     }).join("");
 }
