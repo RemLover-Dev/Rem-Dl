@@ -1398,12 +1398,17 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
         return tags if isinstance(tags, list) else []
 
     if search:
-        # ponytail: underscores and spaces are equivalent, case already lowered at intake;
-        # split on spaces/commas so multi-tag queries AND-match (every term must hit some tag)
-        terms = [t.replace("_", " ") for t in search.replace(",", " ").split() if t.strip()]
+        # ponytail: commas separate tags so multi-word tags need no underscores;
+        # underscore == space on both sides (lowered at intake);
+        # "-term" excludes — image dropped if any tag contains the rest
+        terms = [t.strip().replace("_", " ") for t in search.split(",") if t.strip()]
+        pos = [q for q in terms if not (q.startswith("-") and len(q) > 1)]
+        neg = [q[1:] for q in terms if q.startswith("-") and len(q) > 1]
         def _matches(img):
             tags = [t.lower().replace("_", " ") for t in _get_all_tags(img)]
-            return all(any(q in t for t in tags) for q in terms)
+            if not all(any(q in t for t in tags) for q in pos):
+                return False
+            return not any(any(q in t for t in tags) for q in neg)
         images = [i for i in images if _matches(i)]
     if site_filters:
         images = [i for i in images if i.get("site", "").lower() in site_filters]
