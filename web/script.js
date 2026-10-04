@@ -4497,6 +4497,17 @@ document.addEventListener('keydown', function(e) {
     exitSelectMode();
 }, true);
 
+// shared guard: skip keys only when the user is actually typing —
+// a focused checkbox/select is NOT a text field (Del after clicking a
+// gallery check must still delete, not get eaten by the INPUT guard)
+function isTypingTarget(t) {
+    if (!t) return false;
+    if (t.isContentEditable) return true;
+    if (t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return true;
+    if (t.tagName === 'INPUT') return !['checkbox', 'radio', 'button', 'submit', 'range', 'file'].includes((t.type || '').toLowerCase());
+    return false;
+}
+
 // gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
 // (the image viewer above keeps ←/→ for next/prev image while it is open)
 // While a key is held, pages render normally but with placeholder thumbs so the
@@ -4522,8 +4533,7 @@ document.addEventListener('keydown', function(e) {
     const viewer = document.getElementById('galleryViewer');
     if (viewer && viewer.style.display === 'flex') return;
     if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (isTypingTarget(e.target)) return;
     let page = null;
     const k = e.key.toLowerCase();
     if (e.key === 'ArrowRight' || e.key === 'PageDown' || k === 'd') page = currentGalleryPage + 1;
@@ -4585,8 +4595,7 @@ document.addEventListener('keydown', function(e) {
     if (!((e.ctrlKey || e.metaKey) && (e.code === 'KeyA' || e.key === 'a' || e.key === 'A' || e.key === '\x01'))) return;
     const gal = document.getElementById('Gallery');
     if (!gal || gal.style.display === 'none') return;
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (isTypingTarget(e.target)) return;
     const viewer = document.getElementById('galleryViewer');
     if (viewer && viewer.style.display === 'flex') return;
     if (document.querySelector('.custom-confirm-overlay')) return;
@@ -4612,8 +4621,7 @@ document.addEventListener('keydown', function(e) {
     if (e.key !== 'Delete') return;
     const gal = document.getElementById('Gallery');
     if (!gal || gal.style.display === 'none') return;
-    const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (isTypingTarget(e.target)) return;
     const viewer = document.getElementById('galleryViewer');
     if (viewer && viewer.style.display === 'flex') return;
     if (document.querySelector('.custom-confirm-overlay')) return;
