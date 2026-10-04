@@ -73,7 +73,10 @@ function normalizeTags(tagsInput) {
     return result;
 }
 
-function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' '); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
+// standalone lowercase roman numerals (iii -> III); runs before first-letter cap
+// so "iii" doesn't become "Iii". Validated roman so "filmi"/"cd-ish" junk is safe.
+const _ROMAN_RE = /^m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
+function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' ').replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return (s.charAt(0).toUpperCase() + s.slice(1)).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
 // history rows: zero is comma-joined; free-text/pick sites (anime_dl, eshuushuu,
 // pixiv, pinterest, nekosapi) keep spaces INSIDE one tag — only comma-split them;
 // underscore-joined boorus are space-joined, split on spaces and commas
