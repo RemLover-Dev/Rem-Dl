@@ -31,9 +31,46 @@ IMAGES = [
 ]
 
 
-def _search(q):
-    out = Rems_Dl._apply_gallery_filters(list(IMAGES), q.lower().strip(), [], False, [], [])
+def _search(q, images=None):
+    out = Rems_Dl._apply_gallery_filters(list(images if images is not None else IMAGES),
+                                         q.lower().strip(), [], False, [], [])
     return [i["filename"] for i in out]
+
+
+BRA = [
+    {"site": "gelbooru", "filename": "both.png", "tags": ["bra", "braid"]},
+    {"site": "gelbooru", "filename": "only_braid.png", "tags": ["braid"]},
+    {"site": "gelbooru", "filename": "only_bra.png", "tags": ["long_bra"]},
+]
+
+
+def test_bare_term_stays_substring():
+    assert _search("bra", BRA) == ["both.png", "only_braid.png", "only_bra.png"]
+
+
+def test_double_quoted_exact_match():
+    assert _search('"bra"', BRA) == ["both.png"]
+    assert _search('"braid"', BRA) == ["both.png", "only_braid.png"]
+
+
+def test_single_quoted_exact_match():
+    assert _search("'bra'", BRA) == ["both.png"]
+    assert _search("'braid'", BRA) == ["both.png", "only_braid.png"]
+
+
+def test_quoted_exact_not_prefix():
+    # exact means whole tag: long_bra has "bra" inside but isn't "bra"
+    assert _search('"long bra"', BRA) == ["only_bra.png"]
+
+
+def test_quoted_exclusion():
+    # only the exact tag "bra" is excluded — long_bra and braid survive
+    assert _search('-"bra"', BRA) == ["only_braid.png", "only_bra.png"]
+    assert _search("'bra', braid", BRA) == ["both.png"]
+
+
+def test_quoted_mixed_with_plain():
+    assert _search('"bra", braid', BRA) == ["both.png"]
 
 
 def test_single_tag():
