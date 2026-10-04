@@ -105,6 +105,22 @@ def test_rule34py_importlib_metadata_safeguard(monkeypatch):
         monkeypatch.setattr(importlib.metadata, "version", orig_version)
 
 
+def test_index_version_stamps_assets():
+    # the webview kept serving a stale style.css after a fix — the index
+    # route stamps ?v=<mtime> so an edited css/js is always a cache miss
+    import Rems_Dl
+    Rems_Dl.app.config["TESTING"] = True
+    H = {"User-Agent": "RemsDlDesktopApp/1.0"}
+
+    with Rems_Dl.app.test_client() as client:
+        r = client.get("/", headers=H)
+        assert r.status_code == 200
+        html = r.get_data(as_text=True)
+        for name in ("style.css", "script.js"):
+            v = int(os.path.getmtime(os.path.join("web", name)))
+            assert f'{name}?v={v}"' in html, f"{name} link not version-stamped"
+
+
 def test_folder_api_and_browse(tmp_path, monkeypatch):
     import Rems_Dl
     Rems_Dl.app.config["TESTING"] = True

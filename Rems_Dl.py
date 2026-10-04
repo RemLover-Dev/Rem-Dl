@@ -321,7 +321,15 @@ def get_session(site, net_config):
 
 
 @app.route("/")
-def index(): return send_from_directory(STATIC_FOLDER, "index.html")
+def index():
+    # version-stamp css/js links so the webview cache can never serve stale
+    # assets after an edit (this bit us once: fixed CSS invisible until purge)
+    with open(os.path.join(STATIC_FOLDER, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    for name in ("style.css", "script.js"):
+        v = int(os.path.getmtime(os.path.join(STATIC_FOLDER, name)))
+        html = html.replace(name + '"', f"{name}?v={v}\"")
+    return Response(html, mimetype="text/html")
 
 @app.route("/user_wallpapers/<path:filename>")
 def custom_wallpaper(filename):
