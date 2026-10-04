@@ -31,6 +31,24 @@ class TestDatabaseManager:
         assert config["wallpapers"]["Pixiv"]["dark"] == "Rem_Pixiv_d.jpg"
         assert config["wallpapers"]["Gsbooru"]["dark"] == "Rem_Gsbooru_d.jpg"
 
+    def test_ui_config_drops_clone_orphan_wallpapers(self, db_env):
+        import json
+        DatabaseManager.load_ui_config()  # seeds the defaults file
+        path = os.path.join(db_env, "ui_config.json")
+        with open(path) as f:
+            data = json.load(f)
+        wp = data["wallpapers"]
+        wp["waifu"] = dict(wp["Waifu"])   # legacy lowercase clone
+        wp["zero"] = dict(wp["Zero"])
+        wp["myupload"] = {"dark": "user_a.png", "light": "user_a_l.png"}  # real orphan upload
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        out = DatabaseManager.load_ui_config()["wallpapers"]
+        assert "waifu" not in out and "zero" not in out
+        assert "Waifu" in out and "Zero" in out
+        assert out["myupload"] == {"dark": "user_a.png", "light": "user_a_l.png"}
+
     def test_tag_history_operations(self, db_env):
         DatabaseManager.add_tag_history("zero", "test_tag")
         

@@ -264,6 +264,21 @@ class DatabaseManager:
                 if key not in config:
                     config[key] = val
                     changed = True
+            # drop legacy orphan wallpaper keys (e.g. old lowercase 'waifu' next
+            # to 'Waifu') — only when they merely clone a shipped default, so a
+            # real user upload under an odd key is never deleted
+            wp = config.get("wallpapers")
+            dwp = defaults.get("wallpapers", {})
+            if isinstance(wp, dict):
+                default_pairs = set()
+                for v in dwp.values():
+                    if isinstance(v, dict):
+                        default_pairs.add((v.get("dark"), v.get("light")))
+                for k in [k for k in wp if k not in dwp]:
+                    v = wp[k]
+                    if isinstance(v, dict) and (v.get("dark"), v.get("light")) in default_pairs:
+                        del wp[k]
+                        changed = True
             if changed:
                 try:
                     DatabaseManager.save_ui_config(config)
