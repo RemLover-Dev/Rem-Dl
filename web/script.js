@@ -261,7 +261,7 @@ function renderWallpaperGrid() {
 
         ui.innerHTML += `
         <div style="display: flex; flex-direction: column; gap: 5px;">
-        <span style="color: var(--text-color); font-size: 13px; font-weight: bold;">${tab}</span>
+        <span style="color: var(--text-color); font-size: 13px; font-weight: bold;">${siteLabel(tab)}</span>
         <div style="display: flex; gap: 10px;">
         <div class="wp-box dark-mode" onclick="document.getElementById('${boxIdDark}').click()">Dark Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdDark}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'dark', this)"></div>
         <div class="wp-box light-mode" onclick="document.getElementById('${boxIdLight}').click()">Light Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdLight}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'light', this)"></div>
