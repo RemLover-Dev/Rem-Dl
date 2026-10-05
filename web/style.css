@@ -650,6 +650,9 @@ select option:hover, select option:checked { background: var(--title-color); col
 
 /* ===== CUSTOM SELECT (matches autosuggest dropdown) ===== */
 .custom-select { position: relative; display: inline-block; }
+/* the native select is a value holder only — external code toggling its
+   inline display (e.g. nekosLifeFormat show/hide) must not un-hide it */
+.custom-select > select { display: none !important; }
 .custom-select .cs-trigger {
     appearance: none;
     -webkit-appearance: none;
