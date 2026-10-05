@@ -89,7 +89,7 @@ function displayTagList(raw, site) {
     const parts = NOSPACE_SPLIT_SITES.includes(String(site || "")) ? s.split(/,/) : s.split(/[\s,]+/);
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
-function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
+function siteLabel(site) { const s = site || "unknown"; return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
