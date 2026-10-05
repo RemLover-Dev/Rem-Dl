@@ -1052,9 +1052,8 @@ body.blur-nsfw .image-card-log.is-nsfw:hover img {
 .custom-confirm-box {
     background: var(--panel-bg);
     border: 1px solid transparent;
-    box-shadow: 0 0 0 1px var(--border-color);
     border-radius: 16px;
-    box-shadow: 0 8px 40px 0 rgba(0, 0, 0, 0.7);
+    box-shadow: 0 8px 40px 0 rgba(0, 0, 0, 0.7), 0 0 0 1px var(--border-color);
     padding: 24px 28px;
     max-width: 420px;
     width: calc(100vw - 60px);
