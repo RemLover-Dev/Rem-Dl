@@ -1960,6 +1960,9 @@ function enhanceAllSelects() {
 
 function enhanceSelect(select) {
     if (select.dataset.enhanced || select.closest('.custom-select')) return;
+    // before wrap adoption — inside .custom-select the native node is CSS-hidden,
+    // which would read as wasHidden for every select
+    const wasHidden = select.style.display === 'none' || getComputedStyle(select).display === 'none';
     const wrap = document.createElement('div');
     wrap.className = 'custom-select';
     const trigger = document.createElement('button');
@@ -1975,7 +1978,6 @@ function enhanceSelect(select) {
     wrap.appendChild(trigger);
     wrap.appendChild(select);
     wrap.appendChild(menu);
-    const wasHidden = select.style.display === 'none' || getComputedStyle(select).display === 'none';
     select.style.display = 'none';
     select.dataset.enhanced = '1';
     if (wasHidden) wrap.style.display = 'none';
