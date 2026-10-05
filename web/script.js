@@ -1249,7 +1249,7 @@ async function showZeroSubtags(dropdown, input) {
     items.forEach((s) => {
         let div = document.createElement("div");
         div.className = "autosuggest-item";
-        div.textContent = `${cleanTagDisplay(s.name)} (${s.count})`;
+        div.textContent = cleanTagDisplay(s.name);
         div.title = s.kind || "";
         div.onclick = function() {
             input.value = "";
