@@ -4246,6 +4246,36 @@ function resetGalleryFilters() {
     populateGallerySiteFilter();
 }
 
+// GIFs and videos come alive under the cursor: swap the still for the live
+// media, then put the card back the way it was
+function galleryHoverPreview(card, on) {
+    const url = card.dataset.hoverSrc;
+    if (!url) return;
+    const img = card.querySelector('img');
+    if (card.dataset.hover === 'gif') {
+        if (!img) return;
+        if (on) { img.style.display = ''; img.src = url; }
+        else { img.src = card.dataset.thumb || img.src; img.style.display = ''; }
+        return;
+    }
+    if (on) {
+        if (card.querySelector('.gallery-hover-media')) return;
+        const v = document.createElement('video');
+        v.className = 'gallery-hover-media';
+        v.src = url;
+        v.muted = true;
+        v.loop = true;
+        v.autoplay = true;
+        v.playsInline = true;
+        card.appendChild(v);
+        v.play().catch(() => {});
+        if (img) img.style.visibility = 'hidden';
+    } else {
+        const v = card.querySelector('.gallery-hover-media');
+        if (v) { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); }
+        if (img) img.style.visibility = '';
+    }
+}
 function renderGallery() {
     const grid = document.getElementById("galleryGrid");
     const pagination = document.getElementById("galleryPagination");
@@ -4307,6 +4337,8 @@ function renderGallery() {
         const src = `/api/gallery/thumb/${fp.split('/').map(encodeURIComponent).join('/')}`;
         const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
+        const hoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
+        const hoverAttr = hoverKind ? ` data-hover="${hoverKind}" data-hover-src="${fullImageUrl(fp, img.filename)}" data-thumb="${src}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
 
         const rating = getGalleryImageRating(img);
@@ -4326,7 +4358,7 @@ function renderGallery() {
         const favCls = img.favourite ? ' is-fav' : '';
         const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${img.id}', this.checked)">`;
 
-        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')">${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
+        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')"${hoverAttr}>${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
     });
     // pin the column count so the last row is always full
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
