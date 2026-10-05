@@ -982,7 +982,7 @@ def get_anime_dl_subtags():
 @app.route("/api/tags/yande", methods=["POST"])
 def get_yande_suggestions():
     data = request.json or {}
-    query = (data.get("query", "") or "").lower().strip()
+    query = (data.get("query", "") or "").lower().strip().replace(" ", "_")
     if len(query) < 2: return jsonify(_merge_learned_and_online("yande", query, []))
     names = []
     try:
@@ -1002,7 +1002,7 @@ def get_yande_suggestions():
 @app.route("/api/tags/kona", methods=["POST"])
 def get_kona_suggestions():
     data = request.json or {}
-    query = (data.get("query", "") or "").lower().strip()
+    query = (data.get("query", "") or "").lower().strip().replace(" ", "_")
     if len(query) < 2: return jsonify(_merge_learned_and_online("kona", query, []))
     live = []
     try:

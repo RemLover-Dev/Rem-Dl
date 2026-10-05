@@ -668,8 +668,14 @@ function logToConsole(tabID, msg) {
     if (raw.includes("Phase 2") || raw.includes("Terminated") || raw.includes("Initializing") || raw.includes("Total valid items found") || raw.includes("Notice:") || raw.includes("API error") || raw.includes("API Exception") || raw.includes("API BAN") || raw.includes("No more images") || raw.includes("No new images") || raw.includes("ZERO images") || raw.includes("0 images found") || raw.includes("End of database") || raw.includes("Authenticating") || raw.includes("Proxy:") || raw.includes("Enqueued") || raw.includes("Rating:") || raw.includes("Exclusions:")) {
         if (raw.includes("Terminated")) { workerRunning[tabID] = false; renderRunBtn(tabID); }
         let clean = raw.replace(/\[.*?\]/g, '').split("|PATH|")[0].trim();
-        // ponytail: prettify quoted tags for display — skip paths (slashes) and files (dots)
-        clean = clean.replace(/'([^'/.,]*_[^'/.,]*)'/g, (m, t) => "'" + cleanTagDisplay(t) + "'");
+        // ponytail: prettify quoted tags for display — split per site rules
+        // (space sites: spaces+commas; NOSPACE sites: commas only so multi-word
+        // tags stay whole), cap each tag; skip paths and filenames (slashes/dots)
+        clean = clean.replace(/'([^']*)'/g, (m, t) => {
+            if (/[/.]/.test(t)) return m;
+            const parts = NOSPACE_SPLIT_SITES.includes(tabID) ? t.split(',') : t.split(/[\s,]+/);
+            return "'" + parts.filter(p => p.trim()).map(p => cleanTagDisplay(p.trim())).join(', ') + "'";
+        });
         clean = hideFileNames(clean);
         // escape log-derived text before it hits innerHTML — tags are
         // attacker-controlled; WARN_ICON swap happens after so the svg survives
@@ -5428,3 +5434,16 @@ function toggleViewerFav() {
             });
         });
     });
+
+// viewer open: keys belong to the viewer only — stop anything aimed at the
+// page behind it (hidden inputs, gallery shortcuts, scrolling). Registered
+// last so the viewer's own key handler runs first; fullscreen (first listener),
+// the viewer's controls and the delete-confirm dialog pass through.
+document.addEventListener("keydown", function (e) {
+    const viewer = document.getElementById("galleryViewer");
+    if (!viewer || viewer.style.display !== "flex") return;
+    const t = e.target;
+    if (t && t.closest && (t.closest("#galleryViewer") || t.closest(".custom-confirm-overlay"))) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+}, true);

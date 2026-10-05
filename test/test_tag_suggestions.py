@@ -35,3 +35,40 @@ def test_learned_is_deduped_case_insensitively(monkeypatch):
 def test_dict_online_entries_keep_name(monkeypatch):
     out = _merge(monkeypatch, [], [{"name": "zani"}])
     assert out == [{"name": "zani"}]
+
+
+def test_learned_suggestions_match_space_typed_query(monkeypatch):
+    # "fire k" typed with a space must still hit learned "fire_keeper"
+    monkeypatch.setattr(
+        Rems_Dl.DatabaseManager,
+        "load_learned_tags",
+        lambda: {"kona": ["fire_keeper", "fire_girl", "cat"]},
+    )
+    assert Rems_Dl.DatabaseManager.get_learned_suggestions("kona", "fire k") == ["fire_keeper"]
+    # ...and the reverse: underscored query hits a space-stored learned tag
+    monkeypatch.setattr(
+        Rems_Dl.DatabaseManager,
+        "load_learned_tags",
+        lambda: {"kona": ["fire keeper"]},
+    )
+    assert Rems_Dl.DatabaseManager.get_learned_suggestions("kona", "fire_k") == ["fire keeper"]
+
+
+def test_kona_suggest_query_normalizes_spaces(monkeypatch):
+    # typed "fire k" must reach konachan as name=fire_k* — spaces return nothing
+    seen = {}
+    monkeypatch.setattr(
+        Rems_Dl, "_live_tag_suggest",
+        lambda session, url, timeout=5: (seen.update(url=url) or ["fire_keeper"]),
+    )
+    monkeypatch.setattr(
+        Rems_Dl.DatabaseManager, "get_learned_suggestions",
+        lambda site, q, limit=50: [],
+    )
+    Rems_Dl.app.config["TESTING"] = True
+    H = {"User-Agent": "RemsDlDesktopApp/1.0"}
+    with Rems_Dl.app.test_client() as client:
+        r = client.post("/api/tags/kona", json={"query": "fire k"}, headers=H)
+    assert r.status_code == 200
+    assert "fire_k" in seen.get("url", "")
+    assert r.get_json() == ["fire_keeper"]

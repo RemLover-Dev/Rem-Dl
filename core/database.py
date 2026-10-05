@@ -80,11 +80,13 @@ class DatabaseManager:
     @staticmethod
     def get_learned_suggestions(site, query, limit=20):
         site = str(site).lower().strip()
-        q = str(query).lower().strip()
+        # spaces and underscores are the same tag on every booru — a typed
+        # "fire k" must still hit a learned "fire_keeper"
+        q = "_".join(str(query).lower().split())
         if not q:
             return []
         tags = DatabaseManager.load_learned_tags().get(site, [])
-        return [t for t in tags if str(t).lower().startswith(q)][:limit]
+        return [t for t in tags if "_".join(str(t).lower().split()).startswith(q)][:limit]
 
     @staticmethod
     def load_json(filepath):
