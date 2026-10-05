@@ -5434,3 +5434,16 @@ function toggleViewerFav() {
             });
         });
     });
+
+// viewer open: keys belong to the viewer only — stop anything aimed at the
+// page behind it (hidden inputs, gallery shortcuts, scrolling). Registered
+// last so the viewer's own key handler runs first; fullscreen (first listener),
+// the viewer's controls and the delete-confirm dialog pass through.
+document.addEventListener("keydown", function (e) {
+    const viewer = document.getElementById("galleryViewer");
+    if (!viewer || viewer.style.display !== "flex") return;
+    const t = e.target;
+    if (t && t.closest && (t.closest("#galleryViewer") || t.closest(".custom-confirm-overlay"))) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+}, true);
