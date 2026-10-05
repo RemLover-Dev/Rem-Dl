@@ -1331,8 +1331,16 @@ class BaseDownloader:
             # doesn't count in-flight items), which cancelled workers mid-
             # download via BaseException — file landed on disk but gallery,
             # metadata, history, and SUCCESS log were never written.
-            if not self.stop_event.is_set():
-                await self.download_queue.join()
+            # a STOP during phase 2 orphans pending items (workers exit at
+            # the loop top without task_done) — a bare join() then waits
+            # forever and pins this site's ACTIVE_JOBS slot, so every later
+            # START just enqueues behind the corpse
+            while not self.stop_event.is_set():
+                try:
+                    await asyncio.wait_for(self.download_queue.join(), 0.5)
+                    break
+                except asyncio.TimeoutError:
+                    continue
             for t in download_tasks: t.cancel()
 
             # ponytail: dedicated finish signal — log parsing alone is too fragile to drive UI state
