@@ -159,3 +159,24 @@ def test_folder_api_and_browse(tmp_path, monkeypatch):
         r = client.post("/api/folder/browse", headers=H)
         assert r.status_code == 200
         assert r.get_json().get("cancelled") is True
+
+
+def test_gallery_file_sends_day_cache_header(tmp_path, monkeypatch):
+    # the viewer swaps thumb -> full in one paint — the full image must land
+    # in the HTTP cache (same policy as thumbs) or every reopen re-downloads
+    import Rems_Dl
+    Rems_Dl.app.config["TESTING"] = True
+    H = {"User-Agent": "RemsDlDesktopApp/1.0"}
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
+    os.makedirs(os.path.join(str(tmp_path), "sub"))
+    with open(os.path.join(str(tmp_path), "sub", "a.jpg"), "wb") as f:
+        f.write(b"\xff\xd8\xff\xd9")
+
+    with Rems_Dl.app.test_client() as client:
+        r = client.get("/api/gallery/file/sub/a.jpg", headers=H)
+        assert r.status_code == 200
+        assert r.headers.get("Cache-Control") == "private, max-age=86400"
+
+        r404 = client.get("/api/gallery/file/sub/gone.jpg", headers=H)
+        assert r404.status_code == 404
+        assert "max-age" not in r404.headers.get("Cache-Control", "")

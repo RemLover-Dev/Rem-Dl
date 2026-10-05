@@ -89,7 +89,7 @@ function displayTagList(raw, site) {
     const parts = NOSPACE_SPLIT_SITES.includes(String(site || "")) ? s.split(/,/) : s.split(/[\s,]+/);
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
-function siteLabel(site) { const s = site || "unknown"; return (s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
+function siteLabel(site) { const s = site || "unknown"; return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
 function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -4328,17 +4328,29 @@ function renderGallery() {
         return;
     }
     let html = '';
+    // warm the full image while the user hovers — click then opens from HTTP cache
+    if (!grid.dataset.warmBind) {
+        grid.dataset.warmBind = '1';
+        grid.addEventListener('mouseover', e => {
+            const c = e.target && e.target.closest ? e.target.closest('.gallery-card') : null;
+            if (!c || !c.dataset.full || c.dataset.warm) return;
+            c.dataset.warm = '1';
+            new Image().src = c.dataset.full;
+        });
+    }
     images.forEach(img => {
         const fp = (img.filepath || '').replace(/\\/g, '/');
         const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
         const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
         // per-segment encoding: encodeURI leaves "#"/"?" raw, which truncates
         // the request at the fragment — filepaths can legitimately contain them
-        const src = `/api/gallery/thumb/${fp.split('/').map(encodeURIComponent).join('/')}`;
+        const src = galleryThumbUrl(fp);
+        const fullU = fullImageUrl(fp, img.filename);
         const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const hoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
-        const hoverAttr = hoverKind ? ` data-hover="${hoverKind}" data-hover-src="${fullImageUrl(fp, img.filename)}" data-thumb="${src}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
+        const hoverAttr = hoverKind ? ` data-hover="${hoverKind}" data-hover-src="${fullU}" data-thumb="${src}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
+        const prefetchAttr = isVideo ? '' : ` data-full="${fullU}"`;
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
 
         const rating = getGalleryImageRating(img);
@@ -4358,7 +4370,7 @@ function renderGallery() {
         const favCls = img.favourite ? ' is-fav' : '';
         const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${img.id}', this.checked)">`;
 
-        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')"${hoverAttr}>${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
+        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')"${prefetchAttr}${hoverAttr}>${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
     });
     // pin the column count so the last row is always full
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
@@ -4714,6 +4726,9 @@ function fullImageUrl(filepath, filename) {
     try { clean = decodeURIComponent(clean); } catch (e) {}
     return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
 }
+function galleryThumbUrl(fp) {
+    return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : '';
+}
 function openFullImage(filepath, filename, el) {
     const url = fullImageUrl(filepath, filename);
     // log images and history cards: hand the viewer their siblings so ←/→ walks them
@@ -4725,7 +4740,7 @@ function openFullImage(filepath, filename, el) {
         if (idx >= 0) list = imgs.map(i => i.dataset.ofi);
     }
     // always use the in-app viewer — new tabs don't exist in the desktop app
-    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null);
+    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null, el && el.currentSrc ? el.currentSrc : '');
 }
 
 let viewerSingle = false;
@@ -4736,9 +4751,8 @@ let viewerSingleFilename = "";
 // log/history box the viewer was opened from — lets steps re-read the live
 // DOM so images downloaded after open stay reachable
 let viewerSingleBoxId = null;
-// Viewer resource: the loaded raster image is the single source of truth for
-// both display and Copy — one fetch produces one Blob, shown via an object
-// URL and reused by the clipboard. Videos keep their direct-URL <video> path.
+// Viewer resource: tracks the in-flight raster load (URL, generation, abort).
+// Display swaps in the preloaded image; Copy fetches its Blob on demand.
 let viewerResource = {
     url: null,
     filename: null,
@@ -4768,20 +4782,31 @@ function loadViewerRaster(url, filename) {
     const controller = new AbortController();
     viewerResource.abortController = controller;
     viewerImg.style.display = '';
+    // preload + decode off-screen, then swap in one paint: the thumb stays
+    // visible during the download and Copy fetches its Blob on demand
     const p = (async () => {
+        const pre = new Image();
         try {
-            const resp = await fetch(url, { signal: controller.signal });
-            if (!resp.ok) throw new Error(resp.status === 404 ? "image was deleted" : "Image load failed (" + resp.status + ")");
-            const blob = await resp.blob();
-            if (generation !== viewerResource.generation) return null;
-            viewerResource.blob = blob;
-            const objectUrl = URL.createObjectURL(blob);
-            if (generation !== viewerResource.generation) { URL.revokeObjectURL(objectUrl); return null; }
-            viewerResource.objectUrl = objectUrl;
-            viewerImg.src = objectUrl;
-            return blob;
+            await new Promise((resolve, reject) => {
+                if (controller.signal.aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+                pre.onload = resolve;
+                pre.onerror = () => reject(new Error("Image load failed"));
+                controller.signal.addEventListener('abort', () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+                pre.src = url;
+            });
+            if (pre.decode) { try { await pre.decode(); } catch (e) {} }
+            if (generation !== viewerResource.generation || controller.signal.aborted) return null;
+            viewerImg.src = url;
+            return null;
         } catch (err) {
-            if (generation === viewerResource.generation && err && err.name !== "AbortError") showToast("Failed to load image: " + (err.message || err), { warn: true, icon: WARN_ICON });
+            if (generation === viewerResource.generation && err && err.name !== "AbortError") {
+                let msg = err.message || "Image load failed";
+                try {
+                    const r = await fetch(url, { method: "HEAD", signal: controller.signal });
+                    if (r.status) msg = r.status === 404 ? "image was deleted" : "Image load failed (" + r.status + ")";
+                } catch (e) {}
+                showToast("Failed to load image: " + msg, { warn: true, icon: WARN_ICON });
+            }
             throw err;
         }
     })();
@@ -4789,10 +4814,12 @@ function loadViewerRaster(url, filename) {
     p.catch(() => {});
     return p;
 }
-function openViewerSingle(url, filename, list, idx, boxId) {
+function openViewerSingle(url, filename, list, idx, boxId, seed) {
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
+    // clicked card's thumb — shown instantly while the full image loads
+    if (seed) viewerImg.src = seed;
     viewerSingle = true;
     viewerSingleBoxId = boxId || null;
     viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
@@ -4877,11 +4904,12 @@ function showViewerImage() {
     const viewerImg = document.getElementById("galleryViewerImg");
     const img = galleryState.images[viewerIndex];
     if (!img) return closeGalleryViewer();
-    viewerImg.src = '';
     let vw = document.querySelector('.gallery-video-wrap');
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
     const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
+    // the card's thumb is already in HTTP cache — show it while the full loads
+    viewerImg.src = galleryThumbUrl(safeFp);
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
@@ -4901,6 +4929,7 @@ function showViewerImage() {
         wrap.className = 'gallery-video-wrap';
         const video = document.createElement('video');
         video.id = 'galleryViewerVideo';
+        video.poster = galleryThumbUrl(safeFp);
         video.src = fullSrc;
         const ctrls = document.createElement('div');
         ctrls.className = 'gallery-video-ctrls';
