@@ -3225,7 +3225,7 @@ function populateHistSourceDropdown() {
     const prev = getMultiSelectValues("histSourceDropdown");
     const prevSet = prev && prev !== "__none__" ? prev.split(",") : [];
     menu.innerHTML = `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>` +
-        sites.map(s => `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>${s}</span><input type="checkbox" value="${s}"></div>`).join("");
+        sites.map(s => `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>${siteLabel(s)}</span><input type="checkbox" value="${s}"></div>`).join("");
     if (prevSet.length) {
         menu.querySelectorAll('input[type="checkbox"]').forEach(c => { if (prevSet.includes(c.value)) c.checked = true; });
         const all = menu.querySelector('input[value=""]');
