@@ -2434,8 +2434,12 @@ def _dispatch_worker(data):
 
     if tag:
         try:
+            # remember the search's filter controls so history jumps can restore them
+            filters = {k: data.get(k) for k in ("nsfw", "method", "sort_type", "sort_order", "exclusions") if k in data}
+            if "hide_pools" in net_config:
+                filters["hide_pools"] = net_config["hide_pools"]
             DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "",
-                                            bool(data.get("exclude_ai", False)))
+                                            bool(data.get("exclude_ai", False)), filters)
             # Learn searched tags into local smart cache
             for single_tag in tag.replace(",", " ").split():
                 # -ai_generated is gelbooru's exclusion marker, not a tag
