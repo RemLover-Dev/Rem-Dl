@@ -2442,8 +2442,8 @@ def _dispatch_worker(data):
                                             bool(data.get("exclude_ai", False)), filters)
             # Learn searched tags into local smart cache
             for single_tag in tag.replace(",", " ").split():
-                # -ai_generated is gelbooru's exclusion marker, not a tag
-                if len(single_tag.strip()) >= 2 and single_tag.strip() != "-ai_generated":
+                # AI exclusion markers are search syntax, not tags
+                if len(single_tag.strip()) >= 2 and single_tag.strip() not in ("-ai_generated", "-ai-created"):
                     DatabaseManager.add_learned_tag(worker, single_tag.strip())
         except Exception as e:
             print("History Save Error:", e)
