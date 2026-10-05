@@ -5437,11 +5437,14 @@ function toggleViewerFav() {
 
 // viewer open: keys belong to the viewer only — stop anything aimed at the
 // page behind it (hidden inputs, gallery shortcuts, scrolling). Registered
-// last so the viewer's own key handler runs first; fullscreen (first listener),
-// the viewer's controls and the delete-confirm dialog pass through.
+// last so the viewer's own key handler runs first; the fullscreen key (its
+// handler runs first, and plain browsers rely on the native F11 default this
+// guard would otherwise cancel), the viewer's controls and the delete-confirm
+// dialog pass through.
 document.addEventListener("keydown", function (e) {
     const viewer = document.getElementById("galleryViewer");
     if (!viewer || viewer.style.display !== "flex") return;
+    if (e.key && e.key.toLowerCase() === String(uiConfig.fullscreen_key || "F11").toLowerCase()) return;
     const t = e.target;
     if (t && t.closest && (t.closest("#galleryViewer") || t.closest(".custom-confirm-overlay"))) return;
     e.preventDefault();
