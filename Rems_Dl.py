@@ -1736,7 +1736,10 @@ def gallery_file(filepath):
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if os.path.isfile(full):
-        return send_file(full)
+        resp = send_file(full)
+        # same policy as thumbs: the viewer swap + hover prefetch hit disk cache
+        resp.headers["Cache-Control"] = "private, max-age=86400"
+        return resp
     return "Image was deleted", 404
 
 @app.route("/api/thumb_by_name/<filename>")
