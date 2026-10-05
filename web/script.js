@@ -3541,7 +3541,7 @@ function renderHistory() {
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
                 timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site)}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${item.site}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[_ ]generated\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site)}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -3578,7 +3578,16 @@ async function toggleFavorite(site, tag) {
 async function removeFromHistory(site, tag, rating) { await fetch("/api/history/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ site: site, tag: tag, rating: rating || "" }) }); await loadTagsData(); }
 async function clearHistory() { if(await customConfirm("Are you sure you want to delete all search history?", "Delete")) { await fetch("/api/history/clear", { method: "POST" }); await loadTagsData(); } }
 
-function jumpToSite(site, tag, rating, excludeAI) {
+function jumpToSite(site, tag, rating, excludeAI, filters) {
+    let f = {};
+    try { f = JSON.parse(filters || "{}") || {}; } catch (e) {}
+    // the "videos" format appends " video" to the stored tag — put it back in the dropdown
+    let histFmt = null;
+    if (Array.isArray(f.exclusions)) {
+        const v = f.exclusions.includes("-video"), i = f.exclusions.includes("-image");
+        if (v && !i) histFmt = "images"; else if (v && i) histFmt = "gifs"; else if (i && !v) histFmt = "videos"; else histFmt = "all";
+        if (histFmt === "videos") tag = String(tag || "").replace(/\s+video\b/i, "").trim();
+    }
     // ponytail: pill-based tabs take separate tags, not one joined string
     if (site === "zero") {
         currentZerochanTags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
@@ -3651,6 +3660,17 @@ function jumpToSite(site, tag, rating, excludeAI) {
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
     if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
+    if ("nsfw" in f) { const el = document.getElementById("waifuNsfw"); if (el) el.checked = !!f.nsfw; }
+    if ("hide_pools" in f) { const el = document.getElementById("sankakuHideBooks"); if (el) el.checked = !!f.hide_pools; }
+    if (f.method) setSelectValue(document.getElementById("rule34Method"), f.method);
+    if (f.sort_type) setSelectValue(document.getElementById("rule34SortType"), f.sort_type);
+    if (f.sort_order) setSelectValue(document.getElementById("rule34SortOrder"), f.sort_order);
+    const fmtSelId = { rule34: "rule34Format", gelbooru: "gelFormat", dan: "danFormat", kona: "konaFormat" }[site];
+    if (fmtSelId && histFmt) setSelectValue(document.getElementById(fmtSelId), histFmt);
+    const exChecks = { rule34: [["exGif", "-gif"], ["exComic", "-comic"], ["ex3D", "-3d"]], dan: [["danExGif", "-gif"]], kona: [["konaExGif", "-gif"]] }[site];
+    if (exChecks && Array.isArray(f.exclusions)) {
+        exChecks.forEach(([id, flag]) => { const el = document.getElementById(id); if (el) el.checked = f.exclusions.includes(flag); });
+    }
     if (rating) {
         const rsId = RATING_INPUT_BY_WORKER[site];
         if (rsId) { const rsEl = document.getElementById(rsId); if (rsEl) setSelectValue(rsEl, rating); }

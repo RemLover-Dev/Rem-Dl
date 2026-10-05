@@ -85,6 +85,24 @@ class TestDatabaseManager:
         assert len(hist) == 1
         assert hist[0]["exclude_ai"] is False
 
+    def test_tag_history_filters_roundtrip(self, db_env):
+        DatabaseManager.add_tag_history("waifu", "rem")
+        assert DatabaseManager.load_tag_history()[0]["filters"] == {}
+
+        filters = {"method": "or", "sort_type": "score", "sort_order": "asc",
+                   "exclusions": ["-video", "-gif"]}
+        DatabaseManager.add_tag_history("rule34", "rem video", "", True, filters)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["filters"] == filters
+
+        # re-search refreshes the entry and its filters
+        DatabaseManager.add_tag_history("rule34", "rem video", "", False,
+                                        {"hide_pools": True})
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["filters"] == {"hide_pools": True}
+
     def test_favorites_operations(self, db_env):
         # Add to favorites
         DatabaseManager.toggle_favorite("safe", "cute")

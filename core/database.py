@@ -117,7 +117,7 @@ class DatabaseManager:
         DatabaseManager.save_json(TAG_HISTORY_FILE, data)
 
     @staticmethod
-    def add_tag_history(site, tag, rating="", exclude_ai=False):
+    def add_tag_history(site, tag, rating="", exclude_ai=False, filters=None):
         with _DB_LOCK:
             hist = DatabaseManager.load_tag_history()
             rating = rating or ""
@@ -127,7 +127,8 @@ class DatabaseManager:
                             and (x.get("rating") or "") == rating)]
             hist.insert(0, {"site": site, "tag": tag, "rating": rating,
                             "searched_at": time.time(),
-                            "exclude_ai": bool(exclude_ai)})
+                            "exclude_ai": bool(exclude_ai),
+                            "filters": dict(filters) if filters else {}})
             DatabaseManager.save_tag_history(hist)
 
     @staticmethod
