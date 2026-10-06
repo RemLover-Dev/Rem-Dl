@@ -457,8 +457,13 @@ input:focus, select:focus {
     gap: 15px;
     animation: slideIn 0.3s ease-out;
     position: relative;
+    /* clip filter/hover repaints to the card — blur(22px) paints ~22px past the
+       thumb, and WebKitGTK leaves that stale paint outside the card until the
+       next full repaint (the hover-unblur ghost) */
+    overflow: hidden;
 }
 .img-card-left {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -948,10 +953,12 @@ body.blur-nsfw .gallery-card.is-nsfw:hover .gallery-hover-media {
     filter: blur(0);
     transform: scale(1);
 }
-body.blur-nsfw .image-card-log.is-nsfw img {
+body.blur-nsfw .image-card-log.is-nsfw img,
+body.blur-nsfw .image-card-log.is-nsfw .gallery-hover-media {
     filter: blur(22px);
 }
-body.blur-nsfw .image-card-log.is-nsfw:hover img {
+body.blur-nsfw .image-card-log.is-nsfw:hover img,
+body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
     filter: blur(0);
 }
 /* history rows: text stays readable — blur is for images, not tag names */

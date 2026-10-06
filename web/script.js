@@ -644,9 +644,12 @@ function logToConsole(tabID, msg) {
         if (ratingBlurred(logRating)) card.classList.add("is-nsfw");
         let thumbSrc = '/api/gallery/thumb/' + pathUrlStr;
         let safeFn = escJs(fn);
+        const logHoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
+        const logFullU = fullImageUrl(pathUrlStr, fn);
+        const logHoverAttr = logHoverKind ? ` data-hover="${logHoverKind}" data-hover-src="${logFullU}" data-thumb="${thumbSrc}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
 
         card.innerHTML = `
-        <div class="img-card-left">
+        <div class="img-card-left"${logHoverAttr}>
         <!-- استفاده از Date.now برای جلوگیری از باگ لود شدن -->
         <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
         </div>
