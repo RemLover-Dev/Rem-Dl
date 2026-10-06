@@ -1251,8 +1251,10 @@ def get_eshuushuu_suggestions():
 def get_nekosapi_suggestions():
     data = request.json or {}
     query = (data.get("query", "") or "").lower()
-    if len(query) < 2: return jsonify([])
     live = _refresh_nekosapi_live_tags(data.get("net_config", {}))
+    # no query = the tag dropdown wants the whole vocabulary (~50 tags)
+    if len(query) < 2:
+        return jsonify(live)
     out = [t for t in live if t.lower().startswith(query)]
     return jsonify(out[:50])
 
