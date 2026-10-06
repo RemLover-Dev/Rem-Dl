@@ -42,6 +42,7 @@ from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from core.database import DatabaseManager, SettingsManager
 from core import notifications, pixiv_notify, watchers
+from core.preview_cache import preview_path
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1814,6 +1815,20 @@ def gallery_file(filepath):
         return resp
     return "Image was deleted", 404
 
+@app.route("/api/gallery/preview/<path:filepath>")
+def gallery_preview(filepath):
+    # hover previews never play audio — serve an audio-free remux so WebKitGTK's
+    # muted-video teardown doesn't freeze the main thread (multi-second pause())
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
+        return "Forbidden", 403
+    if not os.path.isfile(full):
+        return "Image was deleted", 404
+    resp = send_file(preview_path(full, PREVIEW_CACHE_DIR),
+                     mimetype="video/mp4", conditional=True)
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
 @app.route("/api/thumb_by_name/<filename>")
 def thumb_by_name(filename):
     full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
@@ -1835,6 +1850,10 @@ def thumb_by_name(filename):
 
 THUMB_CACHE = os.path.join(DATABASE_DIR, "thumb_cache")
 os.makedirs(THUMB_CACHE, exist_ok=True)
+# audio-free remuxes for hover previews: WebKitGTK blocks the main thread for
+# seconds when a muted <video> with an audio track is stopped (see preview_cache)
+PREVIEW_CACHE_DIR = os.path.join(DATABASE_DIR, "preview_cache")
+os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
 
 
 def _thumb_cache_path(full):
@@ -1897,6 +1916,13 @@ def _warm_thumb(full):
         _cached_thumb(full)
     except Exception:
         pass
+    # pre-remux audio-free previews alongside thumbs so the first hover
+    # doesn't pay the ffmpeg stream-copy inline
+    if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
+        try:
+            preview_path(full, PREVIEW_CACHE_DIR)
+        except Exception:
+            pass
 
 
 def warm_page_thumbs(images):

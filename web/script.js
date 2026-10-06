@@ -650,7 +650,8 @@ function logToConsole(tabID, msg) {
         let safeFn = escJs(fn);
         const logHoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
         const logFullU = fullImageUrl(pathUrlStr, fn);
-        const logHoverAttr = logHoverKind ? ` data-hover="${logHoverKind}" data-hover-src="${logFullU}" data-thumb="${thumbSrc}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
+        const logHoverU = logHoverKind === 'video' ? previewImageUrl(pathUrlStr, fn) : logFullU;
+        const logHoverAttr = logHoverKind ? ` data-hover="${logHoverKind}" data-hover-src="${logHoverU}" data-thumb="${thumbSrc}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
 
         card.innerHTML = `
         <div class="img-card-left"${logHoverAttr}>
@@ -3857,7 +3858,8 @@ function historyRowHtml(img) {
 
     const hExt = (img.filename || '').split('.').pop().toLowerCase();
     const hHoverKind = ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(hExt) ? 'video' : (hExt === 'gif' ? 'gif' : '');
-    const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${fullImageUrl(safeFp, img.filename)}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
+    const hHoverSrc = hHoverKind === 'video' ? previewImageUrl(safeFp, img.filename) : fullImageUrl(safeFp, img.filename);
+    const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${hHoverSrc}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
     return `
     <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
     <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
@@ -4380,20 +4382,35 @@ function galleryHoverPreview(card, on) {
         return;
     }
     if (on) {
-        if (card.querySelector('.gallery-hover-media')) return;
-        const v = document.createElement('video');
-        v.className = 'gallery-hover-media';
-        v.src = url;
-        v.muted = true;
-        v.loop = true;
-        v.autoplay = true;
-        v.playsInline = true;
-        card.appendChild(v);
-        v.play().catch(() => {});
-        if (img) img.style.visibility = 'hidden';
+        if (card._hoverCtl || card.querySelector('.gallery-hover-media')) return;
+        // WebKitGTK freezes the main thread for seconds when a streaming <video>
+        // (or one with an audio track) is stopped mid-download — so fetch the
+        // audio-free preview fully first and play from the blob: teardown of a
+        // buffered blob pauses in ~1ms
+        const ctl = new AbortController();
+        card._hoverCtl = ctl;
+        fetch(url, { signal: ctl.signal }).then(r => r.blob()).then(b => {
+            if (card._hoverCtl !== ctl || !card.isConnected) return;
+            card._hoverCtl = null;
+            const v = document.createElement('video');
+            v.className = 'gallery-hover-media';
+            v.src = URL.createObjectURL(b);
+            v.muted = true;
+            v.loop = true;
+            v.autoplay = true;
+            v.playsInline = true;
+            card.appendChild(v);
+            v.play().catch(() => {});
+            if (img) img.style.visibility = 'hidden';
+        }).catch(() => { card._hoverCtl = null; });
     } else {
+        if (card._hoverCtl) { card._hoverCtl.abort(); card._hoverCtl = null; }
         const v = card.querySelector('.gallery-hover-media');
-        if (v) { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); }
+        if (v) {
+            const u = v.src;
+            v.pause(); v.removeAttribute('src'); v.load(); v.remove();
+            if (u.startsWith('blob:')) URL.revokeObjectURL(u);
+        }
         if (img) img.style.visibility = '';
     }
 }
@@ -4473,7 +4490,8 @@ function renderGallery() {
         const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const hoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
-        const hoverAttr = hoverKind ? ` data-hover="${hoverKind}" data-hover-src="${fullU}" data-thumb="${src}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
+        const hoverU = hoverKind === 'video' ? previewImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename) : fullU;
+        const hoverAttr = hoverKind ? ` data-hover="${hoverKind}" data-hover-src="${hoverU}" data-thumb="${src}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
         const prefetchAttr = isVideo ? '' : ` data-full="${fullU}"`;
         const selCls = gallerySelected.has(img.id) ? ' selected' : '';
 
@@ -4869,6 +4887,12 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     selectDelete();
 }, true);
+
+// hover previews are muted: point them at the audio-free remux so stopping the
+// video can't hit WebKitGTK's multi-second audio-pipeline teardown
+function previewImageUrl(filepath, filename) {
+    return fullImageUrl(filepath, filename).replace('/api/gallery/file/', '/api/gallery/preview/');
+}
 
 function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once

@@ -132,3 +132,5 @@ database/watchers.json
 database/*.json.migrated
 database/*.sqlite3.bak-*
 database/*_tag_types.json
+database/preview_cache/
+database/image_history.json.tmp
