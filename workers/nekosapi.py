@@ -2,6 +2,11 @@ import os
 import asyncio
 from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir
 
+# API rating codes -> canonical gallery ratings (API words differ from the
+# gallery's safe/sensitive/questionable/explicit: suggestive, borderline)
+NEKOSAPI_RATING_CANON = {"safe": "safe", "suggestive": "sensitive",
+                         "borderline": "questionable", "explicit": "explicit"}
+
 class NekosApiWorker(BaseDownloader):
     def __init__(self, tags, amount, rating, net_config):
         super().__init__("nekosapi", "NekosAPI", amount, net_config)
@@ -30,10 +35,15 @@ class NekosApiWorker(BaseDownloader):
         self.api_base = "https://api.nekosapi.com/v4"
         safe_tag_folder = sanitize_path_component("_".join(self.tags), fallback="kemonomimi")
         self.tag_dir = os.path.join(self.site_root, safe_tag_folder)
-        folder_label = "_".join(self.rating_map[c] for c in codes) or "All Ratings"
-        safe_rating_label = sanitize_path_component(folder_label, fallback="Safe")
-        self.rating_dir = os.path.join(self.tag_dir, safe_rating_label)
-        safe_ensure_dir(self.rating_dir)
+        # per-image rating dirs: every file lands under its OWN API rating —
+        # an All Ratings (or multi-rating) run never piles mixed ratings into
+        # one folder, so the path itself always states the rating
+        self.rating_dirs = {c: sanitize_path_component(lbl, fallback="All Ratings")
+                            for c, lbl in self.rating_map.items()}
+        # images the API gives no rating to (only an All Ratings run lets them
+        # past the safety net) have nothing better to go by
+        self.fallback_dir = "All Ratings"
+        safe_ensure_dir(self.tag_dir)
 
     def _query_params(self, limit, offset):
         params = {"limit": limit, "offset": offset}
@@ -82,11 +92,13 @@ class NekosApiWorker(BaseDownloader):
                 if ext.lower() not in {"jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff"}:
                     ext = "jpg"
                 filename = sanitize_filename(f"{img_id}.{ext}", fallback=f"nekosapi_{img_id}.jpg")
-                filepath = os.path.join(self.rating_dir, filename)
+                folder = self.rating_dirs.get(img.get("rating")) or self.fallback_dir
+                filepath = os.path.join(self.tag_dir, folder, filename)
                 tag_list = self.tags + [t for t in img.get("tags", []) if t]
                 artist_name = img.get("artist_name")
                 artists = [artist_name] if artist_name else []
-                if await self.enqueue_download(url, filepath, filename, tag_list, artists):
+                if await self.enqueue_download(url, filepath, filename, tag_list, artists,
+                                               rating=NEKOSAPI_RATING_CANON.get(img.get("rating"))):
                     collected += 1
 
             if collected >= need or not images: break

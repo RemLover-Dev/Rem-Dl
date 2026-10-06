@@ -3966,6 +3966,10 @@ document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBl
 
 function getGalleryImageRating(img) {
     if (!img) return "safe";
+    // stored per-image rating wins — a mixed Safe_Sensitive_Questionable
+    // folder name would otherwise sniff as questionable for every file in it
+    const stored = (img.rating || "").toLowerCase();
+    if (["safe", "sensitive", "questionable", "explicit"].includes(stored)) return stored;
     let allTags = [];
     let tagsDict = normalizeTags(img.tags || {});
     TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });

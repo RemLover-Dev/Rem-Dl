@@ -68,7 +68,8 @@ class AnimeDlWorker(BaseDownloader):
             return False
         return any(n.replace("_", " ").strip().lower() in self._exclude_norm for n in tag_names)
 
-    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    # rating rides the base queue tuple (always None here) — arity must match
+    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if self.stop_event.is_set():
             self.enqueued_count -= 1
             return False

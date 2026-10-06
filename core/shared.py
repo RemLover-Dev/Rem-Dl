@@ -427,7 +427,7 @@ def recategorize_all():
     _recat_fp = fp  # cache state fully healed — later passes skip until it changes
     return changed_g, changed_h
 
-def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
     with _GALLERY_LOCK:
         gallery = _gallery_cached_locked()
         if filename in _gallery_cache["filenames"]:
@@ -443,13 +443,15 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             existing["tags"] = fresh
             if filepath:
                 existing["filepath"] = filepath
+            if rating:
+                existing["rating"] = rating
             _gallery_cache["dirty"] += 1
             if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
                 _write_gallery(gallery)
                 _gallery_cache["dirty"] = 0
             return
         tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-        gallery["images"].insert(0, {
+        record = {
             "id": hashlib.md5(f"{site}:{filename}".encode()).hexdigest()[:12],
             "filename": filename,
             "filepath": filepath,
@@ -457,7 +459,12 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             "tags": dict(tags_dict),
             "favourite": False,
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S")
-        })
+        }
+        # per-image rating only when the worker knows it — records without the
+        # field keep falling back to path/tag sniffing
+        if rating:
+            record["rating"] = rating
+        gallery["images"].insert(0, record)
         _gallery_cache["filenames"].add(filename)
         _gallery_cache["dirty"] += 1
         if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
@@ -1109,7 +1116,7 @@ class BaseDownloader:
             save_history(self.site_root, self.dl_history)
             self._history_dirty = 0
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if artists is None: artists = []
         
         # Defensive sanitization against prohibited filesystem characters in folders and filenames
@@ -1133,11 +1140,11 @@ class BaseDownloader:
             
         self.total_bytes += file_size
         self.queued_items.add(filename)
-        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes))
+        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating))
         self.enqueued_count += 1
         return True
 
-    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if self.stop_event.is_set():
             self.enqueued_count -= 1
             return False
@@ -1265,7 +1272,7 @@ class BaseDownloader:
                 # ponytail: metadata + gallery publish BEFORE the SUCCESS log — the log card
                 # requests its thumb instantly and would otherwise read a half-written file
                 await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
                 return True
 

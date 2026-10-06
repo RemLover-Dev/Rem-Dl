@@ -1542,8 +1542,17 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             # ponytail: rule34 is all-explicit with no rating in path or tags
             if site == "rule34" and "explicit" in rating_filters:
                 return True
+            # per-image rating stored at download beats sniffing: nekosapi
+            # lumps multi-rating runs into one Safe_Sensitive_Questionable
+            # folder whose name substring-matches every alias
+            stored = str(img.get("rating") or "").strip().lower()
+            if stored in ("safe", "sensitive", "questionable", "explicit"):
+                return stored in rating_filters
             # lowered once per image — the nested rating loops reuse these
             fpl = img.get("filepath", "").lower()
+            # whole path segments only: ".../Safe_Sensitive_Questionable/..."
+            # must not count as Safe (nor Sensitive, nor Questionable)
+            fpl_segs = frozenset(seg for seg in fpl.split("/") if seg)
             all_tags_l = [t.lower() for t in _get_all_tags(img)]
             # Safe-only / SFW imageboards and sources:
             is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
@@ -1557,7 +1566,7 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
                 if rf not in supported:
                     continue
                 for p in rating_aliases.get(rf, [rf]):
-                    if any(p in t for t in all_tags_l) or p in fpl:
+                    if any(p in t for t in all_tags_l) or p in fpl_segs:
                         return True
             return False
         images = [i for i in images if matches_any_rating(i)]
@@ -2501,16 +2510,17 @@ def _dispatch_worker(data):
     if tag:
         try:
             # remember the search's filter controls so history jumps can restore them
-            filters = {k: data.get(k) for k in ("nsfw", "method", "sort_type", "sort_order", "exclusions") if k in data}
+            filters = {k: data.get(k) for k in ("nsfw", "rating", "method", "sort_type", "sort_order", "exclusions") if k in data}
             if "hide_pools" in net_config:
                 filters["hide_pools"] = net_config["hide_pools"]
             DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "",
                                             bool(data.get("exclude_ai", False)), filters)
             # Learn searched tags into local smart cache
             for single_tag in tag.replace(",", " ").split():
-                # AI exclusion markers are search syntax, not tags
-                if len(single_tag.strip()) >= 2 and single_tag.strip() not in ("-ai_generated", "-ai-created"):
-                    DatabaseManager.add_learned_tag(worker, single_tag.strip())
+                # exclusion syntax (-tag) and AI markers are search syntax, not tags
+                s = single_tag.strip()
+                if len(s) >= 2 and not s.startswith("-"):
+                    DatabaseManager.add_learned_tag(worker, s)
         except Exception as e:
             print("History Save Error:", e)
 
