@@ -773,9 +773,30 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-dropdown-btn { background: #0a0e17; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25); border-radius: 6px; color: #e0e0e0; padding: 6px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .gallery-dropdown-menu { display: none; position: absolute; top: 100%; left: 0; z-index: 100; background: #141824; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25); border-radius: 6px; padding: 4px 0; margin-top: 4px; white-space: nowrap; max-height: 380px; overflow-y: auto; scrollbar-width: thin; }
 .gallery-dropdown-menu.open { display: block; }
+/* nekosapi's whole ~50-tag vocabulary spreads across the row's horizontal
+   space as columns instead of one tall scrolling list */
+.gallery-dropdown-menu.dd-cols { width: 100%; }
+.gallery-dropdown-menu.dd-cols.open { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); column-gap: 8px; }
+/* the menu's nowrap lets a long tag blow past its 1fr track — that overlap
+   also shoved the checkbox off the cell's right edge; let the text wrap and
+   pin min-width:0 so the checkbox stays flush at the end of its cell */
+.gallery-dropdown-menu.dd-cols .dd-item { min-width: 0; white-space: normal; }
+.gallery-dropdown-menu.dd-cols .dd-item span { min-width: 0; overflow-wrap: anywhere; }
 .gallery-dropdown-menu .dd-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: #ccc; cursor: pointer; user-select: none; }
 .gallery-dropdown-menu .dd-item:hover { background: rgba(45, 212, 191, 0.12); color: #fff; }
 .gallery-dropdown-menu .dd-item input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; accent-color: #2dd4bf; }
+/* excluded waifu tag: the X lives INSIDE the checkbox, which turns red —
+   the row text stays normal so the list doesn't read as one red block */
+.gallery-dropdown-menu .dd-item.dd-excl input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    border: none;
+    border-radius: 3px;
+    background-color: #f87171;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.5 3.5l5 5M8.5 3.5l-5 5' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-size: 11px 11px;
+    background-position: center;
+    background-repeat: no-repeat;
+}
 
 .gallery-fav-btn { display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px #e040a0; border-radius: 20px; color: #e040a0; padding: 6px 14px; font-size: 13px; cursor: pointer; transition: 0.15s; line-height: 1; }
 .gallery-fav-btn.active { background: #e040a0; color: #fff; }

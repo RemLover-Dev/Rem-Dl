@@ -776,6 +776,80 @@ function renderGelbooruTags() {
         return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
     }).join('');
 }
+let currentWaifuTags = []; // tokens: 'tag' = include, '-tag' = exclude
+let waifuTagList = [];
+
+function renderWaifuTagDropdown() {
+    let menu = document.getElementById("waifuTagDropdown");
+    if (!menu) return;
+    menu.innerHTML = waifuTagList.map(function(t) {
+        let exc = currentWaifuTags.includes('-' + t);
+        let inc = currentWaifuTags.includes(t);
+        return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="waifuTagToggle(this, 0)" oncontextmenu="return waifuTagToggle(this, 1)"><span>' + cleanTagDisplay(t) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
+    }).join('');
+}
+
+// left: neutral→include, include→clear, exclude→include; right: the exclude side.
+// mutates the row in place — an innerHTML rebuild would detach the click target
+// and the document's outside-click closer would fold the open menu
+function waifuTagToggle(el, isRight) {
+    let tag = el.dataset.tag;
+    let next = isRight
+        ? (currentWaifuTags.includes('-' + tag) ? null : '-' + tag)
+        : (currentWaifuTags.includes(tag) ? null : tag);
+    currentWaifuTags = currentWaifuTags.filter(function(t) { return t !== tag && t !== '-' + tag; });
+    if (next) currentWaifuTags.push(next);
+    const exc = !!next && next[0] === '-';
+    el.classList.toggle('dd-excl', exc);
+    el.querySelector('input').checked = !!next && !exc;
+    let hidden = document.getElementById("waifuTag");
+    if (hidden) hidden.value = currentWaifuTags.join(" ");
+    return false;
+}
+
+function syncWaifuTags() {
+    let hidden = document.getElementById("waifuTag");
+    if (hidden) hidden.value = currentWaifuTags.join(" ");
+    renderWaifuTagDropdown();
+}
+
+// --- NekosAPI tag dropdown (flat ~50-tag vocabulary, laid out in columns) ---
+let currentNekosapiTags = []; // tokens: 'tag' = include, '-tag' = exclude
+let nekosapiTagList = [];
+
+function renderNekosapiTagDropdown() {
+    let menu = document.getElementById("nekosapiTagDropdown");
+    if (!menu) return;
+    menu.innerHTML = nekosapiTagList.map(function(t) {
+        let exc = currentNekosapiTags.includes('-' + t);
+        let inc = currentNekosapiTags.includes(t);
+        return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="nekosapiTagToggle(this, 0)" oncontextmenu="return nekosapiTagToggle(this, 1)"><span>' + cleanTagDisplay(t) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
+    }).join('');
+}
+
+// same cycle as waifuTagToggle; mutates the row in place — an innerHTML
+// rebuild would detach the click target and the outside-click closer
+// would fold the open menu
+function nekosapiTagToggle(el, isRight) {
+    let tag = el.dataset.tag;
+    let next = isRight
+        ? (currentNekosapiTags.includes('-' + tag) ? null : '-' + tag)
+        : (currentNekosapiTags.includes(tag) ? null : tag);
+    currentNekosapiTags = currentNekosapiTags.filter(function(t) { return t !== tag && t !== '-' + tag; });
+    if (next) currentNekosapiTags.push(next);
+    const exc = !!next && next[0] === '-';
+    el.classList.toggle('dd-excl', exc);
+    el.querySelector('input').checked = !!next && !exc;
+    let hidden = document.getElementById("nekosapiTag");
+    if (hidden) hidden.value = currentNekosapiTags.join(" ");
+    return false;
+}
+
+function syncNekosapiTags() {
+    let hidden = document.getElementById("nekosapiTag");
+    if (hidden) hidden.value = currentNekosapiTags.join(" ");
+    renderNekosapiTagDropdown();
+}
 
 // --- Gelbooru tag watcher (chips mirror the downloader; ratings reuse the shared dropdown machinery) ---
 let watcherTags = [];
@@ -2166,7 +2240,6 @@ function danTagForRequest(inputId) {
 
 document.addEventListener("DOMContentLoaded", function() {
     enhanceAllSelects();
-    setupAutosuggest("nekosapiTag", "nekosapiAutosuggest", "/api/tags/nekosapi", cleanTagDisplay);
     setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay);
     setupAutosuggest("gelbooruTag", "gelbooruAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
     setupAutosuggest("watcherTag", "watcherAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
@@ -2178,8 +2251,8 @@ document.addEventListener("DOMContentLoaded", function() {
 
 
     document.addEventListener("click", function(e) {
-        let dropdowns = ["eshuushuuAutosuggest", "nekosapiAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "watcherAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
-        let inputs = ["eshuushuuTag", "nekosapiTag", "nekosiaTag", "gelbooruTag", "watcherTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
+        let dropdowns = ["eshuushuuAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "watcherAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
+        let inputs = ["eshuushuuTag", "nekosiaTag", "gelbooruTag", "watcherTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
         for (let i = 0; i < dropdowns.length; i++) {
             let dp = document.getElementById(dropdowns[i]);
             let inp = document.getElementById(inputs[i]);
@@ -2522,14 +2595,17 @@ window.onload = async function () {
         let resp = await fetch("/api/tags/waifu", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig)
         });
-        let waifuTags = await resp.json();
-        let sel = document.getElementById("waifuTag");
-        sel.innerHTML = "";
-        waifuTags.forEach(t => {
-            let opt = document.createElement("option");
-            opt.value = t; opt.textContent = cleanTagDisplay(t); sel.appendChild(opt);
-        });
+        waifuTagList = await resp.json();
+        renderWaifuTagDropdown();
     } catch (e) { console.error("waifu tags load failed:", e); }
+
+    try {
+        let resp = await fetch("/api/tags/nekosapi", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig)
+        });
+        nekosapiTagList = await resp.json();
+        renderNekosapiTagDropdown();
+    } catch (e) { console.error("nekosapi tags load failed:", e); }
 
     await _startupTail;
     const gBlurBtn = document.getElementById("galleryBlurBtn");
@@ -2956,7 +3032,7 @@ function buildWorkerPayload(workerName) {
     payload.net_config.anti_ban_pause = document.getElementById("antiBanPause").value;
 
     if (workerName === 'zero') { payload.tag = currentZerochanTags.join(','); payload.limit = document.getElementById('zeroLimit').value; }
-    else if (workerName === 'waifu') { payload.tag = document.getElementById('waifuTag').value; payload.limit = document.getElementById('waifuLimit').value; payload.nsfw = document.getElementById('waifuNsfw').checked; }
+    else if (workerName === 'waifu') { payload.tag = currentWaifuTags.join(' '); payload.limit = document.getElementById('waifuLimit').value; payload.rating = document.getElementById('waifuRating').value; }
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
     else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; const mixed = ["goose", "wallpaper", "lizard", "span"]; if (mixed.includes(payload.category)) payload.format = document.getElementById('nekosLifeFormat').value; }
     else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
@@ -2992,7 +3068,8 @@ function buildWorkerPayload(workerName) {
         payload.limit = document.getElementById('eshuushuuLimit').value;
     }
     else if (workerName === 'nekosapi') {
-        payload.tag = danTagForRequest('nekosapiTag');
+        // the nekosapi worker splits on commas, not spaces
+        payload.tag = currentNekosapiTags.join(',');
         payload.limit = document.getElementById('nekosapiLimit').value;
         payload.rating = document.getElementById('nekosapiRating').value;
     }
@@ -3004,7 +3081,7 @@ function buildWorkerPayload(workerName) {
 
     // ponytail: don't fire a worker with no query — it scans nothing and
     // the empty limit box (now possible) already defaults server-side
-    const TAG_REQUIRED = ['zero', 'waifu', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia'];
+    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia'];
     if (TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
         logToConsole(workerName, "Error: tag is empty — nothing to search");
@@ -3025,6 +3102,8 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
     if (workerName === 'gelbooru') { currentGelbooruTags = []; gelbooruSubTags.clear(); renderGelbooruTags(); document.getElementById('gelbooruTag').value = ''; }
+    if (workerName === 'waifu') { currentWaifuTags = []; syncWaifuTags(); }
+    if (workerName === 'nekosapi') { currentNekosapiTags = []; syncNekosapiTags(); }
     if (workerName === 'eshuushuu') { currentEshuushuuTags = []; eshuushuuSubTags.clear(); renderEshuushuuTags(); document.getElementById('eshuushuuTag').value = ''; }
     if (workerName === 'gsbooru') { currentGsbooruTags = []; gsbooruSubTags.clear(); renderGsbooruTags(); document.getElementById('gsbooruTag').value = ''; }
     if (workerName === 'kona') { currentKonaTags = []; konaSubTags.clear(); renderKonaTags(); document.getElementById('konaTag').value = ''; }
@@ -3659,6 +3738,13 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
         }
         const pixExAI = document.getElementById('pixiv-exclude-ai');
         if (pixExAI) pixExAI.checked = excludeAI === true;
+    } else if (site === "waifu") {
+        currentWaifuTags = String(tag || "").split(/\s+/).filter(Boolean);
+        syncWaifuTags();
+    } else if (site === "nekosapi") {
+        // legacy history entries were free text ("catgirl yuri" / "catgirl, yuri")
+        currentNekosapiTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
+        syncNekosapiTags();
     }
     let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
@@ -3667,7 +3753,17 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
     if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
-    if ("nsfw" in f) { const el = document.getElementById("waifuNsfw"); if (el) el.checked = !!f.nsfw; }
+    if (site === "waifu") {
+        // new history stores rating (""/safe/nsfw); old entries carry the nsfw bool
+        const wr = document.getElementById("waifuRating");
+        if (wr) {
+            if ("rating" in f) wr.value = f.rating || "";
+            else if ("nsfw" in f) wr.value = f.nsfw ? "" : "safe";
+            else if (rating) wr.value = rating;
+            // the pair listener redraws the dropdown checkboxes + button label
+            wr.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+    }
     if ("hide_pools" in f) { const el = document.getElementById("sankakuHideBooks"); if (el) el.checked = !!f.hide_pools; }
     if (f.method) setSelectValue(document.getElementById("rule34Method"), f.method);
     if (f.sort_type) setSelectValue(document.getElementById("rule34SortType"), f.sort_type);
@@ -3964,6 +4060,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
     else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
     else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
+    else if (menu.id === 'waifuRatingDropdown') onWaifuRatingChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -3991,11 +4088,12 @@ function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaR
 function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
 function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
 function onSankakuRatingChange() { onMultiRatingChange('sankakuRatingDropdown', 'sankakuRating'); }
+function onWaifuRatingChange() { onMultiRatingChange('waifuRatingDropdown', 'waifuRating'); }
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown']].forEach(function (pair) {
+    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown'], ['waifuRating', 'waifuRatingDropdown']].forEach(function (pair) {
         const hidden = document.getElementById(pair[0]);
         if (!hidden) return;
         hidden.addEventListener('change', function () {
