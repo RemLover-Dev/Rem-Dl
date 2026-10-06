@@ -5115,7 +5115,7 @@ function showViewerImage() {
         video.src = fullSrc;
         const ctrls = document.createElement('div');
         ctrls.className = 'gallery-video-ctrls';
-        ctrls.innerHTML = `<button class="gv-play-btn">&#9654;</button><div class="gv-progress-wrap"><div class="gv-progress"><div class="gv-progress-fill"></div><div class="gv-progress-thumb"></div></div></div><span class="gv-time">0:00 / 0:00</span><button class="gv-vol-btn">&#9835;</button><input type="range" class="gv-vol-slider" min="0" max="1" step="0.05" value="1"><button class="gv-fs-btn">&#x26F6;</button>`;
+        ctrls.innerHTML = `<button class="gv-play-btn" title="Play/Pause (Space)">&#9654;</button><div class="gv-progress-wrap" title="Seek"><div class="gv-progress"><div class="gv-progress-fill"></div><div class="gv-progress-thumb"></div></div></div><span class="gv-time">0:00 / 0:00</span><button class="gv-vol-btn" title="Mute (click)">&#9835;</button><input type="range" class="gv-vol-slider" min="0" max="1" step="0.05" value="1" title="Volume">`;
         wrap.append(video, ctrls);
         viewer.insertBefore(wrap, viewerImg.nextSibling);
         const playBtn = ctrls.querySelector('.gv-play-btn');
@@ -5125,22 +5125,87 @@ function showViewerImage() {
         const timeEl = ctrls.querySelector('.gv-time');
         const volBtn = ctrls.querySelector('.gv-vol-btn');
         const volSlider = ctrls.querySelector('.gv-vol-slider');
-        function fmt(t) { const m = Math.floor(t/60); const s = Math.floor(t%60); return m+':'+(s<10?'0':'')+s; }
+        function fmt(t) { if (!isFinite(t) || t < 0) t = 0; const m = Math.floor(t/60); const s = Math.floor(t%60); return m+':'+(s<10?'0':'')+s; }
         video.addEventListener('loadedmetadata', () => { timeEl.textContent = '0:00 / '+fmt(video.duration); });
         video.addEventListener('timeupdate', () => { const pct = video.duration ? (video.currentTime/video.duration*100) : 0; progressFill.style.width = pct+'%'; progressThumb.style.left = pct+'%'; timeEl.textContent = fmt(video.currentTime)+' / '+fmt(video.duration); });
-        function togglePlay() { if (video.paused) { video.play(); playBtn.innerHTML='&#9646;&#9646;'; } else { video.pause(); playBtn.innerHTML='&#9654;'; } }
+        function togglePlay() { if (video.paused || video.ended) video.play(); else video.pause(); }
+        // icon follows the element state (play/pause events), not a manual write
+        function syncPlayIcon() { playBtn.innerHTML = (video.paused || video.ended) ? '&#9654;' : '&#9646;&#9646;'; }
         playBtn.onclick = togglePlay;
-        video.onclick = togglePlay;
-        video.addEventListener('play', () => playBtn.innerHTML='&#9646;&#9646;');
-        video.addEventListener('pause', () => playBtn.innerHTML='&#9654;');
-        progressWrap.onclick = (e) => { const r = progressWrap.getBoundingClientRect(); video.currentTime = ((e.clientX-r.left)/r.width)*video.duration; };
-        volSlider.oninput = () => { video.volume = volSlider.value; volBtn.textContent = volSlider.value=='0'?'X':volSlider.value<0.5?'♪':'♫'; };
-        video.addEventListener('volumechange', () => { volSlider.value = video.volume; });
-        video.addEventListener('ended', () => playBtn.innerHTML='&#9654;');
-        const fsBtn = ctrls.querySelector('.gv-fs-btn');
-        fsBtn.onclick = (e) => { e.stopPropagation(); if (!document.fullscreenElement && !document.webkitFullscreenElement) { if (video.requestFullscreen) video.requestFullscreen(); else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen(); } else { if (document.exitFullscreen) document.exitFullscreen(); else if (document.webkitExitFullscreen) document.webkitExitFullscreen(); } };
-        function fsIcon() { fsBtn.innerHTML = (document.fullscreenElement || document.webkitFullscreenElement) ? '&#x2715;' : '&#x26F6;'; }
-        _setFsIconHandler(fsIcon);
+        video.onclick = () => { togglePlay(); showCtrls(); };
+        video.addEventListener('play', syncPlayIcon);
+        video.addEventListener('pause', syncPlayIcon);
+        video.addEventListener('ended', syncPlayIcon);
+        // control bar: wakes on mouse activity, hides after 2.5s only while playing
+        let gvHideTimer = null;
+        function showCtrls() {
+            ctrls.classList.add('gv-show');
+            clearTimeout(gvHideTimer);
+            if (!video.paused && !video.ended) gvHideTimer = setTimeout(() => ctrls.classList.remove('gv-show'), 2500);
+        }
+        wrap.addEventListener('mousemove', showCtrls);
+        video.addEventListener('play', showCtrls);
+        video.addEventListener('pause', () => { clearTimeout(gvHideTimer); ctrls.classList.add('gv-show'); });
+        showCtrls();
+        // seek: WebKit blanks the video element while it fetches/decodes the
+        // jumped-to frame — hold a snapshot of the last good frame over it and
+        // only swap once the new frame is actually presented
+        let gvSnap = null, gvSeekId = 0;
+        function gvHoldOff() {
+            if (gvSnap) gvSnap.classList.remove('gv-hold');
+            video.style.visibility = '';
+        }
+        function seekTo(frac) {
+            if (!isFinite(video.duration) || video.duration <= 0) return;
+            frac = Math.min(1, Math.max(0, frac));
+            gvSeekId++;
+            const id = gvSeekId;
+            try {
+                if (!gvSnap) {
+                    gvSnap = document.createElement('canvas');
+                    gvSnap.className = 'gv-snapshot';
+                    wrap.appendChild(gvSnap);
+                }
+                if (video.videoWidth > 0) {
+                    gvSnap.width = video.videoWidth;
+                    gvSnap.height = video.videoHeight;
+                    const gctx = gvSnap.getContext('2d');
+                    gctx.drawImage(video, 0, 0);
+                    // force the draw to materialize before the video blanks
+                    gctx.getImageData(0, 0, 1, 1);
+                    const r = video.getBoundingClientRect();
+                    gvSnap.style.left = r.left + 'px';
+                    gvSnap.style.top = r.top + 'px';
+                    gvSnap.style.width = r.width + 'px';
+                    gvSnap.style.height = r.height + 'px';
+                    gvSnap.classList.add('gv-hold');
+                    // hide the video layer itself: a composited media layer
+                    // can paint above page content regardless of z-index
+                    video.style.visibility = 'hidden';
+                }
+            } catch (e) { /* no decodable frame to hold — just seek */ }
+            const onSeeked = () => {
+                video.removeEventListener('seeked', onSeeked);
+                if (id !== gvSeekId) return; // superseded by a newer jump
+                const release = () => { if (id === gvSeekId) gvHoldOff(); };
+                // seeked = data ready; wait until the new frame is actually
+                // presented, else the overlay drops one frame too early
+                if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(() => requestAnimationFrame(release));
+                else requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(release)));
+                // bounded: never strand a hidden video if rVFC goes silent
+                setTimeout(release, 1000);
+            };
+            video.addEventListener('seeked', onSeeked);
+            video.currentTime = frac * video.duration;
+        }
+        // playback flowing = real frames on screen — never strand the overlay
+        video.addEventListener('play', () => { if (!video.seeking) gvHoldOff(); });
+        progressWrap.onclick = (e) => { const r = progressWrap.getBoundingClientRect(); seekTo((e.clientX - r.left) / r.width); };
+        function syncVolIcon() { volBtn.textContent = (video.muted || video.volume == 0) ? 'X' : video.volume < 0.5 ? '♪' : '♫'; }
+        volBtn.onclick = () => { video.muted = !video.muted; };
+        volSlider.oninput = () => { video.muted = false; video.volume = Number(volSlider.value); };
+        video.addEventListener('volumechange', () => { volSlider.value = video.volume; syncVolIcon(); });
+        syncVolIcon();
         video.play();
     } else if (fullSrc) { loadViewerRaster(fullSrc, img.filename); }
     else { clearViewerResource(); viewerImg.style.display = ''; }
@@ -5156,22 +5221,7 @@ function showViewerImage() {
     updateViewerNav();
     prefetchViewerNeighbors();
 }
-// one fullscreenchange listener at a time: fsIcon is a fresh closure per
-// video shown, so plain addEventListener leaked one listener per image view
-let _fsIconHandler = null;
-function _setFsIconHandler(fn) {
-    if (_fsIconHandler) {
-        document.removeEventListener('fullscreenchange', _fsIconHandler);
-        document.removeEventListener('webkitfullscreenchange', _fsIconHandler);
-        _fsIconHandler = null;
-    }
-    if (fn) {
-        _fsIconHandler = fn;
-        document.addEventListener('fullscreenchange', fn);
-        document.addEventListener('webkitfullscreenchange', fn);
-    }
-}
-function closeGalleryViewer() { _setFsIconHandler(null); clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function closeGalleryViewer() { clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
 function updateViewerNav() {
     // boundary buttons: no prev on the first image, no next on the last one
     const v = document.getElementById("galleryViewer");
@@ -5442,6 +5492,15 @@ function toggleViewerFav() {
             // f toggles focus mode (same as the 👁 button); skip when typing
             viewer.classList.toggle("focus");
             syncFocusCursor();
+        }
+        else if (e.key === ' ') {
+            // space = play/pause when a video is showing; a focused button
+            // already owns Space natively (its click would double-toggle)
+            if (e.target && e.target.closest && e.target.closest('button')) return;
+            const v = document.getElementById('galleryViewerVideo');
+            if (!v) return;
+            e.preventDefault();
+            if (v.paused || v.ended) v.play(); else v.pause();
         }
         else if (e.key === 'ArrowLeft') viewerNav(-1);
         else if (e.key === 'ArrowRight') viewerNav(1);
