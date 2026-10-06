@@ -136,13 +136,17 @@ function heartIcon(filled) {
 function renderCategorizedTags(tagsInput, clickable) {
     let tagsDict = normalizeTags(tagsInput);
     let html = '';
+    const seenTags = new Set();
     TAG_CATEGORIES.forEach(cat => {
         if (cat === "artist") return;
         let tags = tagsDict[cat] || [];
         tags.forEach(t => {
+            let display = cleanTagDisplay(t);
+            const dedupeKey = display.toLowerCase();
+            if (seenTags.has(dedupeKey)) return;
+            seenTags.add(dedupeKey);
             let cls = getTagCategoryClass(cat);
             let safeT = escJs(t);
-            let display = cleanTagDisplay(t);
             if (clickable) {
                 html += `<span class="g-tag-pill ${cls}" onclick="document.getElementById('gallerySearch').value='${safeT}'; loadGallery(1); closeGalleryViewer();">${display}</span>`;
             } else {
