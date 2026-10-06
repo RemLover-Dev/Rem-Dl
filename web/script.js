@@ -5028,7 +5028,14 @@ function viewerMetaHtml(img, tagsClickable) {
     } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:g')) {
         ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Safe</span>`;
     }
-    let siteBadge = `<span style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${siteLabel(img.site)}</span>`;
+    let _srcLabels = (Array.isArray(img.sources) && img.sources.length ? img.sources : [img.site])
+        .filter(Boolean).map(siteLabel);
+    let siteBadge;
+    if (_srcLabels.length > 1) {
+        siteBadge = `<span data-collapsed="${_srcLabels.length} sources" data-list="${escJs(_srcLabels.join(', '))}" data-open="0" onclick="toggleSourceBox(this)" title="Click to show all sources" style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase; cursor: pointer;">${_srcLabels.length} sources</span>`;
+    } else {
+        siteBadge = `<span style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${_srcLabels[0] || siteLabel(img.site)}</span>`;
+    }
     let artistName = (img.tags?.artist || [])[0] || "";
     let artistHtml = artistName ? `<span onclick="document.getElementById('gallerySearch').value='${escJs(artistName)}'; loadGallery(1); closeGalleryViewer();" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
 
@@ -5039,6 +5046,11 @@ function viewerMetaHtml(img, tagsClickable) {
     </div>
     <div class="g-meta-tags">${tagsHtml}</div>
     `;
+}
+function toggleSourceBox(el) {
+    const open = el.dataset.open === "1";
+    el.textContent = open ? el.dataset.collapsed : el.dataset.list;
+    el.dataset.open = open ? "0" : "1";
 }
 function showViewerImage() {
     const viewer = document.getElementById("galleryViewer");

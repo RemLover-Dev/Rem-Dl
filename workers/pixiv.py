@@ -30,7 +30,7 @@ import requests
 
 from core.shared import (
     BaseDownloader, save_history, add_to_gallery, send_tags,
-    check_duplicate, MASTER_FOLDER, sanitize_path_component,
+    check_duplicate, absorb_duplicate, MASTER_FOLDER, sanitize_path_component,
     sanitize_filename, safe_ensure_dir, pace_session
 )
 from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
@@ -424,6 +424,7 @@ class PixivWorker(BaseDownloader):
                     pass
                 self.duplicate_count += 1
                 self._remember_filename(gif_name)
+                await asyncio.to_thread(absorb_duplicate, dup, self.name, tags, artists)
                 return False
 
             self.downloaded_count += 1

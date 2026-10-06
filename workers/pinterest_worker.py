@@ -254,6 +254,11 @@ class PinterestWorker(BaseWorker):
                 path = await asyncio.to_thread(downloader.download, media, Path(self.site_root), download_streams=True)
                 filename = os.path.basename(path)
 
+                # media.alt is the pin's written description — an explanation,
+                # not tags. Record what was searched for instead.
+                tags = [self.url_or_query] if self.is_search else []
+                artists = []
+
                 # persistent perceptual-hash dedup (see core/shared.py)
                 dup = await asyncio.to_thread(shared.check_duplicate, str(path), self.name, getattr(media, "id", None))
                 if dup is not None and dup.is_duplicate:
@@ -263,13 +268,10 @@ class PinterestWorker(BaseWorker):
                         pass
                     self.duplicate_count += 1
                     self._remember_filename(filename)
+                    await asyncio.to_thread(shared.absorb_duplicate, dup, self.name, tags, artists)
                     continue
 
                 rel = os.path.relpath(str(path), shared.MASTER_FOLDER)
-                # media.alt is the pin's written description — an explanation,
-                # not tags. Record what was searched for instead.
-                tags = [self.url_or_query] if self.is_search else []
-                artists = []
                 await asyncio.to_thread(shared.add_to_gallery, self.name, filename, rel, tags, artists)
                 await asyncio.to_thread(shared.send_tags, self.name, filename, tags, artists, rel)
                 self._remember_filename(filename)

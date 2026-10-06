@@ -471,6 +471,60 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             _write_gallery(gallery)
             _gallery_cache["dirty"] = 0
 
+
+def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=None,
+                     metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    """A phash kill deletes the duplicate's file — carry what it carried:
+    union its tags into the original's gallery record and append its site
+    to the record's `sources` list (viewer shows "N sources", click to expand)."""
+    if dup is None or not getattr(dup, "is_duplicate", False) or not getattr(dup, "matched_path", None):
+        return False
+    try:
+        with _GALLERY_LOCK:
+            gallery = _gallery_cached_locked()
+            target = os.path.normpath(str(dup.matched_path))
+            rec = None
+            for i in gallery["images"]:
+                fp = i.get("filepath") or ""
+                if fp and os.path.normpath(os.path.join(MASTER_FOLDER, fp)) == target:
+                    rec = i
+                    break
+            if rec is None:
+                base = os.path.basename(target)
+                rec = next((i for i in gallery["images"] if i.get("filename") == base), None)
+            if rec is None:
+                return False
+            changed = False
+            fresh = tags_dict_from_lists(tags_list, artists, characters,
+                                         copyrights, metadata_tags, outfits,
+                                         groups, hair, eyes)
+            tags = rec.setdefault("tags", {})
+            for bucket, vals in fresh.items():
+                have = tags.setdefault(bucket, [])
+                for v in vals:
+                    if v and v not in have:
+                        have.append(v)
+                        changed = True
+            sources = rec.get("sources")
+            if not sources:
+                first = normalize_site(rec.get("site") or "")
+                rec["sources"] = [first] if first else []
+                changed = True
+                sources = rec["sources"]
+            ns = normalize_site(site or "")
+            if ns and ns not in sources:
+                sources.append(ns)
+                changed = True
+            if changed:
+                _gallery_cache["dirty"] += 1
+                if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
+                    _write_gallery(gallery)
+                    _gallery_cache["dirty"] = 0
+            return True
+    except Exception as e:
+        print(f"[DEDUP] absorb failed for {getattr(dup, 'matched_path', '?')}: {e}")
+        return False
+
 # --- container-level metadata helpers (byte injection, never re-encode) ---
 def _riff_chunks(data):
     """[(fourcc, start, end)] over a RIFF file; None when truncated."""
@@ -1240,6 +1294,9 @@ class BaseDownloader:
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
                     await asyncio.to_thread(self._remember_filename, filename)
+                    await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
+                                            artists, characters, copyrights, metadata_tags,
+                                            outfits, groups, hair, eyes)
                     return False
 
                 self.downloaded_count += 1

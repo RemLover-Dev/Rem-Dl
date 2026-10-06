@@ -6,6 +6,7 @@ from curl_cffi import requests as curl_requests
 from core.shared import (
     BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
     write_image_metadata, save_history, build_tagd, check_duplicate,
+    absorb_duplicate,
     sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_wait
 )
 
@@ -113,6 +114,9 @@ class AnimeDlWorker(BaseDownloader):
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
                     self._remember_filename(filename)
+                    await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
+                                            artists, characters, copyrights,
+                                            metadata_tags, outfits, groups, hair, eyes)
                     return False
 
                 self.downloaded_count += 1
