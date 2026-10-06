@@ -206,7 +206,9 @@ class TestWorkerFolderBuildingWithProhibitedChars:
     def test_nekosapi_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         w = NekosApiWorker("re:zero,neko:tail", 10, "safe", self.NET_CONFIG)
-        assert os.path.isdir(w.rating_dir)
+        # rating dirs are created per image at enqueue; tag_dir is the
+        # sanitized-at-init piece
+        assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel
 
@@ -219,7 +221,7 @@ class TestWorkerFolderBuildingWithProhibitedChars:
 
     def test_waifu_im_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
-        w = WaifuImWorker("re:zero", 10, False, self.NET_CONFIG)
+        w = WaifuImWorker("re:zero", 10, "", [], self.NET_CONFIG)
         assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel

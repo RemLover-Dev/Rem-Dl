@@ -810,22 +810,83 @@ def pixiv_exchange_cookie():
         print("Pixiv auth error:", e)
         return jsonify({"success": False, "error": f"pixiv auth failed: {e}"}), 500
 
-@app.route("/api/tags/waifu", methods=["POST"])
-def get_waifu_tags():
-    net_config = request.json
-    # ponytail: live list first (slugs, only tags with images), stale tags.json as offline fallback
+WAIFU_TAGS_TTL = 7 * 86400  # ponytail: tags change slowly — live pull at most weekly
+
+
+def _waifu_tag_cache():
+    """(tags, fresh) from database/waifu.im_tags.json. Fresh = within TTL and
+    live-shaped — the bundled seed file has no imageCount and must refresh once."""
+    import json as _json
+    path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            tags = _json.load(f)
+        if not isinstance(tags, list) or not tags:
+            return [], False
+        fresh = ((time.time() - os.path.getmtime(path)) < WAIFU_TAGS_TTL
+                 and any(isinstance(t, dict) and "imageCount" in t for t in tags))
+        return tags, fresh
+    except Exception:
+        return [], False
+
+
+def _save_waifu_tag_cache(tags):
+    import json as _json
+    path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(tags, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+_waifu_refreshing = False  # single-flight: one background refresh at a time
+
+
+def _refresh_waifu_tags(net_config):
+    global WAIFU_TAGS_DB, WAIFU_TAG_MAP, _waifu_refreshing
+    _waifu_refreshing = True
     try:
         session = get_session("waifu", net_config)
         resp = session.get("https://api.waifu.im/tags", timeout=10)
         items = resp.json().get("items", [])
-        live = sorted({t["slug"] for t in items if t.get("slug") and t.get("imageCount", 0) > 0})
+        live = [t for t in items if t.get("slug") and t.get("imageCount", 0) > 0]
         if live:
-            return jsonify(live)
+            cached, _ = _waifu_tag_cache()
+            by_slug = {t.get("slug"): t for t in cached if isinstance(t, dict)}
+            for t in live:
+                by_slug[t["slug"]] = t
+            merged = list(by_slug.values())
+            _save_waifu_tag_cache(merged)
+            WAIFU_TAGS_DB = merged
+            WAIFU_TAG_MAP = {t["name"].lower(): t["slug"] for t in merged if t.get("name")}
+            shared.WAIFU_TAG_MAP = WAIFU_TAG_MAP
     except Exception:
         pass
-    if WAIFU_TAGS_DB:
-        return jsonify([t["name"] for t in WAIFU_TAGS_DB])
-    return jsonify(['ass', 'ecchi', 'ero', 'genshin-impact', 'hentai', 'kamisato-ayaka', 'maid', 'marin-kitagawa', 'milf', 'mori-calliope', 'nami', 'one-piece', 'oppai', 'oral', 'paizuri', 'raiden-shogun', 'rem', 'selfies', 'uniform', 'waifu'])
+    finally:
+        _waifu_refreshing = False
+
+
+@app.route("/api/tags/waifu", methods=["POST"])
+def get_waifu_tags():
+    # startup body was the net_config itself; autosuggest sends {query, net_config}
+    data = request.json or {}
+    net_config = data.get("net_config", data)
+    query = (data.get("query", "") or "").strip().lower()
+
+    cached, fresh = _waifu_tag_cache()
+    if not fresh and not _waifu_refreshing:
+        # stale/missing: answer from disk NOW and refresh in the background —
+        # a blocking live pull here held the tag dropdown empty for ~10s
+        # (timeout) on every app start. cached entries are never dropped,
+        # only slugs the API newly reports get appended
+        threading.Thread(target=_refresh_waifu_tags, args=(net_config,), daemon=True).start()
+    slugs = [t.get("slug") for t in cached if isinstance(t, dict) and t.get("slug")]
+    if not slugs:
+        slugs = ['ass', 'ecchi', 'ero', 'genshin-impact', 'hentai', 'kamisato-ayaka', 'maid', 'marin-kitagawa', 'milf', 'mori-calliope', 'nami', 'one-piece', 'oppai', 'oral', 'paizuri', 'raiden-shogun', 'rem', 'selfies', 'uniform', 'waifu']
+    return jsonify([s for s in slugs if not query or query in s])
 
 @app.route("/api/tags/zerochan", methods=["POST"])
 def get_zerochan_suggestions():
@@ -1190,8 +1251,10 @@ def get_eshuushuu_suggestions():
 def get_nekosapi_suggestions():
     data = request.json or {}
     query = (data.get("query", "") or "").lower()
-    if len(query) < 2: return jsonify([])
     live = _refresh_nekosapi_live_tags(data.get("net_config", {}))
+    # no query = the tag dropdown wants the whole vocabulary (~50 tags)
+    if len(query) < 2:
+        return jsonify(live)
     out = [t for t in live if t.lower().startswith(query)]
     return jsonify(out[:50])
 
@@ -1479,8 +1542,17 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             # ponytail: rule34 is all-explicit with no rating in path or tags
             if site == "rule34" and "explicit" in rating_filters:
                 return True
+            # per-image rating stored at download beats sniffing: nekosapi
+            # lumps multi-rating runs into one Safe_Sensitive_Questionable
+            # folder whose name substring-matches every alias
+            stored = str(img.get("rating") or "").strip().lower()
+            if stored in ("safe", "sensitive", "questionable", "explicit"):
+                return stored in rating_filters
             # lowered once per image — the nested rating loops reuse these
             fpl = img.get("filepath", "").lower()
+            # whole path segments only: ".../Safe_Sensitive_Questionable/..."
+            # must not count as Safe (nor Sensitive, nor Questionable)
+            fpl_segs = frozenset(seg for seg in fpl.split("/") if seg)
             all_tags_l = [t.lower() for t in _get_all_tags(img)]
             # Safe-only / SFW imageboards and sources:
             is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
@@ -1494,7 +1566,7 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
                 if rf not in supported:
                     continue
                 for p in rating_aliases.get(rf, [rf]):
-                    if any(p in t for t in all_tags_l) or p in fpl:
+                    if any(p in t for t in all_tags_l) or p in fpl_segs:
                         return True
             return False
         images = [i for i in images if matches_any_rating(i)]
@@ -2438,16 +2510,17 @@ def _dispatch_worker(data):
     if tag:
         try:
             # remember the search's filter controls so history jumps can restore them
-            filters = {k: data.get(k) for k in ("nsfw", "method", "sort_type", "sort_order", "exclusions") if k in data}
+            filters = {k: data.get(k) for k in ("nsfw", "rating", "method", "sort_type", "sort_order", "exclusions") if k in data}
             if "hide_pools" in net_config:
                 filters["hide_pools"] = net_config["hide_pools"]
             DatabaseManager.add_tag_history(worker, tag, data.get("rating", "") or "",
                                             bool(data.get("exclude_ai", False)), filters)
             # Learn searched tags into local smart cache
             for single_tag in tag.replace(",", " ").split():
-                # AI exclusion markers are search syntax, not tags
-                if len(single_tag.strip()) >= 2 and single_tag.strip() not in ("-ai_generated", "-ai-created"):
-                    DatabaseManager.add_learned_tag(worker, single_tag.strip())
+                # exclusion syntax (-tag) and AI markers are search syntax, not tags
+                s = single_tag.strip()
+                if len(s) >= 2 and not s.startswith("-"):
+                    DatabaseManager.add_learned_tag(worker, s)
         except Exception as e:
             print("History Save Error:", e)
 
@@ -2455,7 +2528,7 @@ def _dispatch_worker(data):
         net_config["zerochan_login"] = os.getenv("ZEROCHAN_LOGIN") or os.getenv("ZEROCHAN_USERNAME", "")
         net_config["zerochan_password"] = os.getenv("ZEROCHAN_PASSWORD", "")
         worker_zerochan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
-    elif worker == "waifu": worker_waifu(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("nsfw", False), net_config)
+    elif worker == "waifu": worker_waifu(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("rating", ""), data.get("exclusions", []), net_config)
     elif worker == "neko": worker_nekos_best(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config)
     elif worker == "safe": worker_safebooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("exclusions", []), net_config)
     elif worker == "rule34": worker_rule34(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("method", "and"), data.get("sort_type", "id"), data.get("sort_order", "desc"), data.get("exclusions", []), net_config, data.get("exclude_ai", False))

@@ -6,6 +6,7 @@ from curl_cffi import requests as curl_requests
 from core.shared import (
     BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
     write_image_metadata, save_history, build_tagd, check_duplicate,
+    absorb_duplicate,
     sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_wait
 )
 
@@ -68,7 +69,8 @@ class AnimeDlWorker(BaseDownloader):
             return False
         return any(n.replace("_", " ").strip().lower() in self._exclude_norm for n in tag_names)
 
-    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    # rating rides the base queue tuple (always None here) — arity must match
+    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if self.stop_event.is_set():
             self.enqueued_count -= 1
             return False
@@ -112,6 +114,9 @@ class AnimeDlWorker(BaseDownloader):
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
                     self._remember_filename(filename)
+                    await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
+                                            artists, characters, copyrights,
+                                            metadata_tags, outfits, groups, hair, eyes)
                     return False
 
                 self.downloaded_count += 1

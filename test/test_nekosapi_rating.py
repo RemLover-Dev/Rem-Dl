@@ -71,13 +71,16 @@ def test_unknown_rating_words_ignored(master):
     assert w.rating_allowed == {"safe"}
 
 
-def test_rating_folder_names(master):
-    single = NekosApiWorker("catgirl", 10, "safe", NET_CONFIG)
-    assert os.path.basename(single.rating_dir) == "Safe"
+def test_per_image_rating_folders(master):
+    # each image goes under its OWN API rating — no combined folders
+    w = NekosApiWorker("catgirl", 10, "", NET_CONFIG)
+    assert w.rating_dirs == {"safe": "Safe", "suggestive": "Sensitive",
+                             "borderline": "Questionable", "explicit": "NSFW"}
+    assert w.fallback_dir == "All Ratings"
     multi = NekosApiWorker("catgirl", 10, "safe explicit", NET_CONFIG)
-    assert os.path.basename(multi.rating_dir) == "Safe_NSFW"
-    all_ratings = NekosApiWorker("catgirl", 10, "", NET_CONFIG)
-    assert os.path.basename(all_ratings.rating_dir) == "All Ratings"
+    assert multi.rating_dirs["safe"] == "Safe"
+    assert multi.rating_dirs["explicit"] == "NSFW"
+    assert os.path.isdir(multi.tag_dir)
 
 
 def test_tags_and_exclusions_still_query(master):

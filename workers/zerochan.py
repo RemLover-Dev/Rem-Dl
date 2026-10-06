@@ -20,6 +20,7 @@ from core.shared import (
     save_history,
     build_tagd,
     check_duplicate,
+    absorb_duplicate,
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
@@ -774,6 +775,9 @@ class ZerochanWorker(BaseDownloader):
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
                     self._remember_filename(filename)
+                    await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
+                                            artists, characters, copyrights,
+                                            metadata_tags, outfits)
                     return False
 
                 self.downloaded_count += 1

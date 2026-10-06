@@ -53,7 +53,14 @@ class NekosBestWorker(BaseWorker):
                 raw_filename = url.split('/')[-1]
                 filename = sanitize_filename(raw_filename, fallback="neko.jpg")
                 filepath = os.path.join(self.cat_dir, filename)
-                if await self.enqueue_download(url, filepath, filename, [self.category], []):
+                # image categories carry artist_name; GIF categories only anime_name
+                artist_name = item.get("artist_name")
+                artists = [artist_name] if artist_name else []
+                # anime_name is the series title — copyright bucket, GIFs only
+                anime_name = item.get("anime_name")
+                copyrights = [anime_name] if anime_name else []
+                if await self.enqueue_download(url, filepath, filename, [self.category],
+                                               artists, copyrights=copyrights):
                     collected_count += 1
 
             if not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):

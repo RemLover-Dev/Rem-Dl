@@ -427,7 +427,7 @@ def recategorize_all():
     _recat_fp = fp  # cache state fully healed — later passes skip until it changes
     return changed_g, changed_h
 
-def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
     with _GALLERY_LOCK:
         gallery = _gallery_cached_locked()
         if filename in _gallery_cache["filenames"]:
@@ -443,13 +443,15 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             existing["tags"] = fresh
             if filepath:
                 existing["filepath"] = filepath
+            if rating:
+                existing["rating"] = rating
             _gallery_cache["dirty"] += 1
             if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
                 _write_gallery(gallery)
                 _gallery_cache["dirty"] = 0
             return
         tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-        gallery["images"].insert(0, {
+        record = {
             "id": hashlib.md5(f"{site}:{filename}".encode()).hexdigest()[:12],
             "filename": filename,
             "filepath": filepath,
@@ -457,12 +459,71 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             "tags": dict(tags_dict),
             "favourite": False,
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S")
-        })
+        }
+        # per-image rating only when the worker knows it — records without the
+        # field keep falling back to path/tag sniffing
+        if rating:
+            record["rating"] = rating
+        gallery["images"].insert(0, record)
         _gallery_cache["filenames"].add(filename)
         _gallery_cache["dirty"] += 1
         if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
             _write_gallery(gallery)
             _gallery_cache["dirty"] = 0
+
+
+def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=None,
+                     metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    """A phash kill deletes the duplicate's file — carry what it carried:
+    union its tags into the original's gallery record and append its site
+    to the record's `sources` list (viewer shows "N sources", click to expand)."""
+    if dup is None or not getattr(dup, "is_duplicate", False) or not getattr(dup, "matched_path", None):
+        return False
+    try:
+        with _GALLERY_LOCK:
+            gallery = _gallery_cached_locked()
+            target = os.path.normpath(str(dup.matched_path))
+            rec = None
+            for i in gallery["images"]:
+                fp = i.get("filepath") or ""
+                if fp and os.path.normpath(os.path.join(MASTER_FOLDER, fp)) == target:
+                    rec = i
+                    break
+            if rec is None:
+                base = os.path.basename(target)
+                rec = next((i for i in gallery["images"] if i.get("filename") == base), None)
+            if rec is None:
+                return False
+            changed = False
+            fresh = tags_dict_from_lists(tags_list, artists, characters,
+                                         copyrights, metadata_tags, outfits,
+                                         groups, hair, eyes)
+            tags = rec.setdefault("tags", {})
+            for bucket, vals in fresh.items():
+                have = tags.setdefault(bucket, [])
+                for v in vals:
+                    if v and v not in have:
+                        have.append(v)
+                        changed = True
+            sources = rec.get("sources")
+            if not sources:
+                first = normalize_site(rec.get("site") or "")
+                rec["sources"] = [first] if first else []
+                changed = True
+                sources = rec["sources"]
+            ns = normalize_site(site or "")
+            if ns and ns not in sources:
+                sources.append(ns)
+                changed = True
+            if changed:
+                _gallery_cache["dirty"] += 1
+                if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
+                    _write_gallery(gallery)
+                    _gallery_cache["dirty"] = 0
+            return True
+    except Exception as e:
+        print(f"[DEDUP] absorb failed for {getattr(dup, 'matched_path', '?')}: {e}")
+        return False
 
 # --- container-level metadata helpers (byte injection, never re-encode) ---
 def _riff_chunks(data):
@@ -1109,7 +1170,7 @@ class BaseDownloader:
             save_history(self.site_root, self.dl_history)
             self._history_dirty = 0
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if artists is None: artists = []
         
         # Defensive sanitization against prohibited filesystem characters in folders and filenames
@@ -1133,11 +1194,11 @@ class BaseDownloader:
             
         self.total_bytes += file_size
         self.queued_items.add(filename)
-        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes))
+        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating))
         self.enqueued_count += 1
         return True
 
-    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+    async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if self.stop_event.is_set():
             self.enqueued_count -= 1
             return False
@@ -1233,6 +1294,9 @@ class BaseDownloader:
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
                     await asyncio.to_thread(self._remember_filename, filename)
+                    await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
+                                            artists, characters, copyrights, metadata_tags,
+                                            outfits, groups, hair, eyes)
                     return False
 
                 self.downloaded_count += 1
@@ -1265,7 +1329,7 @@ class BaseDownloader:
                 # ponytail: metadata + gallery publish BEFORE the SUCCESS log — the log card
                 # requests its thumb instantly and would otherwise read a half-written file
                 await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
                 return True
 
