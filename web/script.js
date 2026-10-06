@@ -920,7 +920,7 @@ function renderGelWatcherList() {
         const pending = !w.initialized ? `<div style="opacity:0.6; font-size:11px;">first check establishes a baseline (no notifications)</div>` : "";
         return `<div style="border:1px solid var(--border-color); border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <div style="flex:1; min-width:200px;">
-                <div style="font-size:13px; font-weight:bold;">${escapeHtml(w.tags.join(" "))}${state}</div>
+                <div style="font-size:13px; font-weight:bold;">${escapeHtml(w.tags.map(t => t.startsWith("-") ? "-" + cleanTagDisplay(t.slice(1)) : cleanTagDisplay(t)).join(" "))}${state}</div>
                 <div style="font-size:11px; opacity:0.7;">${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
                 ${err}${pending}
             </div>

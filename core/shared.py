@@ -111,6 +111,11 @@ def count_tags(tags):
         return 0
     return sum(len(v) for v in tags.values() if isinstance(v, list))
 
+# booru repost flags (danbooru/gelbooru meta tags) — site hygiene, not content
+def is_dup_flag(t):
+    t = str(t or "").strip().lower()
+    return t == "duplicate" or t.endswith("_duplicate")
+
 def tags_dict_from_lists(tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
     """Build a categorized tags dict from flat lists."""
     result = {"artist": [], "character": [], "copyright": [], "metadata": [], "outfit": [], "group": [], "hair": [], "eyes": [], "tag": []}
@@ -133,7 +138,7 @@ def tags_dict_from_lists(tags_list, artists=None, characters=None, copyrights=No
     if tags_list:
         result["tag"] = [t.strip() for t in tags_list if t.strip()]
     for k in result:
-        result[k] = list(dict.fromkeys(result[k]))
+        result[k] = list(dict.fromkeys(x for x in result[k] if not is_dup_flag(x)))
     return sort_tags_by_category(result)
 
 def build_tagd(artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, tags_list=None, limit=5):
@@ -280,6 +285,13 @@ def _migrate_gallery_tags(data):
         if isinstance(tags, list):
             img["tags"] = tags_dict_from_lists(tags)
             changed = True
+        elif isinstance(tags, dict):
+            for bucket, vals in tags.items():
+                if isinstance(vals, list):
+                    kept = [v for v in vals if not is_dup_flag(v)]
+                    if len(kept) != len(vals):
+                        tags[bucket] = kept
+                        changed = True
         site = img.get("site", "")
         canon = normalize_site(site)
         if canon != site:
