@@ -3807,6 +3807,69 @@ function filteredImageHistory() {
         return terms.every(t => hay.includes(t));
     });
 }
+function appendHistoryRows(n) {
+    const ui = document.getElementById("imageHistoryUI");
+    if (!ui) return;
+    const next = imgHistFiltered.slice(imageHistoryVisible, imageHistoryVisible + n);
+    if (!next.length) return;
+    imageHistoryVisible += next.length;
+    ui.insertAdjacentHTML("beforeend", next.map(historyRowHtml).join(""));
+}
+
+function historyRowHtml(img) {
+    let tagsStr = renderCategorizedTags(img.tags || {}, false);
+
+    let ratingHtml = "";
+    let histRating = "";
+    let allTags = [];
+    let tagsDict = normalizeTags(img.tags || {});
+    TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
+    let pLow = ((img.filepath || img.filename) + " " + allTags.join(' ')).toLowerCase();
+    let siteLower = (img.site || "").toLowerCase();
+    if (siteLower === "rule34") {
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+        histRating = "explicit";
+    } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+        histRating = "explicit";
+    } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
+        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
+        histRating = "sensitive";
+    } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
+        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
+        histRating = "questionable";
+    } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g')) {
+        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
+        histRating = "safe";
+    }
+
+    let thumbUrl = getSafeThumbUrl(img.filepath, img.filename);
+    let safeFn = escJs(img.filename || "");
+    let fallbackSrc = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><g transform='translate(31,31) scale(2.714)'><path fill='%23888888' fill-rule='evenodd' clip-rule='evenodd' d='M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z'/></g></svg>`;
+    let safeFp = (img.filepath || "").replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27");
+    let siteBadge = `<span style="background: #ff9ff3; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${siteLabel(img.site)}</span>`;
+    let artistName = (img.tags?.artist || [])[0] || "";
+    let artistHtml = artistName ? `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
+
+    const hExt = (img.filename || '').split('.').pop().toLowerCase();
+    const hHoverKind = ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(hExt) ? 'video' : (hExt === 'gif' ? 'gif' : '');
+    const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${fullImageUrl(safeFp, img.filename)}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
+    return `
+    <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+    <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
+    <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
+    <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
+    <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
+    </div>
+    <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 25px;">
+    <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;">${artistHtml} ${siteBadge} ${ratingHtml}</div>
+    <div class="hist-tags" style="display:flex; flex-wrap:wrap; gap:6px; max-height: 62px; overflow-y:auto; padding: 3px 4px 3px 2px; align-content:flex-start;">
+    ${tagsStr}
+    </div>
+    </div>
+    </div>`;
+}
+
 function renderImageHistory() {
     let ui = document.getElementById("imageHistoryUI");
     if(!ui) return;
@@ -3816,10 +3879,7 @@ function renderImageHistory() {
         scroller.dataset.histScroll = "1";
         scroller.addEventListener("scroll", () => {
             if (imageHistoryVisible >= imgHistFiltered.length) return;
-            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) {
-                imageHistoryVisible += 30;
-                renderImageHistory();
-            }
+            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) appendHistoryRows(30);
         });
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
@@ -3831,65 +3891,17 @@ function renderImageHistory() {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No matches.</p>";
     } else {
         // ponytail: render in pages — full DOM + 100 thumb requests froze the tab
-        imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => {
-            let tagsStr = renderCategorizedTags(img.tags || {}, false);
-
-            let ratingHtml = "";
-            let histRating = "";
-            let allTags = [];
-            let tagsDict = normalizeTags(img.tags || {});
-            TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
-            let pLow = ((img.filepath || img.filename) + " " + allTags.join(' ')).toLowerCase();
-            let siteLower = (img.site || "").toLowerCase();
-            if (siteLower === "rule34") {
-                ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-                histRating = "explicit";
-            } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-                ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-                histRating = "explicit";
-            } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-                ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
-                histRating = "sensitive";
-            } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-                ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-                histRating = "questionable";
-            } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g')) {
-                ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
-                histRating = "safe";
-            }
-
-            let thumbUrl = getSafeThumbUrl(img.filepath, img.filename);
-            let safeFn = escJs(img.filename || "");
-            let fallbackSrc = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><g transform='translate(31,31) scale(2.714)'><path fill='%23888888' fill-rule='evenodd' clip-rule='evenodd' d='M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z'/></g></svg>`;
-            let safeFp = (img.filepath || "").replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27");
-            let siteBadge = `<span style="background: #ff9ff3; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${siteLabel(img.site)}</span>`;
-            let artistName = (img.tags?.artist || [])[0] || "";
-            let artistHtml = artistName ? `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
-
-            htmlStr += `
-            <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
-            <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
-            <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
-            <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
-            <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
-            </div>
-            <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 25px;">
-            <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;">${artistHtml} ${siteBadge} ${ratingHtml}</div>
-            <div class="hist-tags" style="display:flex; flex-wrap:wrap; gap:6px; max-height: 62px; overflow-y:auto; padding: 3px 4px 3px 2px; align-content:flex-start;">
-            ${tagsStr}
-            </div>
-            </div>
-            </div>`;
-        });
+        imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => { htmlStr += historyRowHtml(img); });
     }
     ui.innerHTML = htmlStr;
     if (scroller) scroller.scrollTop = currentScroll;
     // if the rendered list still doesn't fill the view, keep loading —
     // ponytail: never while hidden (clientHeight 0), or the startup render
-    // walks the whole history; the scroll listener pages from there
-    if (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
-        imageHistoryVisible += 30;
-        renderImageHistory();
+    // walks the whole history; the scroll listener pages from there.
+    // append, don't rebuild: a full innerHTML wipe re-animates every row above
+    // and leaves stale thumb paints on screen until the next forced repaint
+    while (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
+        appendHistoryRows(30);
     }
 }
 
