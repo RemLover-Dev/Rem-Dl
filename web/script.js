@@ -4462,7 +4462,10 @@ function renderGallery() {
         // per-segment encoding: encodeURI leaves "#"/"?" raw, which truncates
         // the request at the fragment — filepaths can legitimately contain them
         const src = galleryThumbUrl(fp);
-        const fullU = fullImageUrl(fp, img.filename);
+        // raw fp must be pre-encoded: fullImageUrl decodes its input first, and
+        // decoding a raw path corrupts filenames that literally contain %XX
+        // (gelbooru saves URL-encoded titles) — hover then 404s and never plays
+        const fullU = fullImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename);
         const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const hoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
@@ -4570,6 +4573,32 @@ function reanchorGalleryViewer(prevId) {
     if (viewerIndex < 0 || !prevId) return;
     const at = galleryState.images.findIndex(i => i.id === prevId);
     viewerIndex = at >= 0 ? at : Math.min(viewerIndex, galleryState.images.length - 1);
+}
+// on open: preload the 3 images before + 3 after the current one (HTTP cache
+// makes <-/-> instant). videos skipped (poster covers them)
+function prefetchViewerNeighbors() {
+    const warm = u => { if (u) new Image().src = u; };
+    if (viewerSingle) {
+        for (let i = Math.max(0, viewerSingleIdx - 3); i <= Math.min(viewerSingleList.length - 1, viewerSingleIdx + 3); i++) {
+            if (i === viewerSingleIdx) continue;
+            const p = viewerSingleList[i];
+            const clean = (() => { try { return decodeURIComponent(p); } catch (e) { return p; } })();
+            const ext = ((clean.split('/').pop() || '').split('.').pop() || '').toLowerCase();
+            if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) continue;
+            warm(fullImageUrl(p, clean.split('/').pop() || "image"));
+        }
+        return;
+    }
+    if (viewerIndex < 0 || !galleryState.images) return;
+    for (let i = Math.max(0, viewerIndex - 3); i <= Math.min(galleryState.images.length - 1, viewerIndex + 3); i++) {
+        if (i === viewerIndex) continue;
+        const img = galleryState.images[i];
+        const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
+        if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) continue;
+        const fp = (img.filepath || '').replace(/\\/g, '/');
+        if (!fp) continue;
+        warm(fullImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename));
+    }
 }
 let viewerZoom = 1;
 function openGalleryViewer(id, force) {
@@ -4857,7 +4886,7 @@ function openFullImage(filepath, filename, el) {
         if (idx >= 0) list = imgs.map(i => i.dataset.ofi);
     }
     // always use the in-app viewer — new tabs don't exist in the desktop app
-    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null, el && el.currentSrc ? el.currentSrc : '');
+    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null);
 }
 
 let viewerSingle = false;
@@ -4899,8 +4928,6 @@ function loadViewerRaster(url, filename) {
     const controller = new AbortController();
     viewerResource.abortController = controller;
     viewerImg.style.display = '';
-    // preload + decode off-screen, then swap in one paint: the thumb stays
-    // visible during the download and Copy fetches its Blob on demand
     const p = (async () => {
         const pre = new Image();
         try {
@@ -4931,12 +4958,10 @@ function loadViewerRaster(url, filename) {
     p.catch(() => {});
     return p;
 }
-function openViewerSingle(url, filename, list, idx, boxId, seed) {
+function openViewerSingle(url, filename, list, idx, boxId) {
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
-    // clicked card's thumb — shown instantly while the full image loads
-    if (seed) viewerImg.src = seed;
     viewerSingle = true;
     viewerSingleBoxId = boxId || null;
     viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
@@ -4982,6 +5007,7 @@ function openViewerSingle(url, filename, list, idx, boxId, seed) {
     }
     viewer.style.display = 'flex';
     updateViewerNav();
+    prefetchViewerNeighbors();
 }
 function viewerMetaHtml(img, tagsClickable) {
     let tagsHtml = renderCategorizedTags(img.tags || {}, tagsClickable);
@@ -5025,8 +5051,7 @@ function showViewerImage() {
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
     const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
-    // the card's thumb is already in HTTP cache — show it while the full loads
-    viewerImg.src = galleryThumbUrl(safeFp);
+    viewerImg.src = '';
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
@@ -5089,6 +5114,7 @@ function showViewerImage() {
 
     viewer.style.display = 'flex';
     updateViewerNav();
+    prefetchViewerNeighbors();
 }
 // one fullscreenchange listener at a time: fsIcon is a fresh closure per
 // video shown, so plain addEventListener leaked one listener per image view
@@ -5238,7 +5264,6 @@ function toggleViewerFav() {
             }
             const generation = viewerResource.generation;
             if (!viewerResource.blob && viewerResource.loadPromise) {
-                showToast("Preparing image...", { icon: COPY_ICON });
                 try {
                     await viewerResource.loadPromise;
                 } catch (err) {
