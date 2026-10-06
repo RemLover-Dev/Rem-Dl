@@ -132,6 +132,8 @@ def tags_dict_from_lists(tags_list, artists=None, characters=None, copyrights=No
         result["eyes"] = [e.strip() for e in eyes if e.strip()]
     if tags_list:
         result["tag"] = [t.strip() for t in tags_list if t.strip()]
+    for k in result:
+        result[k] = list(dict.fromkeys(result[k]))
     return sort_tags_by_category(result)
 
 def build_tagd(artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, tags_list=None, limit=5):
