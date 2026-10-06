@@ -133,6 +133,16 @@ function heartIcon(filled) {
 }
 
 
+// viewer/log/history tag pill -> gallery search: clean form, quoted (exact),
+// trailing comma so more terms can follow; user lands on the Gallery tab
+function searchGalleryTag(raw) {
+    const s = document.getElementById('gallerySearch');
+    if (s) s.value = '"' + cleanTagDisplay(raw) + '",';
+    openTab('Gallery');
+    closeGalleryViewer();
+    loadGallery(1);
+}
+
 function renderCategorizedTags(tagsInput, clickable) {
     let tagsDict = normalizeTags(tagsInput);
     let html = '';
@@ -148,7 +158,7 @@ function renderCategorizedTags(tagsInput, clickable) {
             let cls = getTagCategoryClass(cat);
             let safeT = escJs(t);
             if (clickable) {
-                html += `<span class="g-tag-pill ${cls}" onclick="document.getElementById('gallerySearch').value='${safeT}'; loadGallery(1); closeGalleryViewer();">${display}</span>`;
+                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')">${display}</span>`;
             } else {
                 html += `<span class="g-tag-pill ${cls}">${display}</span>`;
             }
@@ -590,12 +600,12 @@ function logToConsole(tabID, msg) {
             });
             let artistNames = cats.artist || [];
             delete cats.artist;
-            var logArtistBadge = artistNames.map(a => `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
+            var logArtistBadge = artistNames.map(a => `<span onclick="searchGalleryTag('${escJs(a)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
             // ponytail: log cards show plain tag text — only the artist keeps a colored badge
-            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => escapeHtml(cleanTagDisplay(t))).join(', ') + `</span>`;
+            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>`;
         } else {
             var logArtistBadge = "";
-            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => escapeHtml(cleanTagDisplay(t))).join(', ') + `</span>` : "No tags";
+            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
         }
         let fnMatch = raw.match(/Downloaded ([^\s]+)/);
         let fn = fnMatch ? fnMatch[1] : "image";
@@ -3822,7 +3832,7 @@ function appendHistoryRows(n) {
 }
 
 function historyRowHtml(img) {
-    let tagsStr = renderCategorizedTags(img.tags || {}, false);
+    let tagsStr = renderCategorizedTags(img.tags || {}, true);
 
     let ratingHtml = "";
     let histRating = "";
@@ -3854,7 +3864,7 @@ function historyRowHtml(img) {
     let safeFp = (img.filepath || "").replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27");
     let siteBadge = `<span style="background: #ff9ff3; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${siteLabel(img.site)}</span>`;
     let artistName = (img.tags?.artist || [])[0] || "";
-    let artistHtml = artistName ? `<span style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
+    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
 
     const hExt = (img.filename || '').split('.').pop().toLowerCase();
     const hHoverKind = ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(hExt) ? 'video' : (hExt === 'gif' ? 'gif' : '');
@@ -5103,7 +5113,7 @@ function viewerMetaHtml(img, tagsClickable) {
         siteBadge = `<span style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${_srcLabels[0] || siteLabel(img.site)}</span>`;
     }
     let artistName = (img.tags?.artist || [])[0] || "";
-    let artistHtml = artistName ? `<span onclick="document.getElementById('gallerySearch').value='${escJs(artistName)}'; loadGallery(1); closeGalleryViewer();" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
+    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
 
     return `
     <div class="g-meta-header">
