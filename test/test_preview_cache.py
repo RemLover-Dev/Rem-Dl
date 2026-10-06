@@ -53,6 +53,19 @@ def test_preview_strips_audio(tmp_path):
     assert len(os.listdir(cache)) == 1
 
 
+def test_evict_removes_cached_preview(tmp_path):
+    from core.preview_cache import preview_path, evict
+    src = tmp_path / "with_audio.mp4"
+    _make_mp4(src, audio=True)
+    cache = tmp_path / "cache"
+    out = preview_path(str(src), str(cache))
+    assert out != str(src)
+    assert evict(str(src), str(cache)) is True
+    assert not os.listdir(cache)
+    # gone already: no crash, nothing removed
+    assert evict(str(src), str(cache)) is False
+
+
 def test_preview_no_audio_returns_original(tmp_path):
     from core.preview_cache import preview_path
     src = tmp_path / "silent.mp4"

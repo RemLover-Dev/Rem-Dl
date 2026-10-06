@@ -4403,26 +4403,56 @@ function galleryHoverPreview(card, on) {
             if (card._hoverCtl !== ctl || !card.isConnected) return;
             card._hoverCtl = null;
             const v = document.createElement('video');
-            v.className = 'gallery-hover-media';
+            v.className = 'gallery-hover-media gallery-hover-src';
             v.src = URL.createObjectURL(b);
             v.muted = true;
-            v.loop = true;
+            v.loop = false;
             v.autoplay = true;
             v.playsInline = true;
+            v.style.opacity = '0';   // decoder only — the canvas below is what you see
+            v.addEventListener('ended', () => {
+                if (!v.isConnected) return;
+                try { v.currentTime = 0; } catch (e) {}
+                v.play().catch(() => {});
+            });
+
+            // canvas mirror: keeps showing the last frame while the video
+            // restarts, so the loop wrap never exposes the thumbnail or a blank
+            const c = document.createElement('canvas');
+            c.className = 'gallery-hover-media gallery-hover-canvas';
+            const cx = c.getContext('2d');
+            const drawFrame = () => {
+                if (!v.isConnected) return;
+                if (v.videoWidth > 0 && v.readyState >= 2) {
+                    if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
+                        c.width = v.videoWidth;
+                        c.height = v.videoHeight;
+                    }
+                    try { cx.drawImage(v, 0, 0); } catch (e) {}
+                }
+                scheduleDraw();
+            };
+            const scheduleDraw = () => {
+                if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(drawFrame);
+                else requestAnimationFrame(drawFrame);
+            };
+
             card.appendChild(v);
+            card.appendChild(c);
+            scheduleDraw();
             v.play().catch(() => {});
-            // opacity, not visibility — visibility makes the thumb unclickable
-            // and history/log rows only bind openFullImage on the img itself
-            if (img) img.style.opacity = '0';
         }).catch(() => { card._hoverCtl = null; });
     } else {
         if (card._hoverCtl) { card._hoverCtl.abort(); card._hoverCtl = null; }
-        const v = card.querySelector('.gallery-hover-media');
-        if (v) {
-            const u = v.src;
-            v.pause(); v.removeAttribute('src'); v.load(); v.remove();
-            if (u.startsWith('blob:')) URL.revokeObjectURL(u);
-        }
+        card.querySelectorAll('.gallery-hover-media').forEach(el => {
+            if (el.tagName === 'VIDEO') {
+                const u = el.src;
+                el.pause(); el.removeAttribute('src'); el.load(); el.remove();
+                if (u.startsWith('blob:')) URL.revokeObjectURL(u);
+            } else {
+                el.remove();
+            }
+        });
         if (img) img.style.opacity = '';
     }
 }

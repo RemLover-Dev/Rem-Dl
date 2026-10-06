@@ -25,17 +25,31 @@ def _has_audio(src: str) -> bool:
         return True  # unknown: be safe and strip
 
 
+def _cache_path(src: str, cache_dir: str) -> str:
+    st = os.stat(src)
+    key = hashlib.sha1(
+        f"{os.path.abspath(src)}:{st.st_mtime_ns}:{st.st_size}".encode()).hexdigest()
+    return os.path.join(cache_dir, f"{key}.mp4")
+
+
+def evict(src: str, cache_dir: str) -> bool:
+    """Drop the cached remux for src. Call while src still exists — the key
+    derives from its mtime/size. Returns True if a cache file was removed."""
+    try:
+        os.remove(_cache_path(src, cache_dir))
+        return True
+    except OSError:
+        return False
+
+
 def preview_path(src: str, cache_dir: str) -> str:
     """Return a path to a video-only copy of src (or src itself if it has no audio)."""
     if not _has_audio(src):
         return src
-    st = os.stat(src)
-    key = hashlib.sha1(
-        f"{os.path.abspath(src)}:{st.st_mtime_ns}:{st.st_size}".encode()).hexdigest()
-    dst = os.path.join(cache_dir, f"{key}.mp4")
+    dst = _cache_path(src, cache_dir)
     if os.path.exists(dst):
         return dst
-    with _lock(key):
+    with _lock(dst):
         if os.path.exists(dst):
             return dst
         os.makedirs(cache_dir, exist_ok=True)

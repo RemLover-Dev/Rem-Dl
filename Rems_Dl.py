@@ -42,7 +42,7 @@ from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from core.database import DatabaseManager, SettingsManager
 from core import notifications, pixiv_notify, watchers
-from core.preview_cache import preview_path
+from core.preview_cache import preview_path, evict as evict_preview
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1785,6 +1785,8 @@ def delete_gallery_image_by_name():
     _invalidate_fp_cache()
     try:
         if os.path.exists(full_path):
+            # key comes from the file's stat — evict the remux before the source goes
+            evict_preview(full_path, PREVIEW_CACHE_DIR)
             os.remove(full_path)
     except Exception as e:
         print("Error deleting file:", e)
@@ -2028,6 +2030,8 @@ def delete_gallery_image():
     # پاک کردن فیزیکی فایل از روی هارد
     try:
         if os.path.exists(full_path):
+            # key comes from the file's stat — evict the remux before the source goes
+            evict_preview(full_path, PREVIEW_CACHE_DIR)
             os.remove(full_path)
     except Exception as e:
         print("Error deleting file:", e)
