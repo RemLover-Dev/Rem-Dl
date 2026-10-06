@@ -781,8 +781,9 @@ def write_image_metadata(filepath, tags_list, artists, site, characters=None, co
                 f.write(out)
             os.replace(tmp, filepath)
         elif ext in ('mp4', 'mov'):
-            # top-level custom box after ftyp — ISO BMFF parsers skip unknown
-            # boxes by size, exactly like the ubiquitous `free` box
+            # custom box appended at the END — inserting before mdat shifts
+            # every absolute stco/co64 chunk offset and makes the video
+            # undecodable (readers walk all top-level boxes, so trailing works)
             payload = b"Rems_Dl\n" + meta_text.encode("utf-8")
             if data[4:8] != b"ftyp":
                 return
@@ -803,7 +804,7 @@ def write_image_metadata(filepath, tags_list, artists, site, characters=None, co
             if not boxes:
                 return
             rems = (len(payload) + 8).to_bytes(4, "big") + b"rems" + payload
-            out = boxes[0] + rems + b"".join(boxes[1:])
+            out = b"".join(boxes) + rems
             tmp = filepath + ".meta"
             with open(tmp, "wb") as f:
                 f.write(out)

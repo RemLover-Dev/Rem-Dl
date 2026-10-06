@@ -95,6 +95,53 @@ def test_mp4_and_avi_roundtrip(tmp_path):
     assert avi.read_bytes()[8:12] == b"AVI "
 
 
+def _synthetic_mp4(marker=b"SAMPLEDATA"):
+    # ftyp(24) + moov(28, holds stco with one entry) + mdat header(8) = 60
+    ftyp = (24).to_bytes(4, "big") + b"ftypisom" + (0).to_bytes(4, "big") + b"isomiso2"
+    stco = (20).to_bytes(4, "big") + b"stco" + b"\x00" * 4 + \
+        (1).to_bytes(4, "big") + (60).to_bytes(4, "big")
+    moov = (len(stco) + 8).to_bytes(4, "big") + b"moov" + stco
+    mdat = (8 + len(marker)).to_bytes(4, "big") + b"mdat" + marker
+    return ftyp + moov + mdat
+
+
+def test_mp4_metadata_keeps_chunk_offsets_valid(tmp_path):
+    # stco holds absolute file offsets: any box inserted before mdat shifts
+    # them and the video stops decoding (this exact bug shipped once)
+    p = tmp_path / "c.mp4"
+    p.write_bytes(_synthetic_mp4())
+    write_image_metadata(str(p), ["clip"], ["artist_v"], "dan")
+    data = p.read_bytes()
+    assert data[60:70] == b"SAMPLEDATA"  # chunk offset still lands on payload
+    assert data.rfind(b"rems") > data.find(b"mdat")  # rems box is trailing
+    meta = read_image_metadata(str(p))
+    assert meta is not None and "site:dan" in meta and "tag:clip" in meta
+    # rewrite on a file already carrying metadata must stay stable
+    write_image_metadata(str(p), ["wave"], ["artist_v"], "dan")
+    data = p.read_bytes()
+    assert data[60:70] == b"SAMPLEDATA"
+    meta = read_image_metadata(str(p))
+    assert meta is not None and "tag:wave" in meta and "tag:clip" not in meta
+
+
+def test_mp4_metadata_repairs_front_inserted_box(tmp_path):
+    # files written by the old buggy writer (rems between ftyp and moov)
+    # are undecodable; a metadata rewrite moves rems to the end and the
+    # original chunk offsets become valid again
+    ftyp = (24).to_bytes(4, "big") + b"ftypisom" + (0).to_bytes(4, "big") + b"isomiso2"
+    payload = b"Rems_Dl\nsite:dan\ntag:old"
+    rems = (len(payload) + 8).to_bytes(4, "big") + b"rems" + payload
+    rest = _synthetic_mp4()[len(ftyp):]  # moov + mdat, offsets valid for this layout
+    p = tmp_path / "d.mp4"
+    p.write_bytes(ftyp + rems + rest)
+    assert p.read_bytes()[60:70] != b"SAMPLEDATA"  # broken: offset shifted
+    write_image_metadata(str(p), ["clip"], ["artist_v"], "dan")
+    data = p.read_bytes()
+    assert data[60:70] == b"SAMPLEDATA"  # front box moved to end, offsets valid
+    meta = read_image_metadata(str(p))
+    assert meta is not None and "tag:old" not in meta and "tag:clip" in meta
+
+
 def test_webm_roundtrip(tmp_path):
     ebml = b"\x1a\x45\xdf\xa3" + b"\x84" + b"\x00\x00\x00\x00"
     info = b"\x15\x49\xa9\x66" + b"\x83" + b"\x00\x00\x00"
