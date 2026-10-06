@@ -656,7 +656,7 @@ function logToConsole(tabID, msg) {
         card.innerHTML = `
         <div class="img-card-left"${logHoverAttr}>
         <!-- استفاده از Date.now برای جلوگیری از باگ لود شدن -->
-        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">
+        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">${isVideo ? '<span class="gallery-card-play"></span>' : ''}
         </div>
         <div class="img-card-right">
         <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
@@ -3865,7 +3865,7 @@ function historyRowHtml(img) {
     <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
     <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
-    <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">
+    <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">${hHoverKind === 'video' ? '<span class="gallery-card-play"></span>' : ''}
     </div>
     <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 25px;">
     <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;">${artistHtml} ${siteBadge} ${ratingHtml}</div>
@@ -4401,7 +4401,9 @@ function galleryHoverPreview(card, on) {
             v.playsInline = true;
             card.appendChild(v);
             v.play().catch(() => {});
-            if (img) img.style.visibility = 'hidden';
+            // opacity, not visibility — visibility makes the thumb unclickable
+            // and history/log rows only bind openFullImage on the img itself
+            if (img) img.style.opacity = '0';
         }).catch(() => { card._hoverCtl = null; });
     } else {
         if (card._hoverCtl) { card._hoverCtl.abort(); card._hoverCtl = null; }
@@ -4411,7 +4413,7 @@ function galleryHoverPreview(card, on) {
             v.pause(); v.removeAttribute('src'); v.load(); v.remove();
             if (u.startsWith('blob:')) URL.revokeObjectURL(u);
         }
-        if (img) img.style.visibility = '';
+        if (img) img.style.opacity = '';
     }
 }
 function renderGallery() {
@@ -4890,6 +4892,39 @@ document.addEventListener('keydown', function(e) {
 
 // hover previews are muted: point them at the audio-free remux so stopping the
 // video can't hit WebKitGTK's multi-second audio-pipeline teardown
+// WebKitGTK bug: a <video> can wedge in `waiting` after about a second even
+// though data has arrived — only pause->play wakes it. Watch for playback that
+// should be moving but isn't, and do that kick automatically.
+function attachVideoStallRecovery(video) {
+    let lastT = -1, stuckMs = 0, kicks = 0;
+    const STEP = 400;
+    const timer = setInterval(() => {
+        if (!video.isConnected) { clearInterval(timer); return; }
+        if (video.paused || video.ended || video.seeking) { lastT = video.currentTime; stuckMs = 0; kicks = 0; return; }
+        if (Math.abs(video.currentTime - lastT) > 0.01) { lastT = video.currentTime; stuckMs = 0; kicks = 0; return; }
+        stuckMs += STEP;
+        // is there buffered data ahead of the playhead? then it's wedged, not loading
+        let ahead = 0;
+        for (let i = 0; i < video.buffered.length; i++) {
+            if (video.currentTime >= video.buffered.start(i) - 0.1 && video.currentTime <= video.buffered.end(i)) {
+                ahead = video.buffered.end(i) - video.currentTime;
+            }
+        }
+        const wedged = ahead > 0.3 && stuckMs >= 800;
+        const longStall = stuckMs >= 4000;
+        if (!wedged && !longStall) return;
+        stuckMs = 0;
+        kicks++;
+        const t = video.currentTime;
+        video.pause();
+        setTimeout(() => {
+            if (!video.isConnected) return;
+            if (kicks > 1) { try { video.currentTime = t + 0.05; } catch (e) {} } // second kick: nudge the playhead
+            video.play().catch(() => {});
+        }, 50);
+    }, STEP);
+}
+
 function previewImageUrl(filepath, filename) {
     return fullImageUrl(filepath, filename).replace('/api/gallery/file/', '/api/gallery/preview/');
 }
@@ -5006,7 +5041,10 @@ function openViewerSingle(url, filename, list, idx, boxId) {
         const video = document.createElement('video');
         video.src = url;
         video.controls = true;
-        video.autoplay = true;
+        // no autoplay: WebKit kickstarts playback during the initial buffer
+        // and wedges in `waiting` — the user then needs pause->play to recover
+        video.preload = 'auto';
+        attachVideoStallRecovery(video);
         wrap.appendChild(video);
         viewer.insertBefore(wrap, viewerImg.nextSibling);
     } else {
@@ -5206,7 +5244,11 @@ function showViewerImage() {
         volSlider.oninput = () => { video.muted = false; video.volume = Number(volSlider.value); };
         video.addEventListener('volumechange', () => { volSlider.value = video.volume; syncVolIcon(); });
         syncVolIcon();
-        video.play();
+        // start only once there is enough data — play() straight after setting
+        // src is what wedges WebKitGTK in `waiting`
+        video.preload = 'auto';
+        video.addEventListener('canplay', () => { if (video.paused && !video.ended) video.play().catch(() => {}); }, { once: true });
+        attachVideoStallRecovery(video);
     } else if (fullSrc) { loadViewerRaster(fullSrc, img.filename); }
     else { clearViewerResource(); viewerImg.style.display = ''; }
     document.getElementById("galleryViewerFav").innerHTML = heartIcon(img.favourite);
