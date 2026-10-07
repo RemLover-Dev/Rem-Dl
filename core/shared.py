@@ -203,6 +203,19 @@ def sanitize_filename(name: str, fallback: str = "image.jpg", max_length: int = 
     except Exception:
         return fallback
 
+# zip rides with videos: the workers' "-video" exclusion group covers it (ugoira
+# zips are converted to gif first and routed by the caller)
+VIDEO_EXTS = {"mp4", "webm", "mov", "avi", "mkv", "zip"}
+
+def media_subdir(ext: str) -> str:
+    """Leaf folder under <tag>/<rating> for a file's media kind."""
+    e = (ext or "").lower().lstrip(".")
+    if e in VIDEO_EXTS:
+        return "videos"
+    if e == "gif":
+        return "gifs"
+    return "images"
+
 def safe_ensure_dir(path: str) -> str:
     """Ensure directory exists with safe, sanitized components across all platforms (Windows, Linux, macOS).
     Creates parent directories safely.

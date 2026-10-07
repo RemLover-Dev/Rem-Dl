@@ -161,22 +161,35 @@ def test_folder_api_and_browse(tmp_path, monkeypatch):
         assert r.get_json().get("cancelled") is True
 
 
-def test_gallery_file_sends_day_cache_header(tmp_path, monkeypatch):
-    # the viewer swaps thumb -> full in one paint — the full image must land
-    # in the HTTP cache (same policy as thumbs) or every reopen re-downloads
+def test_gallery_file_revalidates_instead_of_serving_stale(tmp_path, monkeypatch):
+    # no-cache (not max-age): the browser must revalidate, so a deleted file
+    # 404s instead of serving a day-old cached copy — and 304s keep reopen cheap
     import Rems_Dl
     Rems_Dl.app.config["TESTING"] = True
     H = {"User-Agent": "RemsDlDesktopApp/1.0"}
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
     os.makedirs(os.path.join(str(tmp_path), "sub"))
-    with open(os.path.join(str(tmp_path), "sub", "a.jpg"), "wb") as f:
+    img_path = os.path.join(str(tmp_path), "sub", "a.jpg")
+    with open(img_path, "wb") as f:
         f.write(b"\xff\xd8\xff\xd9")
 
     with Rems_Dl.app.test_client() as client:
         r = client.get("/api/gallery/file/sub/a.jpg", headers=H)
         assert r.status_code == 200
-        assert r.headers.get("Cache-Control") == "private, max-age=86400"
+        assert r.headers.get("Cache-Control") == "private, no-cache"
+        etag = r.headers.get("ETag")
+        assert etag
 
-        r404 = client.get("/api/gallery/file/sub/gone.jpg", headers=H)
+        # unchanged file answers 304 — no body re-download
+        r304 = client.get("/api/gallery/file/sub/a.jpg", headers={**H, "If-None-Match": etag})
+        assert r304.status_code == 304
+
+        # deleted file answers 404 even with a conditional revalidation
+        os.remove(img_path)
+        r404 = client.get("/api/gallery/file/sub/a.jpg", headers={**H, "If-None-Match": etag})
         assert r404.status_code == 404
         assert "max-age" not in r404.headers.get("Cache-Control", "")
+
+        rmiss = client.get("/api/gallery/file/sub/gone.jpg", headers=H)
+        assert rmiss.status_code == 404
+        assert "max-age" not in rmiss.headers.get("Cache-Control", "")

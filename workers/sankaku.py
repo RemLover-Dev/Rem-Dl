@@ -1,6 +1,6 @@
 import os
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir, media_subdir
 
 
 API_BASE = "https://sankakuapi.com"
@@ -185,7 +185,7 @@ class SankakuWorker(BaseWorker):
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"sankaku_{post.get('id', 'item')}.jpg")
 
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
-                subfolder = "books" if post.get("in_visible_pool") else "images"
+                subfolder = "books" if post.get("in_visible_pool") else media_subdir(ext)
                 rating_dir = os.path.join(self.tag_dir, rating_label, subfolder)
                 if rating_dir not in made_dirs:
                     safe_ensure_dir(rating_dir)

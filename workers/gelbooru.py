@@ -1,7 +1,7 @@
 import html, os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-from core.shared import TAG_TYPE_MAP
+from core.shared import TAG_TYPE_MAP, media_subdir
 from core.database import DatabaseManager, DATABASE_DIR
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gelbooru_tag_types.json")
@@ -183,7 +183,7 @@ class GelbooruWorker(BaseWorker):
                 raw_tags = [html.unescape(t.strip()) for t in post.get("tags", "").split() if t.strip()]
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(raw_tags)
 
-                rating_dir = os.path.join(self.tag_dir, rating_label, "images")
+                rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
                 if rating_dir not in made_dirs:
                     safe_ensure_dir(rating_dir)
                     made_dirs.add(rating_dir)

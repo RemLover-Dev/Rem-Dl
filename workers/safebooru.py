@@ -54,10 +54,6 @@ class SafebooruWorker(BaseWorker):
         collected_count = 0
         pid = 0
 
-        # loop-invariant: every safebooru post lands in Safe/images
-        safe_dir = os.path.join(self.tag_dir, "Safe", "images")
-        safe_ensure_dir(safe_dir)
-
         consecutive_errors = 0
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
@@ -132,6 +128,8 @@ class SafebooruWorker(BaseWorker):
                     continue
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"safebooru_{post.get('id', 'item')}.jpg")
+                safe_dir = os.path.join(self.tag_dir, "Safe", shared.media_subdir(ext))
+                safe_ensure_dir(safe_dir)
                 filepath = os.path.join(safe_dir, filename)
 
                 tags_raw = post.get("tag_string", post.get("tags", ""))

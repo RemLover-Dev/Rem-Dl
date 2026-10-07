@@ -1785,8 +1785,7 @@ def delete_gallery_image_by_name():
     _invalidate_fp_cache()
     try:
         if os.path.exists(full_path):
-            # key comes from the file's stat — evict the remux before the source goes
-            evict_preview(full_path, PREVIEW_CACHE_DIR)
+            _evict_caches(full_path)  # thumb + preview remux (preview needs the stat)
             os.remove(full_path)
     except Exception as e:
         print("Error deleting file:", e)
@@ -1811,9 +1810,10 @@ def gallery_file(filepath):
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if os.path.isfile(full):
-        resp = send_file(full)
-        # same policy as thumbs: the viewer swap + hover prefetch hit disk cache
-        resp.headers["Cache-Control"] = "private, max-age=86400"
+        # no-cache: stored but revalidated — a deleted file must 404 instead of
+        # serving the day-old cached copy, and revalidation is a cheap 304
+        resp = send_file(full, conditional=True)
+        resp.headers["Cache-Control"] = "private, no-cache"
         return resp
     return "Image was deleted", 404
 
@@ -1828,7 +1828,7 @@ def gallery_preview(filepath):
         return "Image was deleted", 404
     resp = send_file(preview_path(full, PREVIEW_CACHE_DIR),
                      mimetype="video/mp4", conditional=True)
-    resp.headers["Cache-Control"] = "private, max-age=86400"
+    resp.headers["Cache-Control"] = "private, no-cache"
     return resp
 
 @app.route("/api/thumb_by_name/<filename>")
@@ -1860,6 +1860,20 @@ os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
 
 def _thumb_cache_path(full):
     return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + ".jpg")
+
+
+def _evict_caches(full):
+    """Drop the thumb + preview-remux cache entries for a file being deleted.
+    The preview key derives from the file's stat, so this must run before
+    os.remove; missing entries are fine (both are best-effort)."""
+    try:
+        evict_preview(full, PREVIEW_CACHE_DIR)
+    except Exception:
+        pass
+    try:
+        os.remove(_thumb_cache_path(full))
+    except OSError:
+        pass
 
 
 def _cached_thumb(full):
@@ -1935,10 +1949,10 @@ def warm_page_thumbs(images):
 
 
 def _send_thumb(cache_path):
-    """Serve the disk-cached 300px JPEG; the browser keeps it per-URL for a
-    day, so repeat views skip the server entirely."""
-    resp = send_file(cache_path, mimetype="image/jpeg")
-    resp.headers["Cache-Control"] = "private, max-age=86400"
+    """Serve the disk-cached 300px JPEG. no-cache: the browser keeps the copy
+    but revalidates, so a deleted source 404s instead of showing a ghost."""
+    resp = send_file(cache_path, mimetype="image/jpeg", conditional=True)
+    resp.headers["Cache-Control"] = "private, no-cache"
     return resp
 
 
@@ -2030,8 +2044,7 @@ def delete_gallery_image():
     # پاک کردن فیزیکی فایل از روی هارد
     try:
         if os.path.exists(full_path):
-            # key comes from the file's stat — evict the remux before the source goes
-            evict_preview(full_path, PREVIEW_CACHE_DIR)
+            _evict_caches(full_path)  # thumb + preview remux (preview needs the stat)
             os.remove(full_path)
     except Exception as e:
         print("Error deleting file:", e)

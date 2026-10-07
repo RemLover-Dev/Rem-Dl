@@ -66,6 +66,25 @@ def test_evict_removes_cached_preview(tmp_path):
     assert evict(str(src), str(cache)) is False
 
 
+def test_evict_caches_drops_thumb_and_preview(tmp_path, monkeypatch):
+    import Rems_Dl
+    from core.preview_cache import preview_path
+    src = tmp_path / "with_audio.mp4"
+    _make_mp4(src, audio=True)
+    thumbs = tmp_path / "thumbs"
+    pcache = tmp_path / "pcache"
+    thumbs.mkdir()
+    monkeypatch.setattr(Rems_Dl, "THUMB_CACHE", str(thumbs))
+    monkeypatch.setattr(Rems_Dl, "PREVIEW_CACHE_DIR", str(pcache))
+    thumb = Rems_Dl._thumb_cache_path(str(src))
+    with open(thumb, "wb") as f:
+        f.write(b"x")
+    assert preview_path(str(src), str(pcache)) != str(src)
+    Rems_Dl._evict_caches(str(src))
+    assert not os.path.exists(thumb)
+    assert not os.listdir(pcache)
+
+
 def test_preview_no_audio_returns_original(tmp_path):
     from core.preview_cache import preview_path
     src = tmp_path / "silent.mp4"

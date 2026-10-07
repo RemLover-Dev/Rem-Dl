@@ -5,7 +5,8 @@ from core.shared import (
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
-    safe_filepath
+    safe_filepath,
+    media_subdir
 )
 from core.database import DatabaseManager
 
@@ -15,7 +16,8 @@ __all__ = [
     "sanitize_path_component",
     "sanitize_filename",
     "safe_ensure_dir",
-    "safe_filepath"
+    "safe_filepath",
+    "media_subdir"
 ]
 
 

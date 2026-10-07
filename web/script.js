@@ -461,6 +461,9 @@ const WORKER_TO_TAB = {
     "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
 };
 
+// worker name -> sidebar tab target + primary tag input (history jumps, nav icons)
+const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
+
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
 
@@ -2558,6 +2561,11 @@ socket.on("dl_queue", function (data) {
             workerRunning[w] = false; renderRunBtn(w);
         }
     });
+    // a worker active on the server but never started locally (page reload
+    // mid-run) still has a running task — mark it so STOP + the nav icon show
+    actives.forEach(a => {
+        if (!workerRunning[a.site] && !stoppedWorker[a.site]) { workerRunning[a.site] = true; renderRunBtn(a.site); }
+    });
     // jobs still waiting: hide their progress bar until the job actually starts
     queued.forEach(j => {
         const key = WORKER_TO_TAB[j.site];
@@ -2990,9 +2998,10 @@ function clearLog(tabID) {
 function showToast(msg, opts) {
     opts = opts || {};
     const container = document.getElementById("toastContainer") || (() => { const c = document.createElement('div'); c.id = 'toastContainer'; c.className = 'toast-container'; document.body.appendChild(c); return c; })();
-    // keyed toasts replace the previous toast of the same kind instead of
-    // stacking (e.g. "Rescan started" is pointless once "Rescan complete" lands)
+    // replace instead of stacking: same key, or an identical message still on
+    // screen (holding an arrow key at the last image spams "Last image")
     if (opts.key) container.querySelectorAll(".toast-item").forEach(t => { if (t.dataset.toastKey === opts.key) t.remove(); });
+    else container.querySelectorAll(".toast-item").forEach(t => { if (t.querySelector(".toast-title").textContent === msg) t.remove(); });
     let toast = document.createElement("div");
     toast.className = "toast-item" + (opts.warn ? " warn" : "");
     if (opts.key) toast.dataset.toastKey = opts.key;
@@ -3008,6 +3017,7 @@ const WARN_ICON = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none"
 const CHECK_ICON = ZERO_CHECK_ICON;
 const TRASH_ICON = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path fill="currentColor" d="M15.2188 0c0.2229 0.0000058603 0.4394 0.0747674 0.6152 0.211914 0.1757 0.137143 0.3013 0.328695 0.3555 0.544922L16.6182 3H24v2h-3v16c0 0.7957 -0.3163 1.5585 -0.8789 2.1211S18.7957 24 18 24H6c-0.79565 0 -1.55849 -0.3163 -2.12109 -0.8789C3.3163 22.5585 3 21.7957 3 21V5H0V3h7.38184L7.81055 0.756836c0.05418 -0.216227 0.17973 -0.407779 0.35547 -0.544922C8.34176 0.0747674 8.55833 0.0000058603 8.78125 0zM8 19h2V8H8zm6 -11v11h2V8z"></path></svg>`;
 const COPY_ICON = `<svg width="1em" height="1em" viewBox="0 0 48 48" fill="none" style="display:block;"><path fill="currentColor" fill-rule="evenodd" d="M17.5535 0.678504C19.0646 0.585621 21.2133 0.5 23.9996 0.5c2.7865 0 4.9354 0.085632 6.4467 0.178522 0.9153 0.056262 1.7297 0.431898 2.3401 1.013578 0.0486 -0.00131 0.0976 -0.00087 0.1469 0.00138 1.9679 0.08977 3.6262 0.20096 4.975 0.31121 3.5231 0.288 6.2657 3.00338 6.5533 6.54187C44.7266 11.8067 45 16.9901 45 24.501c0 7.5109 -0.2734 12.6943 -0.5384 15.9544 -0.2876 3.5385 -3.0302 6.2539 -6.5533 6.5419 -3.0518 0.2494 -7.6879 0.5037 -13.9083 0.5037 -6.2204 0 -10.8565 -0.2543 -13.9083 -0.5037 -3.52314 -0.288 -6.26573 -3.0034 -6.55333 -6.5419C3.2734 37.1953 3 32.0119 3 24.501c0 -7.5109 0.2734 -12.6943 0.53837 -15.95444 0.2876 -3.53848 3.03019 -6.25387 6.55333 -6.54187 1.3488 -0.11025 3.0071 -0.22144 4.9748 -0.3112 0.0494 -0.00225 0.0983 -0.00269 0.1469 -0.00139 0.6104 -0.58168 1.4247 -0.957331 2.3401 -1.013596ZM14.1563 5.74299c-1.4462 0.07621 -2.6925 0.16289 -3.7387 0.24841 -1.58575 0.12962 -2.76472 1.30856 -2.89238 2.8792C7.26992 12.0117 7 17.0863 7 24.501c0 7.4146 0.26992 12.4892 0.52522 15.6304 0.12766 1.5706 1.30663 2.7496 2.89238 2.8792 2.9437 0.2406 7.4711 0.4904 13.5824 0.4904s10.6387 -0.2498 13.5824 -0.4904c1.5858 -0.1296 2.7647 -1.3086 2.8924 -2.8792 0.2553 -3.1412 0.5252 -8.2158 0.5252 -15.6304 0 -7.4147 -0.2699 -12.4893 -0.5252 -15.6304 -0.1277 -1.57064 -1.3067 -2.74958 -2.8924 -2.8792 -1.0463 -0.08553 -2.2925 -0.1722 -3.7389 -0.24841 -0.0339 0.44693 -0.0705 0.86533 -0.1069 1.24504 -0.1654 1.72545 -1.4854 3.11107 -3.2524 3.26737 -1.4089 0.1246 -3.5319 0.2446 -6.4846 0.2446 -2.9525 0 -5.0753 -0.1199 -6.4841 -0.2446 -1.7669 -0.1563 -3.0868 -1.54188 -3.2522 -3.26725 -0.0364 -0.37974 -0.073 -0.79818 -0.107 -1.24516Z" clip-rule="evenodd"></path></svg>`;
+const DL_ICON = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="margin-left:5px; vertical-align:-0.15em; color:#2ecc71;"><path stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M12 3.5v11m0 0 4-4m-4 4-4-4M4.5 20h15"/></svg>`;
 window.addEventListener("error", function(e) {
     try {
         const stack = (e.error && e.error.stack ? String(e.error.stack) : "").split("\n").slice(0, 3).join(" | ");
@@ -3016,7 +3026,27 @@ window.addEventListener("error", function(e) {
     } catch (_) {}
 });
 
+// sidebar marker: download arrow on a worker's Downloaders tab while it runs
+function renderWorkerNavIcon(workerName) {
+    const tab = (siteMap[workerName] || {}).tab;
+    if (!tab) return;
+    const btn = Array.from(document.querySelectorAll('#group-downloaders .tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + tab + "'"));
+    if (!btn) return;
+    let icon = btn.querySelector('.nav-dl-icon');
+    if (workerRunning[workerName]) {
+        if (!icon) {
+            icon = document.createElement('span');
+            icon.className = 'nav-dl-icon';
+            icon.innerHTML = DL_ICON;
+            btn.appendChild(icon);
+        }
+    } else if (icon) {
+        icon.remove();
+    }
+}
+
 function renderRunBtn(workerName) {
+    renderWorkerNavIcon(workerName);
     const btn = document.getElementById("runBtn_" + workerName);
     if (!btn) return;
     const running = !!workerRunning[workerName];
@@ -3761,7 +3791,6 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
         currentNekosapiTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
         syncNekosapiTags();
     }
-    let siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
     // ponytail: match the button's openTab target, not its label —
     // labels like "e-shuushuu" never contain the key "eshuushuu"
@@ -4779,7 +4808,7 @@ async function selectDelete() {
         try {
             const r = await fetch("/api/gallery/delete", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ id }) });
             const d = await r.json().catch(() => ({}));
-            if (r.ok) { ok++; if (d.dedup_warning) dedup = true; }
+            if (r.ok) { ok++; if (d.dedup_warning) dedup = true; markDeleted(gallerySelected.get(id)); }
         } catch (e) { console.error("Delete error", e); }
     }
     exitSelectMode();
@@ -4978,7 +5007,28 @@ function fullImageUrl(filepath, filename) {
 function galleryThumbUrl(fp) {
     return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : '';
 }
+// deleted this session: the browser may still hold a day-fresh cached copy of
+// the old max-age responses, so a 200 from cache must not reopen them
+const deletedPaths = new Set();
+const deletedNames = new Set();
+function normPath(p) {
+    let s = String(p || "");
+    try { s = decodeURIComponent(s); } catch (e) {}
+    return s.replace(/\\/g, "/");
+}
+function markDeleted(path, name) {
+    if (path) deletedPaths.add(normPath(path));
+    if (name) deletedNames.add(name);
+}
+function isDeleted(path, name) {
+    return !!((path && deletedPaths.has(normPath(path))) || (name && deletedNames.has(name)));
+}
+function galleryPathFromUrl(url) {
+    const prefix = "/api/gallery/file/";
+    return url && url.startsWith(prefix) ? normPath(url.slice(prefix.length)) : "";
+}
 function openFullImage(filepath, filename, el) {
+    if (isDeleted(filepath, filename)) { showToast("Image was deleted", { warn: true, icon: WARN_ICON }); return; }
     const url = fullImageUrl(filepath, filename);
     // log images and history cards: hand the viewer their siblings so ←/→ walks them
     let list = null, idx = -1;
@@ -5062,6 +5112,10 @@ function loadViewerRaster(url, filename) {
     return p;
 }
 function openViewerSingle(url, filename, list, idx, boxId) {
+    // ←/→ lands here directly: block a path deleted this session even when
+    // the browser serves it from cache
+    const dp = galleryPathFromUrl(url);
+    if (dp && deletedPaths.has(dp)) { showToast("Image was deleted", { warn: true, icon: WARN_ICON }); return; }
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
@@ -5775,6 +5829,7 @@ function toggleViewerFav() {
                 let resp = await fetch("/api/gallery/delete_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) });
                 let data = await resp.json().catch(() => ({}));
                 if (resp.ok) {
+                    markDeleted(galleryPathFromUrl(viewerSingleUrl), viewerSingleFilename);
                     if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                     else showToast("Image deleted completely!", { icon: TRASH_ICON });
                     closeGalleryViewer();
@@ -5792,6 +5847,7 @@ function toggleViewerFav() {
             let resp = await fetch("/api/gallery/delete", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: img.id}) });
             let data = await resp.json().catch(() => ({}));
             if (resp.ok) {
+                markDeleted(img.filepath, img.filename);
                 if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                 else showToast("Image deleted completely!", { icon: TRASH_ICON });
                 let card = document.querySelector(`.gallery-card[onclick="openGalleryViewer('${img.id}')"]`);

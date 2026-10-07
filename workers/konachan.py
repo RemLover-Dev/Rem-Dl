@@ -1,7 +1,7 @@
 import os, hashlib
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-from core.shared import TAG_TYPE_MAP
+from core.shared import TAG_TYPE_MAP, media_subdir
 from core.database import DatabaseManager, DATABASE_DIR
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "konachan_tag_types.json")
@@ -180,7 +180,7 @@ class KonachanWorker(BaseWorker):
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"kona_{post.get('id', 'item')}.jpg")
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
-                rating_dir = os.path.join(self.tag_dir, rating_label, "images")
+                rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
                 safe_ensure_dir(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 

@@ -12,6 +12,7 @@ from core.shared import (
     sanitize_path_component,
     sanitize_filename,
     safe_ensure_dir,
+    media_subdir,
     TAG_TYPE_MAP,
 )
 from core.database import DatabaseManager, DATABASE_DIR
@@ -331,7 +332,7 @@ class GsbooruWorker(BaseWorker):
                 rating_dir = os.path.join(
                     self.tag_dir,
                     rating_label,
-                    "images"
+                    media_subdir(ext)
                 )
 
                 safe_ensure_dir(rating_dir)

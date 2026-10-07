@@ -1,7 +1,7 @@
 import os
 import asyncio
 import aiohttp
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir, media_subdir
 
 
 class DanbooruWorker(BaseWorker):
@@ -27,7 +27,6 @@ class DanbooruWorker(BaseWorker):
         self.dan_login = os.getenv("DANBOORU_LOGIN", "")
         self.dan_api_key = os.getenv("DANBOORU_API_KEY", "")
         self._auth = aiohttp.BasicAuth(self.dan_login, self.dan_api_key) if (self.dan_login and self.dan_api_key) else None
-        self.video_exts = {"mp4", "webm"}
 
         FORMAT_WORDS = {"video", "image"}
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-') and t not in FORMAT_WORDS)
@@ -143,9 +142,8 @@ class DanbooruWorker(BaseWorker):
                     continue
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}")
-                is_video = ext in self.video_exts
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
-                rating_dir = os.path.join(self.tag_dir, rating_label, "video" if is_video else "images")
+                rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
                 if rating_dir not in made_dirs:
                     safe_ensure_dir(rating_dir)
                     made_dirs.add(rating_dir)

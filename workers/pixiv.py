@@ -31,7 +31,7 @@ import requests
 from core.shared import (
     BaseDownloader, save_history, add_to_gallery, send_tags,
     check_duplicate, absorb_duplicate, MASTER_FOLDER, sanitize_path_component,
-    sanitize_filename, safe_ensure_dir, pace_session
+    sanitize_filename, safe_ensure_dir, media_subdir, pace_session
 )
 from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
 
@@ -336,7 +336,9 @@ class PixivWorker(BaseDownloader):
             filename = sanitize_filename(f"{work_id}{suffix}.{ext}", fallback=f"pixiv_{work_id}{suffix}.jpg")
 
             rating_label = sanitize_path_component(RATING_CODES.get(x_restrict, "Unknown"), fallback="Unknown")
-            rating_dir = os.path.join(self.tag_dir, rating_label, "images")
+            # ugoira zips become .gif below — route them with the gif, not the zip
+            rating_dir = os.path.join(self.tag_dir, rating_label,
+                                      "gifs" if is_u else media_subdir(ext))
             safe_ensure_dir(rating_dir)
             filepath = os.path.join(rating_dir, filename)
 
