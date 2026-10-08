@@ -135,58 +135,25 @@ def test_favourite_single_toggle(client, monkeypatch):
     assert r.get_json()["favourite"] is False
 
 
-def test_favourite_batch_toggle(client, monkeypatch):
-    gal = {
-        "images": [
-            {"id": "img1", "filename": "1.png", "filepath": "1.png", "favourite": False},
-            {"id": "img2", "filename": "2.png", "filepath": "2.png", "favourite": True},
-            {"id": "img3", "filename": "3.png", "filepath": "3.png", "favourite": False},
-        ]
-    }
+def test_favourite_batch_toggles_all_in_one_save(client, monkeypatch):
+    gal = {"images": [
+        {"id": "a", "filename": "1.png", "filepath": "1.png", "favourite": False},
+        {"id": "b", "filename": "2.png", "filepath": "2.png", "favourite": True},
+        {"id": "c", "filename": "3.png", "filepath": "3.png", "favourite": False},
+    ]}
+    saves = []
     monkeypatch.setattr(shared, "load_gallery", lambda: gal)
-    monkeypatch.setattr(shared, "save_gallery", lambda d: None)
+    monkeypatch.setattr(shared, "save_gallery", saves.append)
 
-    # 1. Empty IDs list
-    r = client.post("/api/gallery/favourite_batch", json={"ids": []}, headers=H)
-    assert r.status_code == 200
-    assert r.get_json() == {"success": True, "updated": 0, "favourite": True}
+    r = client.post("/api/gallery/favourite_batch", json={"ids": ["a", "b"]}, headers=H)
+    assert r.get_json() == {"success": True, "flipped": 2}
+    assert [i["favourite"] for i in gal["images"]] == [True, False, False]
+    assert len(saves) == 1  # whole batch = one gallery.json write
 
-    # 2. Toggle non-homogenous selection (img1=False, img2=True) -> both become True
-    r = client.post("/api/gallery/favourite_batch", json={"ids": ["img1", "img2"]}, headers=H)
-    assert r.status_code == 200
-    assert r.get_json() == {"success": True, "updated": 2, "favourite": True}
-    assert gal["images"][0]["favourite"] is True
-    assert gal["images"][1]["favourite"] is True
-    assert gal["images"][2]["favourite"] is False
-
-    # 3. Toggle homogenous True selection (img1=True, img2=True) -> both become False
-    r = client.post("/api/gallery/favourite_batch", json={"ids": ["img1", "img2"]}, headers=H)
-    assert r.status_code == 200
-    assert r.get_json() == {"success": True, "updated": 2, "favourite": False}
-    assert gal["images"][0]["favourite"] is False
-    assert gal["images"][1]["favourite"] is False
-
-    # 4. Explicit action "favourite"
-    r = client.post(
-        "/api/gallery/favourite_batch",
-        json={"ids": ["img1", "img3"], "action": "favourite"},
-        headers=H,
-    )
-    assert r.status_code == 200
-    assert r.get_json() == {"success": True, "updated": 2, "favourite": True}
-    assert gal["images"][0]["favourite"] is True
-    assert gal["images"][2]["favourite"] is True
-
-    # 5. Explicit action "unfavourite"
-    r = client.post(
-        "/api/gallery/favourite_batch",
-        json={"ids": ["img1", "img3"], "action": "unfavourite"},
-        headers=H,
-    )
-    assert r.status_code == 200
-    assert r.get_json() == {"success": True, "updated": 2, "favourite": False}
-    assert gal["images"][0]["favourite"] is False
-    assert gal["images"][2]["favourite"] is False
+    # unknown ids are a no-op — no rewrite
+    r = client.post("/api/gallery/favourite_batch", json={"ids": ["nope"]}, headers=H)
+    assert r.get_json() == {"success": True, "flipped": 0}
+    assert len(saves) == 1
 
 
 def test_gallery_rating_and_site_filters():
@@ -217,3 +184,40 @@ def test_gallery_rating_and_site_filters():
     site_res = Rems_Dl._apply_gallery_filters(mock_images, "", ["zerochan"], False, [], [])
     assert len(site_res) == 1
     assert site_res[0]["id"] == "1"
+
+
+
+def test_gallery_endpoint_lists_images(client):
+    # regression: get_gallery referenced `dirty` without initializing it —
+    # crashed with UnboundLocalError whenever no filepath repair was needed
+    r = client.get("/api/gallery?page=1&per_page=5", headers=H)
+    assert r.status_code == 200
+    j = r.get_json()
+    assert isinstance(j["images"], list)
+    assert j["total"] >= len(j["images"])
+    for img in j["images"]:
+        assert img.get("filepath")
+
+
+def test_gallery_date_filter(client, monkeypatch):
+    # self-seeded: other suite tests may leave the real gallery empty, and the
+    # endpoint must never persist anything from this run
+    newer = {"filename": "__tsfilter_newer__.png", "site": "zerochan", "filepath": "Zerochan/__tsfilter_newer__.png", "tags": {},
+             "downloaded_at": "2026-01-02T03:04:05"}
+    older = {"filename": "__tsfilter_older__.png", "site": "zerochan", "filepath": "Zerochan/__tsfilter_older__.png", "tags": {},
+             "downloaded_at": "2026-01-02T01:00:00"}
+    monkeypatch.setattr(Rems_Dl.shared, "load_gallery", lambda: {"images": [newer, older]})
+    monkeypatch.setattr(Rems_Dl, "_build_filepath_cache", lambda: {
+        newer["filename"]: newer["filepath"],
+        older["filename"]: older["filepath"],
+    })
+    data = client.get("/api/gallery?page=1&per_page=400", headers=H).get_json()
+    newest = data["images"][0]
+    ts = Rems_Dl._image_timestamp(newest)
+    win = client.get(f"/api/gallery?page=1&per_page=400&from_ts={ts}&to_ts={ts + 1}", headers=H).get_json()
+    assert any(i["filename"] == newest["filename"] for i in win["images"])
+    assert win["total"] < data["total"]
+    assert all(ts <= Rems_Dl._image_timestamp(i) <= ts + 1 for i in win["images"])
+    # malformed timestamps are ignored instead of 500ing
+    bad = client.get("/api/gallery?page=1&per_page=400&from_ts=notanumber", headers=H).get_json()
+    assert bad["total"] == data["total"]

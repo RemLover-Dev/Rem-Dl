@@ -1,7 +1,36 @@
-import html, os, re
+import html, os
 import asyncio
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-from core.shared import load_tag_cache, save_tag_cache, TAG_TYPE_MAP
+from core.shared import TAG_TYPE_MAP, media_subdir
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gelbooru_tag_types.json")
+
+RATING_CODE_MAP = {"g": "general", "s": "sensitive", "q": "questionable", "e": "explicit"}
+RATING_LABEL_MAP = {"general": "Safe", "sensitive": "Sensitive", "questionable": "Questionable", "explicit": "NSFW"}
+_CODE_OF = {"rating:g": "g", "rating:s": "s", "rating:q": "q", "rating:e": "e",
+            "rating:general": "g", "rating:sensitive": "s",
+            "rating:questionable": "q", "rating:explicit": "e"}
+
+
+def build_query(tag, rating):
+    """One AND query string for the dapi `tags` param plus the allowed-rating
+    set. Shared by the downloader and the tag watcher — single source of
+    truth for how tags+ratings serialize."""
+    original_tag = tag.strip().lower()
+    codes = [_CODE_OF[p] for p in (rating or "").split() if p in _CODE_OF]
+    rating_allowed = {RATING_CODE_MAP[c] for c in codes}
+    # ponytail: gelbooru ANDs rating tags (g+s returns count 0, no OR keyword),
+    # so a multi-rating subset is expressed by negating the complement instead
+    api_tag = original_tag
+    if codes and len(codes) < len(RATING_CODE_MAP):
+        if len(codes) == 1:
+            api_tag = f"{original_tag} rating:{RATING_CODE_MAP[codes[0]]}".strip()
+        else:
+            neg = " ".join(f"-rating:{RATING_CODE_MAP[c]}" for c in RATING_CODE_MAP if c not in codes)
+            api_tag = f"{original_tag} {neg}".strip()
+    rating_display = ", ".join(RATING_LABEL_MAP[RATING_CODE_MAP[c]] for c in codes)
+    return api_tag, rating_allowed, rating_display
 
 
 class GelbooruWorker(BaseWorker):
@@ -10,34 +39,19 @@ class GelbooruWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
         self.exclusions = exclusions
-
-        dan_to_gel_rating = {"rating:g": "rating:general", "rating:s": "rating:sensitive", "rating:q": "rating:questionable", "rating:e": "rating:explicit"}
-        self.api_tag = self.original_tag
-        if self.rating:
-            api_rating = dan_to_gel_rating.get(self.rating, self.rating)
-            self.api_tag = f"{self.original_tag} {api_rating}".strip()
-
-        self.rating_code_map = {"g": "general", "s": "sensitive", "q": "questionable", "e": "explicit"}
-        self.rating_label_map = {"general": "Safe", "sensitive": "Sensitive", "questionable": "Questionable", "explicit": "NSFW"}
-        self.rating_display = ""
-        if self.rating:
-            self.rating_display = self.rating_label_map.get(self.rating_code_map.get(self.rating.split(":")[-1], ""), "")
+        self.rating_code_map = RATING_CODE_MAP
+        self.rating_label_map = RATING_LABEL_MAP
+        self.api_tag, self.rating_allowed, self.rating_display = build_query(self.original_tag, rating)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         self.safe_tag_name = sanitize_path_component(clean_tag, fallback="gelbooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag_name)
         safe_ensure_dir(self.tag_dir)
 
-        self.tag_cache = load_tag_cache("gelbooru")
-
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
+        # persistent across runs: verified tag types are stored, so known tags
+        # never refetch (was re-querying up to 150 tags per page every run)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
     async def _fetch_tag_types(self, tag_names):
         api_key = os.getenv("GELBOORU_API_KEY", "")
@@ -84,18 +98,9 @@ class GelbooruWorker(BaseWorker):
         if still:
             self.log(f"⚠️ {len(still)} tag(s) still uncategorized after 3 retries "
                      f"— downloads this run will store them as general tags.")
-        save_tag_cache(self.tag_cache, "gelbooru")
-
-    def _categorize_tags(self, tag_names):
-        artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
-        for t in tag_names:
-            cat = self.tag_cache.get(t, "tag")
-            if cat == "artist": artists.append(t)
-            elif cat == "character": characters.append(t)
-            elif cat == "copyright": copyrights.append(t)
-            elif cat == "metadata": metadata_tags.append(t)
-            else: general.append(t)
-        return general, artists, characters, copyrights, metadata_tags
+        # ponytail: two concurrent gelbooru workers can overwrite each other's
+        # save — worst case those tags refetch on a later run
+        await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
 
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
@@ -105,6 +110,8 @@ class GelbooruWorker(BaseWorker):
         collected_count = 0
         pid = 0
 
+        consecutive_errors = 0
+        made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
@@ -133,9 +140,14 @@ class GelbooruWorker(BaseWorker):
 
             except Exception as e:
                 self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             all_tags = set()
             for post in posts:
                 if isinstance(post, dict):
@@ -143,10 +155,7 @@ class GelbooruWorker(BaseWorker):
                     for t in post.get("tags", "").split():
                         all_tags.add(html.unescape(t.strip()))
             if all_tags:
-                uncached_count = len([t for t in all_tags if t not in self.tag_cache])
-                if uncached_count:
-                    self.log(f"Categorizing {len(all_tags)} tags ({uncached_count} uncached)...")
-                    await self._fetch_tag_types(all_tags)
+                await self._fetch_tag_types(all_tags)
 
             had_valid = False
             for post in posts:
@@ -154,14 +163,15 @@ class GelbooruWorker(BaseWorker):
                 if not isinstance(post, dict): continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_code = self.rating.split(":")[-1]
-                    if post_rating != self.rating_code_map.get(filter_code, filter_code): continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
                 file_url = post.get("file_url", "")
                 if not file_url: continue
 
-                ext = file_url.split('.')[-1].lower()
+                # strip the query first: "file.jpg?client=1" must yield jpg,
+                # not "jpg?client=1" (exclusion filters then never match)
+                ext = file_url.split('?')[0].split('.')[-1].lower()
                 if ext in ["mp4", "webm", "zip"] and "-video" in self.exclusions: continue
                 if ext in ["jpg", "jpeg", "png", "webp"] and "-image" in self.exclusions: continue
                 if ext == "gif" and "-gif" in self.exclusions: continue
@@ -173,8 +183,10 @@ class GelbooruWorker(BaseWorker):
                 raw_tags = [html.unescape(t.strip()) for t in post.get("tags", "").split() if t.strip()]
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(raw_tags)
 
-                rating_dir = os.path.join(self.tag_dir, rating_label, "images")
-                safe_ensure_dir(rating_dir)
+                rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
+                if rating_dir not in made_dirs:
+                    safe_ensure_dir(rating_dir)
+                    made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
                 if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
@@ -194,8 +206,6 @@ class GelbooruWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_gelbooru(tag, amount, rating, exclusions, net_config):
     worker = GelbooruWorker(tag, amount, rating, exclusions, net_config)

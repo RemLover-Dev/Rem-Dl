@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-5.4.0-ff9ff3.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-5.3.0-ff9ff3.svg)](CHANGELOG.md)
 
 [English](README.md) | [فارسی](README_fa.md) | [لینوکس و داکر](#linux-docker)
 
@@ -52,8 +52,8 @@
 ### ۱. کلون مخزن
 
 ```bash
-git clone https://github.com/RemLover-Dev/Rem-Dl
-cd Rem-Dl
+git clone https://github.com/RemLover-Dev/Rems-Dl
+cd Rems-Dl
 ```
 
 ### ۲. نصب وابستگی‌ها
@@ -283,11 +283,11 @@ update-desktop-database ~/.local/share/applications/
 
 ### ۵. اجرا با داکر (Docker)
 ```bash
-docker pull ghcr.io/remlover-dev/rem-dl:latest
+docker pull ghcr.io/remlover-dev/rems-dl:latest
 docker run -d -p 5000:5000 \
   -v "$(pwd)/Rems Dl:/app/Rems Dl" \
   -v "$(pwd)/database:/app/database" \
-  --name rems-dl-app ghcr.io/remlover-dev/rem-dl:latest
+  --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
 
 ---

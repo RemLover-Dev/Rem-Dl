@@ -52,7 +52,7 @@ def test_inno_setup_script():
     assert "Rems-Dl-Windows-x64-Setup" in content
     assert "VCRedistNeedsInstall" in content
     assert "RemLoverDev.RemsDl.App.1.0" in content
-    assert '#define MyAppVersion "5.4.0"' in content
+    assert '#define MyAppVersion "5.3.0"' in content
 
 
 def test_pyinstaller_spec_and_metadata_hooks():
@@ -105,6 +105,22 @@ def test_rule34py_importlib_metadata_safeguard(monkeypatch):
         monkeypatch.setattr(importlib.metadata, "version", orig_version)
 
 
+def test_index_version_stamps_assets():
+    # the webview kept serving a stale style.css after a fix — the index
+    # route stamps ?v=<mtime> so an edited css/js is always a cache miss
+    import Rems_Dl
+    Rems_Dl.app.config["TESTING"] = True
+    H = {"User-Agent": "RemsDlDesktopApp/1.0"}
+
+    with Rems_Dl.app.test_client() as client:
+        r = client.get("/", headers=H)
+        assert r.status_code == 200
+        html = r.get_data(as_text=True)
+        for name in ("style.css", "script.js"):
+            v = int(os.path.getmtime(os.path.join("web", name)))
+            assert f'{name}?v={v}"' in html, f"{name} link not version-stamped"
+
+
 def test_folder_api_and_browse(tmp_path, monkeypatch):
     import Rems_Dl
     Rems_Dl.app.config["TESTING"] = True
@@ -119,9 +135,14 @@ def test_folder_api_and_browse(tmp_path, monkeypatch):
         # POST without Rem God join
         test_dir = str(tmp_path / "MyDownloads")
         os.makedirs(test_dir, exist_ok=True)
+        # folder validation confines POSTed folders to the user's home root —
+        # point "~" at tmp_path so this fixture dir counts as inside the root
+        _real_expanduser = os.path.expanduser
+        monkeypatch.setattr(os.path, "expanduser",
+                            lambda p: str(tmp_path) if p == "~" else _real_expanduser(p))
         r = client.post("/api/folder", json={"folder": test_dir}, headers=H)
         assert r.status_code == 200
-        assert r.get_json()["folder"] == os.path.normpath(test_dir)
+        assert r.get_json()["folder"] == os.path.realpath(test_dir)
 
         # POST empty returns 400
         r = client.post("/api/folder", json={"folder": ""}, headers=H)
@@ -138,3 +159,41 @@ def test_folder_api_and_browse(tmp_path, monkeypatch):
         r = client.post("/api/folder/browse", headers=H)
         assert r.status_code == 200
         assert r.get_json().get("cancelled") is True
+
+
+def test_gallery_file_revalidates_instead_of_serving_stale(tmp_path, monkeypatch):
+    # no-cache (not max-age): the browser must revalidate, so a deleted file
+    # 404s instead of serving a day-old cached copy — and 304s keep reopen cheap
+    import Rems_Dl
+    Rems_Dl.app.config["TESTING"] = True
+    H = {"User-Agent": "RemsDlDesktopApp/1.0"}
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
+    os.makedirs(os.path.join(str(tmp_path), "sub"))
+    img_path = os.path.join(str(tmp_path), "sub", "a.jpg")
+    with open(img_path, "wb") as f:
+        f.write(b"\xff\xd8\xff\xd9")
+
+    with Rems_Dl.app.test_client() as client:
+        r = client.get("/api/gallery/file/sub/a.jpg", headers=H)
+        assert r.status_code == 200
+        assert r.headers.get("Cache-Control") == "private, no-cache"
+        etag = r.headers.get("ETag")
+        assert etag
+
+        # unchanged file answers 304 — no body re-download
+        r304 = client.get("/api/gallery/file/sub/a.jpg", headers={**H, "If-None-Match": etag})
+        assert r304.status_code == 304
+
+        # close open file handles before unlinking (required on Windows)
+        r.close()
+        r304.close()
+
+        # deleted file answers 404 even with a conditional revalidation
+        os.remove(img_path)
+        r404 = client.get("/api/gallery/file/sub/a.jpg", headers={**H, "If-None-Match": etag})
+        assert r404.status_code == 404
+        assert "max-age" not in r404.headers.get("Cache-Control", "")
+
+        rmiss = client.get("/api/gallery/file/sub/gone.jpg", headers=H)
+        assert rmiss.status_code == 404
+        assert "max-age" not in rmiss.headers.get("Cache-Control", "")

@@ -356,7 +356,7 @@ class DedupStore:
     def __init__(self, db_path: str = DEDUP_DB_FILE):
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -475,21 +475,48 @@ class DedupStore:
         """
         try:
             sig = compute_signature(filepath)
-        except Exception as e:
+        except Exception:
             # Unreadable or corrupted image: don't block
             return DedupResult(is_duplicate=False, filepath=filepath)
 
-        match = self.find_duplicate(sig)
-        if match is not None:
-            return DedupResult(
-                is_duplicate=True,
-                filepath=filepath,
-                matched_path=match["filepath"],
-                matched_site=match["site"],
-                matched_post_id=match["post_id"],
-            )
-        self.add(filepath, sig, site=site, post_id=post_id)
+        # hold the lock across find+add — released in between, two threads
+        # downloading the same image both pass the check and both insert
+        with self._lock:
+            match = self.find_duplicate(sig)
+            if match is not None:
+                return DedupResult(
+                    is_duplicate=True,
+                    filepath=filepath,
+                    matched_path=match["filepath"],
+                    matched_site=match["site"],
+                    matched_post_id=match["post_id"],
+                )
+            self.add(filepath, sig, site=site, post_id=post_id)
         return DedupResult(is_duplicate=False, filepath=filepath)
+
+    def add_missing(self, entries) -> int:
+        """Hash image files that have no record yet (e.g. added manually).
+
+        `entries` is an iterable of (absolute filepath, site). Files already
+        recorded by filepath are skipped; one bad file never stops the run.
+        Returns the number of records added.
+        """
+        with self._lock:
+            existing = {r["filepath"] for r in self._conn.execute("SELECT filepath FROM image_hashes")}
+        added = 0
+        for filepath, site in entries:
+            fp = str(filepath)
+            if fp in existing:
+                continue
+            try:
+                sig = compute_signature(fp)
+                self.add(fp, sig, site=site)
+            except Exception as e:
+                print(f"[DEDUP] backfill failed for {fp}: {e}")
+                continue
+            existing.add(fp)
+            added += 1
+        return added
 
     def remove_by_filepath(self, filepath: str):
         with self._lock:

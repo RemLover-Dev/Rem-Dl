@@ -1,52 +1,10 @@
 import asyncio
 import os
 
-import aiohttp
 from PIL import Image
 
 from core.shared import BaseDownloader, write_image_metadata
-
-
-class MockContent:
-    def __init__(self, chunks, fail_after=False):
-        self.chunks = chunks
-        self.fail_after = fail_after
-
-    async def iter_chunked(self, n):
-        for c in self.chunks:
-            yield c
-        if self.fail_after:
-            raise aiohttp.ClientPayloadError("Response payload is not completed")
-
-
-class MockResponse:
-    def __init__(self, status, headers, content):
-        self.status = status
-        self.headers = headers
-        self.content = content
-
-    def raise_for_status(self):
-        if self.status >= 400:
-            raise aiohttp.ClientResponseError(
-                request_info=None, history=(), status=self.status
-            )
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
-
-
-class MockSession:
-    def __init__(self, responses):
-        self.headers = {}
-        self.responses = responses
-        self.calls = []
-
-    def get(self, url, headers=None, timeout=None):
-        self.calls.append(dict(headers or {}))
-        return self.responses.pop(0)
+from test_download_resume import MockContent, MockResponse, MockSession
 
 
 def _png(tmp_path, name="img.png"):

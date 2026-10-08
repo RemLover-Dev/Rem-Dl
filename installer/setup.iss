@@ -2,9 +2,9 @@
 ; Automatically detects and installs Microsoft Visual C++ 2015-2022 Redistributable (x64)
 
 #define MyAppName "Rems Dl"
-#define MyAppVersion "5.4.0"
+#define MyAppVersion "5.3.0"
 #define MyAppPublisher "RemLover-Dev"
-#define MyAppURL "https://github.com/RemLover-Dev/Rem-Dl"
+#define MyAppURL "https://github.com/RemLover-Dev/Rems-Dl"
 #define MyAppExeName "Rems_Dl.exe"
 #define MyAppAppUserModelID "RemLoverDev.RemsDl.App.1.0"
 

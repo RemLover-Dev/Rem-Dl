@@ -1,8 +1,11 @@
-import os, re
+import os
 import asyncio
 import xml.etree.ElementTree as ET
 from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
 import core.shared as shared
+from core.database import DatabaseManager, DATABASE_DIR
+
+TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "yande_tag_types.json")
 
 
 class YandeWorker(BaseWorker):
@@ -11,60 +14,47 @@ class YandeWorker(BaseWorker):
         self.original_tag = tag.strip().lower()
         self.rating = rating
 
-        self.api_tag = self.original_tag
-        if self.rating:
-            self.api_tag = f"{self.original_tag} {self.rating}".strip()
-
         self.rating_map = {"s": "Safe", "q": "Questionable", "e": "NSFW"}
+        code_of = {"rating:s": "s", "rating:q": "q", "rating:e": "e"}
+        codes = [code_of[p] for p in (self.rating or "").split() if p in code_of]
+        # the dropdown collapses a full set to All — treat it the same defensively
+        if len(codes) == len(self.rating_map):
+            codes = []
+        self.rating_allowed = set(codes)
+        self.rating_display = ", ".join(self.rating_map[c] for c in codes)
+
+        self.api_tag = self.original_tag
+        # ponytail: moebooru has no comma-OR in the rating metatag (verified live —
+        # 'rating:s,rating:e' returns only the first) — a single rating goes
+        # server-side, multi is filtered locally
+        if len(codes) == 1:
+            self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         FORMAT_WORDS = {"video", "image"}
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-') and t not in FORMAT_WORDS)
         self.safe_tag = sanitize_path_component(clean_tag, fallback="yande")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
-        self.tag_cache = shared.load_tag_cache("yande")
-
-    def get_tags(self):
-        return [self.original_tag]
-
-    async def download_image(self, url, filepath, filename, tags_list, artists=None):
-        return await self.enqueue_download(url, filepath, filename, tags_list, artists or [])
-
-    async def fetch_posts(self):
-        await self.scraper_task()
+        # persistent across runs — known tags never refetch (verified types only)
+        cached = DatabaseManager.load_json(TAG_TYPES_FILE)
+        self.tag_cache = dict(cached) if isinstance(cached, dict) else {}
 
     async def _fetch_tag_types(self, tag_names):
-        cache = self.tag_cache
-        uncached = [t for t in tag_names if t not in cache]
-        if uncached:
-            self.log(f"Fetching types for {len(uncached)} tags...")
-            # ponytail: concurrent like gelbooru/safebooru — sequential
-            # per-tag requests stalled every page
-            sem = asyncio.Semaphore(4)
-            async def query_one(tag_name):
-                async with sem:
-                    try:
-                        resp = await self.session.get("https://yande.re/tag.xml", params={
-                            "name": tag_name, "limit": 50
-                        })
-                        if resp.status != 200:
-                            cache[tag_name] = 0
-                        else:
-                            text = await resp.text()
-                            root = ET.fromstring(text)
-                            # ponytail: name= matches substrings and the exact
-                            # row can bury below row 1, so scan every row
-                            cache[tag_name] = 0
-                            for tag_el in root.findall("tag"):
-                                if tag_el.get("name", "").lower() == tag_name.lower():
-                                    cache[tag_name] = int(tag_el.get("type", 0))
-                                    break
-                    except Exception:
-                        cache[tag_name] = 0
-                    await asyncio.sleep(0.2)
-            await asyncio.gather(*[query_one(t) for t in uncached])
-            shared.save_tag_cache(cache, "yande")
-        return cache
+        async def attempt(tag_name):
+            resp = await self.session.get("https://yande.re/tag.xml", params={
+                "name": tag_name, "limit": 50
+            })
+            if resp.status != 200:
+                return False
+            root = ET.fromstring(await resp.text())
+            # ponytail: name= matches substrings and the exact
+            # row can bury below row 1, so scan every row
+            for tag_el in root.findall("tag"):
+                if tag_el.get("name", "").lower() == tag_name.lower():
+                    self.tag_cache[tag_name] = int(tag_el.get("type", 0))
+                    break
+            return True  # 200 processed: match OR genuinely absent
+        return await self._run_tag_fetch(tag_names, attempt, TAG_TYPES_FILE)
 
     def _categorize_tags(self, tag_names, cache):
         result = {"artist": [], "character": [], "copyright": [], "metadata": [], "tag": []}
@@ -75,11 +65,13 @@ class YandeWorker(BaseWorker):
         return result
 
     async def scraper_task(self):
-        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_map.get(self.rating.split(":")[-1], "")})" if self.rating else ""))
+        self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
 
         collected_count = 0
         page = 1
 
+        consecutive_errors = 0
+        made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
@@ -117,9 +109,14 @@ class YandeWorker(BaseWorker):
                     self.log("ERROR 403: Cloudflare/ISP block. You need a proxy.")
                 else:
                     self.log(f"API Error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    self.log("API failed 3 times in a row — giving up.")
+                    break
                 await asyncio.sleep(5)
                 continue
 
+            consecutive_errors = 0
             all_tag_names = set()
             for post in posts:
                 if not isinstance(post, dict):
@@ -137,12 +134,11 @@ class YandeWorker(BaseWorker):
                     continue
 
                 post_rating = post.get("rating", "")
-                if self.rating:
-                    filter_rating = self.rating.split(":")[-1]
-                    if post_rating != filter_rating:
-                        continue
+                if self.rating_allowed and post_rating not in self.rating_allowed:
+                    continue
 
-                url = post.get("file_url") or post.get("large_file_url")
+                # the original only — never a sample variant
+                url = post.get("file_url")
                 if not url:
                     continue
 
@@ -153,7 +149,9 @@ class YandeWorker(BaseWorker):
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"yande_{post.get('id', 'item')}.jpg")
                 rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 rating_dir = os.path.join(self.tag_dir, rating_label, "images")
-                safe_ensure_dir(rating_dir)
+                if rating_dir not in made_dirs:
+                    safe_ensure_dir(rating_dir)
+                    made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
                 tags_raw = post.get("tags", "")
@@ -182,8 +180,6 @@ class YandeWorker(BaseWorker):
         else:
             self.check_amount_warning(actual)
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_yande(tag, amount, rating, net_config):
     worker = YandeWorker(tag, amount, rating, net_config)

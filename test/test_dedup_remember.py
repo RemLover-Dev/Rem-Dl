@@ -6,7 +6,6 @@ from core.shared import BaseDownloader, save_history
 
 class _Dup:
     is_duplicate = True
-    matched_path = None
 
 
 class MockContent:

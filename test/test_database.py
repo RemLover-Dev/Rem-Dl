@@ -31,6 +31,24 @@ class TestDatabaseManager:
         assert config["wallpapers"]["Pixiv"]["dark"] == "Rem_Pixiv_d.jpg"
         assert config["wallpapers"]["Gsbooru"]["dark"] == "Rem_Gsbooru_d.jpg"
 
+    def test_ui_config_drops_clone_orphan_wallpapers(self, db_env):
+        import json
+        DatabaseManager.load_ui_config()  # seeds the defaults file
+        path = os.path.join(db_env, "ui_config.json")
+        with open(path) as f:
+            data = json.load(f)
+        wp = data["wallpapers"]
+        wp["waifu"] = dict(wp["Waifu"])   # legacy lowercase clone
+        wp["zero"] = dict(wp["Zero"])
+        wp["myupload"] = {"dark": "user_a.png", "light": "user_a_l.png"}  # real orphan upload
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        out = DatabaseManager.load_ui_config()["wallpapers"]
+        assert "waifu" not in out and "zero" not in out
+        assert "Waifu" in out and "Zero" in out
+        assert out["myupload"] == {"dark": "user_a.png", "light": "user_a_l.png"}
+
     def test_tag_history_operations(self, db_env):
         DatabaseManager.add_tag_history("zero", "test_tag")
         
@@ -38,10 +56,52 @@ class TestDatabaseManager:
         assert len(hist) == 1
         assert hist[0]["site"] == "zero"
         assert hist[0]["tag"] == "test_tag"
-        
+        assert hist[0]["searched_at"] > 0
+
+        # re-searching the same tag keeps one entry and refreshes it
+        DatabaseManager.add_tag_history("zero", "other_tag")
+        DatabaseManager.add_tag_history("zero", "test_tag")
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["tag"] == "test_tag"
+
         DatabaseManager.remove_tag_history("zero", "test_tag")
         hist2 = DatabaseManager.load_tag_history()
-        assert len(hist2) == 0
+        assert len(hist2) == 1
+        DatabaseManager.remove_tag_history("zero", "other_tag")
+        assert len(DatabaseManager.load_tag_history()) == 0
+
+    def test_tag_history_exclude_ai_flag(self, db_env):
+        DatabaseManager.add_tag_history("rule34", "rem")
+        assert DatabaseManager.load_tag_history()[0]["exclude_ai"] is False
+
+        DatabaseManager.add_tag_history("rule34", "rem", "", True)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 1
+        assert hist[0]["exclude_ai"] is True
+
+        DatabaseManager.add_tag_history("rule34", "rem", "", False)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 1
+        assert hist[0]["exclude_ai"] is False
+
+    def test_tag_history_filters_roundtrip(self, db_env):
+        DatabaseManager.add_tag_history("waifu", "rem")
+        assert DatabaseManager.load_tag_history()[0]["filters"] == {}
+
+        filters = {"method": "or", "sort_type": "score", "sort_order": "asc",
+                   "exclusions": ["-video", "-gif"]}
+        DatabaseManager.add_tag_history("rule34", "rem video", "", True, filters)
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["filters"] == filters
+
+        # re-search refreshes the entry and its filters
+        DatabaseManager.add_tag_history("rule34", "rem video", "", False,
+                                        {"hide_pools": True})
+        hist = DatabaseManager.load_tag_history()
+        assert len(hist) == 2
+        assert hist[0]["filters"] == {"hide_pools": True}
 
     def test_favorites_operations(self, db_env):
         # Add to favorites

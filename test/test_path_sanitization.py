@@ -206,7 +206,9 @@ class TestWorkerFolderBuildingWithProhibitedChars:
     def test_nekosapi_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         w = NekosApiWorker("re:zero,neko:tail", 10, "safe", self.NET_CONFIG)
-        assert os.path.isdir(w.rating_dir)
+        # rating dirs are created per image at enqueue; tag_dir is the
+        # sanitized-at-init piece
+        assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel
 
@@ -219,7 +221,7 @@ class TestWorkerFolderBuildingWithProhibitedChars:
 
     def test_waifu_im_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
-        w = WaifuImWorker("re:zero", 10, False, self.NET_CONFIG)
+        w = WaifuImWorker("re:zero", 10, "", [], self.NET_CONFIG)
         assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel
@@ -310,3 +312,23 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
             assert safe_name in dl.dl_history
 
         asyncio.run(_run_download())
+
+
+def test_pinterest_proxy_patch_reads_the_workers_config_not_the_browser_type():
+    """The old inline closure took `self` as BrowserType.launch's first arg,
+    shadowing the worker's self — login died on BrowserType.net_config."""
+    from workers.pinterest_worker import _launch_with_proxy
+
+    seen = {}
+    orig = lambda bt, **kw: seen.update(kw)
+
+    _launch_with_proxy(orig, {"use_proxy": True, "proxy_url": "http://127.0.0.1:10808"})("bt", headless=True)
+    assert seen["proxy"] == {"server": "http://127.0.0.1:10808"}
+
+    seen.clear()
+    _launch_with_proxy(orig, {"use_proxy": False, "proxy_url": "http://127.0.0.1:10808"})("bt")
+    assert "proxy" not in seen
+
+    seen.clear()
+    _launch_with_proxy(orig, {"use_proxy": True, "proxy_url": ""})("bt")
+    assert "proxy" not in seen

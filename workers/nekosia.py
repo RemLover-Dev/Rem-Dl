@@ -73,6 +73,10 @@ class NekosiaWorker(BaseDownloader):
                     if dead_rounds >= 3:
                         self.log("No more new images matching all tags.")
                         break
+                    # refetches the API — pause like the normal round end, a
+                    # continue here used to hammer the endpoint back-to-back
+                    if not self.stop_event.is_set():
+                        await asyncio.sleep(self.anti_ban_pause)
                     continue
                 dead_rounds = 0
             except Exception as e:
@@ -119,8 +123,6 @@ class NekosiaWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    def run(self):
-        asyncio.run(self.run_async_loop(self.scraper_task))
 
 def worker_nekosia(tag, amount, rating, net_config):
     NekosiaWorker(tag, amount, rating, net_config).run()
