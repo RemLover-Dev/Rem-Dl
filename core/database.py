@@ -137,7 +137,8 @@ class DatabaseManager:
             "filepath": filepath
         }
         hist.insert(0, entry)
-        hist = hist[:100]
+        # ponytail: unbounded like gallery.json (~830B/entry — a few MB
+        # rewritten per add at normal rates); move to sqlite if it outgrows that
         DatabaseManager.save_image_history(hist)
 
     @staticmethod
