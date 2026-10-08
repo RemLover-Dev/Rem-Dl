@@ -7,7 +7,7 @@ import time
 import asyncio
 import hashlib
 import aiohttp
-from PIL import Image, PngImagePlugin
+import zlib
 
 def _app_base_dir():
     # core/ lives one level below the repo root — go up one more.
@@ -340,10 +340,41 @@ def write_image_metadata(filepath, tags_list, artists, site, characters=None, co
                 f.write(data[:2] + seg + data[2:])
             os.replace(tmp, filepath)
         elif ext == 'png':
-            pnginfo = PngImagePlugin.PngInfo()
-            pnginfo.add_text("Rems_Dl", meta_text)
-            img = Image.open(filepath)
-            img.save(filepath, pnginfo=pnginfo)  # lossless for PNG
+            # byte-level chunk insert after IHDR. The old PIL img.save() path
+            # both re-encoded the whole image (slow) AND failed outright: the
+            # ".meta" temp name made PIL infer the format from the extension,
+            # raising "unknown file extension" — so PNGs never got metadata.
+            raw = meta_text.encode("utf-8")
+            try:
+                ctype = b"tEXt"
+                payload = b"Rems_Dl\x00" + meta_text.encode("latin-1")
+            except UnicodeEncodeError:
+                # PIL PngInfo.add_text semantics: non-latin1 falls back to iTXt
+                ctype = b"iTXt"
+                payload = b"Rems_Dl\x00\x00\x00\x00\x00" + raw
+            with open(filepath, "rb") as f:
+                data = f.read()
+            if data[:8] != b"\x89PNG\r\n\x1a\n":
+                return
+            chunk = (len(payload).to_bytes(4, "big") + ctype + payload +
+                     (zlib.crc32(ctype + payload) & 0xFFFFFFFF).to_bytes(4, "big"))
+            out = bytearray(data[:8])
+            i, inserted = 8, False
+            while i + 12 <= len(data):
+                ln = int.from_bytes(data[i:i + 4], "big")
+                kind = data[i + 4:i + 8]
+                if kind in (b"tEXt", b"iTXt") and data[i + 8:i + 16] == b"Rems_Dl\x00":
+                    i += 12 + ln  # drop a stale entry from a previous write
+                    continue
+                out += data[i:i + 12 + ln]
+                if kind == b"IHDR" and not inserted:
+                    out += chunk
+                    inserted = True
+                i += 12 + ln
+            tmp = filepath + ".meta"
+            with open(tmp, "wb") as f:
+                f.write(out)
+            os.replace(tmp, filepath)
         # webp/gif skipped: embedding would re-encode and lose quality
     except Exception as e:
         print(f"Metadata write error on {filepath}: {e}")
@@ -441,6 +472,7 @@ class BaseDownloader:
         self.session = None  # created lazily in _create_session
         self.downloaded_count = 0
         self.failed_count = 0
+        self.duplicate_count = 0
         self.downloaded_bytes = 0
         self.total_bytes = 0
         self.total_to_download = 0
@@ -486,6 +518,17 @@ class BaseDownloader:
         return session
 
     def log(self, msg): log_msg(self.name, msg)
+
+    def _remember_filename(self, filename):
+        # park the name in dl_history so the next run's enqueue/download skips
+        # it — phash kills used to leave no trace, so the same file was fetched
+        # again just to be hash-killed again. batched like successes (rewriting
+        # the whole history file per hit is O(history) each time)
+        self.dl_history.add(filename)
+        self._history_dirty += 1
+        if self._history_dirty >= 10:
+            save_history(self.site_root, self.dl_history)
+            self._history_dirty = 0
 
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         if artists is None: artists = []
@@ -589,6 +632,8 @@ class BaseDownloader:
                         pass
                     self.enqueued_count -= 1
                     self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
+                    self.duplicate_count += 1
+                    self._remember_filename(filename)
                     return False
 
                 self.downloaded_count += 1
@@ -614,12 +659,15 @@ class BaseDownloader:
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
+                # send_tags first: the viewer's tag box reads imageHistory via
+                # the update_history socket, so the history row must exist
+                # before the image is clickable
+                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 # ponytail: metadata + gallery publish BEFORE the SUCCESS log — the log card
                 # requests its thumb instantly and would otherwise read a half-written file
-                write_image_metadata(filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 add_to_gallery(self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-                send_tags(self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 return True
 
             except Exception as e:

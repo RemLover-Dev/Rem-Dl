@@ -445,6 +445,8 @@ class PixivWorker(BaseDownloader):
                 except OSError:
                     pass
                 self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {gif_name} not saved")
+                self.duplicate_count += 1
+                self._remember_filename(gif_name)
                 return False
 
             self.downloaded_count += 1

@@ -55,3 +55,16 @@ class TestDatabaseManager:
         DatabaseManager.toggle_favorite("safe", "cute")
         favs2 = DatabaseManager.load_favorites()
         assert len(favs2) == 0
+
+    def test_image_history_keeps_entries_past_100(self, db_env):
+        # the old [:100] trim deleted the oldest entries on every download
+        seed = [{"site": "zero", "filename": f"old{i}.png", "tags": {}, "downloaded_at": float(i)}
+                for i in range(150)]
+        DatabaseManager.save_image_history(seed)
+
+        DatabaseManager.add_image_history("zero", "new.png", [], [])
+
+        hist = DatabaseManager.load_image_history()
+        assert len(hist) == 151
+        assert hist[0]["filename"] == "new.png"
+        assert hist[-1]["filename"] == "old149.png"

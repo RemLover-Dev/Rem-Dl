@@ -42,35 +42,48 @@ class GelbooruWorker(BaseWorker):
     async def _fetch_tag_types(self, tag_names):
         api_key = os.getenv("GELBOORU_API_KEY", "")
         user_id = os.getenv("GELBOORU_USER_ID", "")
+        # ponytail: fetch EVERY uncached tag of this page. The old [:150] cap
+        # (v1-migration era) silently left the rest uncategorized — and that
+        # state got frozen into image metadata, image_history and the gallery
+        # at download time, so later cache heals never repaired those files
         uncached = [t for t in tag_names if t not in self.tag_cache]
         if not uncached:
             return
-        sem = asyncio.Semaphore(4)
+        sem = asyncio.Semaphore(32)
         async def query_one(tag_name):
             async with sem:
                 params = {"page": "dapi", "s": "tag", "q": "index", "name": tag_name, "json": 1, "limit": 50}
                 if api_key and user_id:
                     params["api_key"] = api_key
                     params["user_id"] = user_id
-                try:
-                    resp = await self.session.get("https://gelbooru.com/index.php", params=params)
-                    if resp.status == 200:
-                        data = await resp.json()
-                        tags = data.get("tag", [])
-                        # ponytail: only trust the exact tag, never a near miss
-                        # gelbooru entity-encodes response names (kal&#039;tsit_...)
-                        match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
-                        if match:
-                            t = match
-                            self.tag_cache[tag_name] = TAG_TYPE_MAP.get(t.get("type", 0), "tag")
-                        else:
-                            self.tag_cache[tag_name] = "tag"
-                    else:
-                        self.tag_cache[tag_name] = "tag"
-                except Exception:
-                    self.tag_cache[tag_name] = "tag"
+                # ponytail: 3 attempts — a transient 429/network fluke must not
+                # leave a tag miscategorized for this whole run
+                for attempt in range(3):
+                    fetched = False
+                    try:
+                        resp = await self.session.get("https://gelbooru.com/index.php", params=params)
+                        if resp.status == 200:
+                            data = await resp.json()
+                            tags = data.get("tag") or []
+                            # ponytail: only trust the exact tag, never a near miss
+                            # gelbooru entity-encodes response names (kal&#039;tsit_...)
+                            match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
+                            if match is not None:
+                                self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                            fetched = True  # 200 processed: match OR genuinely absent
+                    except Exception:
+                        fetched = False
+                    if fetched:
+                        break
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                # ponytail: a tag that never comes back stays uncached —
+                # caching a failure would mislabel it forever; next run retries
                 await asyncio.sleep(0.2)
         await asyncio.gather(*[query_one(t) for t in uncached])
+        still = [t for t in uncached if t not in self.tag_cache]
+        if still:
+            self.log(f"⚠️ {len(still)} tag(s) still uncategorized after 3 retries "
+                     f"— downloads this run will store them as general tags.")
         save_tag_cache(self.tag_cache, "gelbooru")
 
     def _categorize_tags(self, tag_names):

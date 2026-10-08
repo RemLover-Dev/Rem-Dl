@@ -1,5 +1,7 @@
 import os
 import asyncio
+import threading
+import time
 from curl_cffi import requests as curl_requests
 from core.shared import (
     BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
@@ -9,6 +11,40 @@ from core.shared import (
 
 API = "https://api.anime-pictures.net/api/v3"
 PER_PAGE = 80
+
+
+class _RateLimiter:
+    """Space callers at per_sec; thread-safe (requests run in to_thread)."""
+    def __init__(self, per_sec):
+        self.interval = 1.0 / per_sec
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self.interval
+        delay = slot - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+# ponytail: shared by every AnimeDlWorker — anime-pictures rate-limits per
+# origin, and detail fan-out (sem 6) + 4 download workers outran 4 req/s
+_SITE_RATE = _RateLimiter(4)
+
+
+def _rate_limit_session(session, rate=_SITE_RATE):
+    """Wrap session.get so every request this worker makes passes the limiter."""
+    raw_get = session.get
+
+    def get(*args, **kwargs):
+        rate.wait()
+        return raw_get(*args, **kwargs)
+
+    session.get = get
+    return session
 
 class AnimeDlWorker(BaseDownloader):
     def __init__(self, tag, amount, net_config):
@@ -30,7 +66,10 @@ class AnimeDlWorker(BaseDownloader):
 
         for attempt in range(self.dl_retries):
             try:
-                self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
+                # first attempt stays quiet — [SUCCESS]/[FAILED] report the
+                # outcome; only retries earn a log line
+                if attempt:
+                    self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
                 # ponytail: flat 600s cap; switch to streaming + stall detection if bigger files crawl
                 resp = await asyncio.to_thread(
                     self.curl_session.get, 
@@ -60,6 +99,8 @@ class AnimeDlWorker(BaseDownloader):
                         pass
                     self.enqueued_count -= 1
                     self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
+                    self.duplicate_count += 1
+                    self._remember_filename(filename)
                     return False
 
                 self.downloaded_count += 1
@@ -78,12 +119,13 @@ class AnimeDlWorker(BaseDownloader):
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
-                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-
+                # send_tags first: history row must exist before the image is
+                # clickable in the viewer (its tag box reads imageHistory)
+                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 # ponytail: metadata must land before gallery publish, else thumbs read a half-written file
-                write_image_metadata(filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 add_to_gallery(self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                send_tags(self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
                 return True
 
             except Exception as e:
@@ -128,7 +170,7 @@ class AnimeDlWorker(BaseDownloader):
             s.proxies = {"http": p, "https": p}
         s.cookies.set("time_zone", "UTC", domain=".anime-pictures.net")
         s.cookies.set("sitelang", "en", domain=".anime-pictures.net")
-        self.curl_session = s
+        self.curl_session = _rate_limit_session(s)
 
         # ponytail: list child sub-tags once so the user can search them
         # standalone — same pattern as the zerochan worker
