@@ -1,6 +1,6 @@
 import asyncio
 
-from workers.zerochan import ZerochanWorker, _looks_like_cf_challenge
+from workers.zerochan import ZerochanWorker, _derive_img_url, _looks_like_cf_challenge
 
 CF_HTML = (
     '<html><head><meta http-equiv="refresh" content="3">'
@@ -70,7 +70,7 @@ def test_json_enumerate_engine_status_matrix(tmp_path, monkeypatch):
     assert asyncio.run(w._curl_json_enumerate(page=2)) == ([], False)
 
 
-def _wire_scraper(monkeypatch, w, fake_gdl, fake_json, fake_detail=None):
+def _wire_scraper(monkeypatch, w, fake_gdl, fake_json):
     async def noop():
         return None
 
@@ -81,8 +81,6 @@ def _wire_scraper(monkeypatch, w, fake_gdl, fake_json, fake_detail=None):
     monkeypatch.setattr(w, "_ensure_curl_session", lambda: None)
     monkeypatch.setattr(w, "_gallery_dl_enumerate", fake_gdl)
     monkeypatch.setattr(w, "_curl_json_enumerate", fake_json)
-    if fake_detail is not None:
-        monkeypatch.setattr(w, "_curl_post_detail", fake_detail)
 
     async def fake_probe(pid):
         return f"https://static.zerochan.net/.full.{pid}.jpg"
@@ -112,10 +110,7 @@ def test_scraper_survives_gallery_dl_page2_failure(tmp_path, monkeypatch):
             return ([{"id": i, "tags": ["Solo"]} for i in range(1, 31)], True)
         return ([], True)
 
-    async def fake_detail(pid):
-        return {"full": f"https://static.zerochan.net/.full.{pid}.jpg"}
-
-    _wire_scraper(monkeypatch, w, fake_gdl, fake_json, fake_detail)
+    _wire_scraper(monkeypatch, w, fake_gdl, fake_json)
     asyncio.run(w.scraper_task())
 
     # gallery-dl served 1..7, JSON resumed at page 1 (ids 1..30 overlap 1..7,
@@ -125,6 +120,12 @@ def test_scraper_survives_gallery_dl_page2_failure(tmp_path, monkeypatch):
     joined = "\n".join(logs)
     assert "No more posts available from gallery-dl" not in joined
     assert "No more posts available." in joined
+
+    # One merged per-page line: engine, fetched count, enqueued count.
+    assert "posts (gallery-dl)" not in joined
+    assert "posts (built-in JSON API)" not in joined
+    assert "Page 1 (gallery-dl): fetched 7, enqueued 7 new (total: 7)" in joined
+    assert "Page 1 (json): fetched 30, enqueued 23 new (total: 30)" in joined
 
 
 def test_scraper_reports_api_failure_not_end_of_data(tmp_path, monkeypatch):
@@ -158,10 +159,7 @@ def test_scraper_crosschecks_when_gallery_dl_returns_empty(tmp_path, monkeypatch
             return ([{"id": i, "tags": ["Solo"]} for i in range(6, 11)], True)
         return ([], True)
 
-    async def fake_detail(pid):
-        return {"full": f"https://static.zerochan.net/.full.{pid}.jpg"}
-
-    _wire_scraper(monkeypatch, w, fake_gdl, fake_json, fake_detail)
+    _wire_scraper(monkeypatch, w, fake_gdl, fake_json)
     asyncio.run(w.scraper_task())
 
     assert len(_filenames(w)) == 5
@@ -186,3 +184,41 @@ def test_scraper_empty_tag_still_reports_bad_spelling(tmp_path, monkeypatch):
     joined = "\n".join(logs)
     assert "No posts found for" in joined
     assert "Check the tag spelling" in joined
+
+
+def test_derive_img_url_never_returns_source_page():
+    # "source" is a pixiv page URL — returning it downloaded HTML, not an image
+    pixiv_page = "https://www.pixiv.net/artworks/123456"
+    assert _derive_img_url({"id": 5, "source": pixiv_page}) is None
+    assert _derive_img_url({"id": 5}) is None
+    full = "https://static.zerochan.net/.full.5.png"
+    assert _derive_img_url({"full": full}) == full
+
+
+def test_scraper_no_detail_fetch_no_sleeps_and_strips_dotfiles(tmp_path, monkeypatch):
+    """Enqueue inline from the listing: no per-post detail request, no
+    anti-ban sleeps, probe-derived filenames must not stay hidden dotfiles."""
+    w, logs = _worker(tmp_path, monkeypatch)
+    assert not hasattr(w, "_curl_post_detail")
+
+    sleeps = []
+
+    async def record_sleep(*a, **k):
+        sleeps.append(a)
+
+    monkeypatch.setattr("workers.zerochan.asyncio.sleep", record_sleep)
+
+    def fake_gdl(tag, page, size):
+        return ([], True)
+
+    async def fake_json(page=1, per_page=200):
+        if page == 1:
+            return ([{"id": i, "source": "https://www.pixiv.net/artworks/%d" % i,
+                      "tags": ["Solo"]} for i in range(1, 4)], True)
+        return ([], True)
+
+    _wire_scraper(monkeypatch, w, fake_gdl, fake_json)
+    asyncio.run(w.scraper_task())
+
+    assert sleeps == []
+    assert _filenames(w) == ["full.1.jpg", "full.2.jpg", "full.3.jpg"]

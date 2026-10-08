@@ -176,7 +176,11 @@ def parse_zerochan_tags(html):
 
 
 def _derive_img_url(item):
-    keys = ["full", "large", "file_url", "source", "src", "url", "image"]
+    # "source" is deliberately absent: ?json returns a pixiv *page* URL there,
+    # not an image. id-only items fall through to None so the caller probes
+    # static.zerochan.net for the real extension (blind .full.N.jpg is wrong
+    # for png/webp posts).
+    keys = ["full", "large", "file_url", "src", "url", "image"]
     for k in keys:
         v = item.get(k)
         if v:
@@ -186,9 +190,6 @@ def _derive_img_url(item):
         no_thumb = thumb.replace(".thumb.", ".")
         if no_thumb != thumb:
             return no_thumb
-    post_id = item.get("id")
-    if post_id:
-        return f"https://static.zerochan.net/.full.{post_id}.jpg"
     return None
 
 
@@ -541,7 +542,6 @@ class ZerochanWorker(BaseDownloader):
                 seen.add(pid)
                 posts.append(kwdict)
 
-            self.log(f"Page {page}: {len(posts)} posts (gallery-dl)")
             return posts, True
 
         except FileNotFoundError:
@@ -601,37 +601,15 @@ class ZerochanWorker(BaseDownloader):
                 self.log(f"JSON listing page {page}: bad JSON ({e}).")
                 return [], False
             items = data.get("items", []) if isinstance(data, dict) else []
-            self.log(f"Page {page}: {len(items)} posts (built-in JSON API)")
             return items, True
         except Exception as e:
             self.log(f"JSON listing page {page} failed: {e}")
             return [], False
 
-    async def _curl_post_detail(self, pid):
-        """Fetch https://www.zerochan.net/{pid}?json -> dict (best-effort)."""
-        try:
-            session = self._ensure_curl_session()
-            url = f"https://www.zerochan.net/{pid}?json"
-
-            def _do():
-                return session.get(url, timeout=30, allow_redirects=True,
-                                   headers={"Referer": "https://www.zerochan.net/",
-                                            "Accept": "application/json"},
-                                   verify=self._verify_flag())
-
-            resp = await asyncio.to_thread(_do)
-            status = int(getattr(resp, "status_code", 0) or 0)
-            if status != 200:
-                return {}
-            try:
-                return _json.loads((getattr(resp, "content", b"") or b"").decode("utf-8", "ignore")) or {}
-            except Exception:
-                return {}
-        except Exception:
-            return {}
-
     async def _probe_static_url(self, pid):
         """Return the first existing static.zerochan.net full URL for a post id."""
+        # ponytail: up to 4 sequential 1-byte probes per id-only post —
+        # probe a learned ext map first if enumeration throughput ever matters
         session = self._ensure_curl_session()
 
         def _probe(url):
@@ -737,6 +715,9 @@ class ZerochanWorker(BaseDownloader):
                     artists, characters, copyrights, metadata_tags, outfits = [], [], [], [], []
 
             filename = urllib.parse.unquote(img_url.split('?')[0].split('/')[-1])
+            # static URLs are ".full.N.ext" — strip the leading dot or every
+            # download lands as a hidden file
+            filename = filename.lstrip(".")
             if not filename or '.' not in filename:
                 filename = f"zerochan_{pid}.jpg"
             # ':' and other reserved chars break Windows renames (WinError 87)
@@ -798,7 +779,10 @@ class ZerochanWorker(BaseDownloader):
             try:
                 if self.stop_event.is_set():
                     break
-                self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
+                # first attempt stays quiet — [SUCCESS]/[FAILED] report the
+                # outcome; only retries earn a log line
+                if attempt:
+                    self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
 
                 def _do_download():
                     session = self._ensure_curl_session()
@@ -861,13 +845,15 @@ class ZerochanWorker(BaseDownloader):
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits)
 
-                write_image_metadata(filepath, tags_list, artists, self.name,
+                # send_tags first: history row must exist before the image is
+                # clickable in the viewer (its tag box reads imageHistory)
+                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path,
+                          characters, copyrights, metadata_tags, outfits)
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name,
                                      characters, copyrights, metadata_tags, outfits)
                 add_to_gallery(self.name, filename, rel_path, tags_list, artists,
                                characters, copyrights, metadata_tags, outfits)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-                send_tags(self.name, filename, tags_list, artists, rel_path,
-                          characters, copyrights, metadata_tags, outfits)
                 return True
 
             except Exception as e:
@@ -949,22 +935,10 @@ class ZerochanWorker(BaseDownloader):
                     else:
                         self.log("No more posts available.")
                     break
-                # Enrich each item with its ?json detail (exact file URL).
-                posts = []
-                for item in items:
-                    if self.stop_event.is_set():
-                        break
-                    if self.amount > 0 and collected_count + len(posts) >= self.amount:
-                        break
-                    pid = item.get("id") if isinstance(item, dict) else None
-                    if pid is None:
-                        continue
-                    detail = await self._curl_post_detail(pid)
-                    merged = dict(item) if isinstance(item, dict) else {"id": pid}
-                    if detail:
-                        merged.update(detail)
-                    posts.append(merged)
-                    await asyncio.sleep(min(self.anti_ban_pause, 1.0))
+                # listing tags are identical to the ?json detail response and
+                # only "full" differs — the enqueue path probes the real URL,
+                # so no per-post detail fetch (200 requests + sleeps/tag)
+                posts = items
 
             if not posts:
                 self.log("No more posts available.")
@@ -979,13 +953,12 @@ class ZerochanWorker(BaseDownloader):
                 if await self._enqueue_post_dict(post):
                     collected_count += 1
                     enqueued_this_page += 1
-                await asyncio.sleep(self.anti_ban_pause)
 
-            self.log(f"Page {page}: enqueued {enqueued_this_page} new images "
+            engine = "gallery-dl" if use_gallery_dl else "json"
+            self.log(f"Page {page} ({engine}): fetched {len(posts)}, "
+                     f"enqueued {enqueued_this_page} new "
                      f"(total: {collected_count})")
             page += 1
-            if not self.stop_event.is_set() and (self.amount <= 0 or collected_count < self.amount):
-                await asyncio.sleep(self.anti_ban_pause)
 
         actual = collected_count + (self.download_queue.qsize() if self.download_queue else 0)
         if actual == 0:
