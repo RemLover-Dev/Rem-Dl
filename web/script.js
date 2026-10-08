@@ -1,3 +1,9 @@
+// ponytail: localStorage throws when blocked (WebKit webview has none) — a
+// crash at top level kills the whole script, leaving every later
+// reference (e.g. galleryBlurNsfw) stuck in TDZ
+function storeGet(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } }
+function storeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
 let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": false, "dedup_enabled": true };
 var workerRunning = {};
 let uiConfig = {};
@@ -2788,10 +2794,10 @@ const gallerySelected = new Map(); // id -> filepath snapshot (survives search/f
 let _dragPaint = false;
 let _dragSelect = true;
 let _dragSuppressClick = false;
-let galleryBlurNsfw = localStorage.getItem('gallery_blur_nsfw') !== 'false';
+let galleryBlurNsfw = storeGet('gallery_blur_nsfw', '') !== 'false';
 function toggleGalleryBlur() {
     galleryBlurNsfw = !galleryBlurNsfw;
-    localStorage.setItem('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
+    storeSet('gallery_blur_nsfw', galleryBlurNsfw ? 'true' : 'false');
     const btn = document.getElementById("galleryBlurBtn");
     if (btn) btn.classList.toggle("active", galleryBlurNsfw);
     const grid = document.getElementById("galleryGrid");
@@ -3897,7 +3903,7 @@ function toggleViewerFav() {
     document.getElementById("galleryViewerImg").addEventListener('mousedown', function(e) { if (viewerZoom <= 1 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (localStorage.getItem('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { localStorage.setItem('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) {} }
     async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON }); } }
     let _siteFilterSeq = 0;
     async function populateGallerySiteFilter() {
