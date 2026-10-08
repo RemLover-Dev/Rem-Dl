@@ -173,6 +173,11 @@ class PinterestWorker(BaseWorker):
         for i, media in enumerate(medias):
             if self.stop_event.is_set():
                 break
+            # names are "{id}.{ext}" (see pinterest_dl downloader) — skip pins
+            # whose name a previous run downloaded or hash-killed.
+            # ponytail: O(history) prefix scan per pin; index by id if histories grow
+            if any(n.startswith(f"{media.id}.") for n in self.dl_history):
+                continue
 
             try:
                 path = await asyncio.to_thread(downloader.download, media, Path(self.site_root), download_streams=True)
@@ -186,6 +191,8 @@ class PinterestWorker(BaseWorker):
                     except OSError:
                         pass
                     self.log(f"[SKIP] Duplicate of {dup.matched_path or 'previous download'} — {filename} not saved")
+                    self.duplicate_count += 1
+                    self._remember_filename(filename)
                     continue
 
                 rel = os.path.relpath(str(path), shared.MASTER_FOLDER)
@@ -193,6 +200,7 @@ class PinterestWorker(BaseWorker):
                 artists = []
                 shared.add_to_gallery(self.name, filename, rel, tags, artists)
                 shared.send_tags(self.name, filename, tags, artists, rel)
+                self._remember_filename(filename)
 
                 downloaded += 1
                 self.log(f"[SUCCESS] Downloaded {filename} ({downloaded}/{self.amount}) |PATH| {rel} |TAGS| {', '.join(tags[:5])}")
