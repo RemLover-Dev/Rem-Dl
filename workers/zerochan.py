@@ -895,11 +895,24 @@ class ZerochanWorker(BaseDownloader):
         # Fixed JSON page size so ?p= pagination never overlaps/skips.
         json_per_page = max(24, min(200, self.amount if self.amount > 0 else 200))
 
+        # Candidates enqueued this run that have not resolved yet: dedup kills
+        # and failures free quota (refill from later pages), successes fill it.
+        def pending_count():
+            return collected_count - (self.downloaded_count
+                                      + self.duplicate_count
+                                      + self.failed_count)
+
         while page <= MAX_PAGES:
             if self.stop_event.is_set():
                 break
-            if self.amount > 0 and collected_count >= self.amount:
+            if self.amount > 0 and self.downloaded_count >= self.amount:
                 break
+            if self.amount > 0 and self.downloaded_count + pending_count() >= self.amount:
+                # quota is covered by live candidates — wait for them to
+                # resolve instead of fetching another page; dedup/fail hits
+                # free budget (resume fetching), successes fill the quota
+                await asyncio.sleep(0.3)
+                continue
 
             posts = []
             if use_gallery_dl:
@@ -950,7 +963,7 @@ class ZerochanWorker(BaseDownloader):
             for post in posts:
                 if self.stop_event.is_set():
                     break
-                if self.amount > 0 and collected_count >= self.amount:
+                if self.amount > 0 and self.downloaded_count + pending_count() >= self.amount:
                     break
                 if await self._enqueue_post_dict(post):
                     collected_count += 1
@@ -967,7 +980,8 @@ class ZerochanWorker(BaseDownloader):
             self.log("No new images to download.")
         else:
             self.log(f"Finished scanning. Enqueued {actual} item"
-                     f"{'s' if actual != 1 else ''}. "
+                     f"{'s' if actual != 1 else ''} "
+                     f"({self.downloaded_count} delivered). "
                      "Completing downloads in the background...")
 
     def run(self):
