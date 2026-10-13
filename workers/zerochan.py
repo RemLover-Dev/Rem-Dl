@@ -21,7 +21,7 @@ from core.shared import (
     build_tagd,
     check_duplicate,
     absorb_duplicate,
-    sanitize_path_component,
+    folder_component,
     sanitize_filename,
     safe_ensure_dir,
     pace_session,
@@ -254,7 +254,7 @@ class ZerochanWorker(BaseDownloader):
         self.original_tag_lower = self.original_tag.lower()
 
         clean_tag = " ".join(t for t in self.original_tag_lower.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="misc")
+        self.safe_tag = folder_component(clean_tag, fallback="misc")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         try:
             os.makedirs(self.tag_dir, exist_ok=True)

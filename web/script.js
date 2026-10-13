@@ -279,12 +279,25 @@ function renderWallpaperGrid() {
         <div style="display: flex; flex-direction: column; gap: 5px;">
         <span style="color: var(--text-color); font-size: 13px; font-weight: bold;">${siteLabel(tab)}</span>
         <div style="display: flex; gap: 10px;">
-        <div class="wp-box dark-mode" onclick="document.getElementById('${boxIdDark}').click()">Dark Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdDark}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'dark', this)"></div>
-        <div class="wp-box light-mode" onclick="document.getElementById('${boxIdLight}').click()">Light Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdLight}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'light', this)"></div>
+        <div class="wp-box dark-mode" onclick="pickWpBox('${tab}', 'dark')">Dark Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdDark}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'dark', this)"></div>
+        <div class="wp-box light-mode" onclick="pickWpBox('${tab}', 'light')">Light Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdLight}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'light', this)"></div>
         </div>
         </div>
         `;
     });
+}
+
+function _wpUploaded(tabName, mode, result) {
+    if (!result.success) return;
+    uiConfig.wallpapers[tabName][mode] = result.filename;
+    let box = document.getElementById(`file_${tabName}_${mode}`).parentElement;
+    box.style.border = "2px solid var(--title-color)";
+    setTimeout(() => box.style.border = "", 1000);
+
+    let activeTabBtn = document.querySelector(".tab-btn.active");
+    if (activeTabBtn && activeTabBtn.getAttribute("onclick").includes(`'${tabName}'`) && currentActiveTheme === mode) {
+        updateBackground(tabName);
+    }
 }
 
 async function uploadWpBox(tabName, mode, fileInput) {
@@ -293,19 +306,27 @@ async function uploadWpBox(tabName, mode, fileInput) {
     formData.append("file", fileInput.files[0]);
     try {
         let resp = await fetch("/api/upload_wallpaper", { method: "POST", body: formData });
-        let result = await resp.json();
-        if (result.success) {
-            uiConfig.wallpapers[tabName][mode] = result.filename;
-            fileInput.parentElement.style.border = "2px solid var(--title-color)";
-            setTimeout(() => fileInput.parentElement.style.border = "", 1000);
-
-            let activeTabBtn = document.querySelector(".tab-btn.active");
-            if (activeTabBtn && activeTabBtn.getAttribute("onclick").includes(`'${tabName}'`) && currentActiveTheme === mode) {
-                updateBackground(tabName);
-            }
-        }
+        _wpUploaded(tabName, mode, await resp.json());
     } catch (e) { alert("Upload failed: " + e); }
     fileInput.value = "";
+}
+
+// on KDE the webview's file input opens the default file manager instead of a
+// file dialog — ask the backend for the native kdialog picker, else fall back
+async function pickWpBox(tabName, mode) {
+    try {
+        let resp = await fetch("/api/file/browse", { method: "POST" });
+        let data = await resp.json();
+        if (data.cancelled) return;
+        if (data.path) {
+            let formData = new FormData();
+            formData.append("path", data.path);
+            resp = await fetch("/api/upload_wallpaper", { method: "POST", body: formData });
+            _wpUploaded(tabName, mode, await resp.json());
+            return;
+        }
+    } catch (e) {}
+    document.getElementById(`file_${tabName}_${mode}`).click();
 }
 
 const _wpReady = {};
@@ -625,6 +646,15 @@ function logToConsole(tabID, msg) {
         else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
             logRating = "explicit";
+        }
+        // pixiv stores files under <tag>/R18/ and <tag>/R18G/ — r18g before r18
+        else if (pLow.includes('/r18g/')) {
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            logRating = "explicit";
+        }
+        else if (pLow.includes('/r18/')) {
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Rating: Questionable</div>`;
+            logRating = "questionable";
         }
         else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
             ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Rating: Sensitive</div>`;
@@ -2293,6 +2323,7 @@ socket.on("worker_finished", function (data) {
     const dup = z ? ` (${z} duplicates removed)` : "";
     const jobs = data.jobs || 1;
     if (jobs > 1) {
+        showToast(`${siteLabel(data.worker)} finished downloading`);
         if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded, ${f} failed${dup}! ---`);
         else if (d > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded${dup}! ---`);
         else updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, no new images${dup} ---`);
@@ -2604,9 +2635,10 @@ window.onload = async function () {
     } catch (e) { console.error("folder load failed:", e); }
 
     updateNekoDropdown();
-    updateNekosLifeType();
     // ponytail: hardcoded option labels display clean like everything else
     document.querySelectorAll('#nekosLifeCat option, #nekosLifeFormat option').forEach(o => { o.textContent = cleanTagDisplay(o.textContent); });
+    // after the labels are prettified: the format filter snapshots them
+    updateNekosLifeFormat();
     updatePixivMode();
     await loadUIConfig();
 
@@ -2630,6 +2662,14 @@ window.onload = async function () {
         renderNekosapiTagDropdown();
     } catch (e) { console.error("nekosapi tags load failed:", e); }
 
+    try {
+        let resp = await fetch("/api/tags/nekosbest", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig)
+        });
+        nekoEndpoints = await resp.json();
+        updateNekoDropdown();
+    } catch (e) { console.error("nekosbest endpoints load failed:", e); }
+
     await _startupTail;
     const gBlurBtn = document.getElementById("galleryBlurBtn");
     if (gBlurBtn) gBlurBtn.classList.toggle("active", galleryBlurNsfw);
@@ -2644,13 +2684,39 @@ window.onload = async function () {
 
 const nekoImages = ["husbando", "kitsune", "neko", "waifu"];
 const nekoGifs = ["angry", "baka", "bite", "bleh", "blowkiss", "blush", "bonk", "bored", "carry", "clap", "confused", "cry", "cuddle", "dance", "facepalm", "feed", "handhold", "handshake", "happy", "highfive", "hug", "kabedon", "kick", "kiss", "lappillow", "laugh", "lurk", "nod", "nom", "nope", "nya", "pat", "peck", "poke", "pout", "punch", "run", "salute", "shake", "shoot", "shocked", "shrug", "sip", "slap", "sleep", "smile", "smug", "spin", "stare", "tableflip", "teehee", "think", "thumbsup", "tickle", "wag", "wave", "wink", "yawn", "yeet"];
+// category -> format ("png"/"gif") from /api/tags/nekosbest; empty until it loads
+let nekoEndpoints = {};
+
+function nekoVisibleCats() {
+    const fmt = document.getElementById("nekoFormat").value;
+    const names = Object.keys(nekoEndpoints);
+    // until /api/tags/nekosbest loads, fall back to the old hardcoded lists
+    if (!names.length) return fmt === "Images" ? nekoImages : nekoGifs;
+    return names.filter(n => ((nekoEndpoints[n] || "png") === "gif") === (fmt === "GIFs"));
+}
 
 function updateNekoDropdown() {
-    let fmt = document.getElementById("nekoFormat").value;
-    let sel = document.getElementById("nekoCat");
-    sel.innerHTML = "";
-    let targetList = fmt === "Images" ? nekoImages : nekoGifs;
-    targetList.forEach(t => { let opt = document.createElement("option"); opt.value = t; opt.textContent = cleanTagDisplay(t); sel.appendChild(opt); });
+    const menu = document.getElementById("nekoCatDropdown");
+    if (!menu) return;
+    const items = nekoVisibleCats();
+    menu.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>' +
+        items.map(c => '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>' + cleanTagDisplay(c) + '</span><input type="checkbox" value="' + escJs(c) + '"></div>').join('');
+    onNekoCatChange();
+}
+
+function onNekoCatChange() {
+    const menu = document.getElementById('nekoCatDropdown');
+    const hidden = document.getElementById('nekoCat');
+    if (!menu || !hidden) return;
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    const allCheck = menu.querySelector('input[value=""]');
+    const checked = itemChecks.filter(c => c.checked);
+    if (checked.length === 0 && allCheck) allCheck.checked = true;
+    // "All" spells out every category of the current format so the payload
+    // always carries an explicit list the worker can loop over
+    hidden.value = ((allCheck && allCheck.checked) ? itemChecks : checked).map(c => c.value).join(' ');
+    const btn = document.querySelector('[onclick="toggleDropdown(\'nekoCatDropdown\')"]');
+    if (btn) btn.textContent = getMultiLabel('nekoCatDropdown', 'All Categories') + ' ▾';
 }
 
 function updatePixivMode() {
@@ -2691,20 +2757,29 @@ function toggleGifExclusion(formatId, checkboxId) {
     else { checkbox.style.display = ''; label.style.display = ''; }
 }
 
-function updateNekosLifeType() {
-    const gifOnly = ["ngif", "hug", "pat", "cuddle", "tickle", "feed", "slap", "kiss", "smug"];
-    const staticOnly = ["gecg", "meow", "neko", "lewd", "gasm", "8ball", "avatar", "woof", "fox_girl", "waifu"];
-    const mixed = ["goose", "wallpaper", "lizard", "span"];
+// The format dropdown drives the category list: each optgroup is one bucket
+// (GIF Only / Static Only / Mixed), so picking a format narrows the categories
+// down to the ones that can actually deliver it.
+function updateNekosLifeFormat() {
+    const fmtSel = document.getElementById("nekosLifeFormat");
+    const catSel = document.getElementById("nekosLifeCat");
 
-    let cat = document.getElementById("nekosLifeCat").value;
-    let typeEl = document.getElementById("nekosLifeType");
-    let formatLabel = document.getElementById("nekosLifeFormatLabel");
-    let formatSelect = document.getElementById("nekosLifeFormat");
+    // snapshot the full list once — the labels only live in the markup, and
+    // the custom menu rebuilds itself from whatever options are present
+    if (!catSel.dataset.all) {
+        catSel.dataset.all = JSON.stringify([...catSel.options].map(
+            o => ({ v: o.value, t: o.textContent, g: o.parentNode.label || "" })));
+    }
+    const group = { gif: "GIF Only", image: "Static Only" }[fmtSel.value] || "Mixed (GIF/Static)";
+    const keep = JSON.parse(catSel.dataset.all).filter(o => o.g === group);
+    const prev = catSel.value;
 
-    if (gifOnly.includes(cat)) { typeEl.textContent = "[GIF]"; typeEl.style.color = "var(--accent-color)"; formatLabel.style.display = "none"; formatSelect.style.display = "none"; }
-    else if (staticOnly.includes(cat)) { typeEl.textContent = "[STATIC]"; typeEl.style.color = "#00d2d3"; formatLabel.style.display = "none"; formatSelect.style.display = "none"; }
-    else if (mixed.includes(cat)) { typeEl.textContent = "[MIXED]"; typeEl.style.color = "#ffd93d"; formatLabel.style.display = ""; formatSelect.style.display = ""; }
-    else { typeEl.textContent = ""; formatLabel.style.display = "none"; formatSelect.style.display = "none"; }
+    catSel.innerHTML = "";
+    keep.forEach(o => catSel.appendChild(new Option(o.t, o.v)));
+    // a category that survives the new format stays selected, otherwise land on
+    // the first one; through setSelectValue so the trigger's label follows
+    const target = keep.find(o => o.v === prev) || keep[0];
+    if (target) setSelectValue(catSel, target.v);
 }
 
 async function saveProxySettings() {
@@ -3077,9 +3152,9 @@ function buildWorkerPayload(workerName) {
     payload.net_config.anti_ban_pause = document.getElementById("antiBanPause").value;
 
     if (workerName === 'zero') { payload.tag = currentZerochanTags.join(','); payload.limit = document.getElementById('zeroLimit').value; }
-    else if (workerName === 'waifu') { payload.tag = currentWaifuTags.join(' '); payload.limit = document.getElementById('waifuLimit').value; payload.rating = document.getElementById('waifuRating').value; }
+    else if (workerName === 'waifu') { payload.tag = currentWaifuTags.join(' '); payload.limit = document.getElementById('waifuLimit').value; payload.rating = document.getElementById('waifuRating').value; payload.net_config.exclude_gifs = document.getElementById('waifuExGif').checked; }
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
-    else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; const mixed = ["goose", "wallpaper", "lizard", "span"]; if (mixed.includes(payload.category)) payload.format = document.getElementById('nekosLifeFormat').value; }
+    else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; payload.format = document.getElementById('nekosLifeFormat').value; }
     else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
     else if (workerName === 'gelbooru') { payload.tag = currentGelbooruTags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !currentGelbooruTags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
     else if (workerName === 'gsbooru') { payload.tag = currentGsbooruTags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
@@ -3790,6 +3865,21 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
         // legacy history entries were free text ("catgirl yuri" / "catgirl, yuri")
         currentNekosapiTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
         syncNekosapiTags();
+    } else if (site === "neko") {
+        // history stores the space-joined categories, not the format — derive the
+        // format first (switching it rebuilds the menu), then re-check exactly those
+        const cats = String(tag || "").trim().split(/[\s,]+/).filter(Boolean);
+        const isGif = c => (nekoEndpoints[c] || (nekoGifs.includes(c) ? "gif" : "png")) === "gif";
+        if (cats.length) {
+            setSelectValue(document.getElementById("nekoFormat"), isGif(cats[0]) ? "GIFs" : "Images");
+            const menu = document.getElementById("nekoCatDropdown");
+            if (menu) {
+                menu.querySelectorAll('input[type="checkbox"]').forEach(c => {
+                    c.checked = c.value !== '' && cats.includes(c.value);
+                });
+                onNekoCatChange();
+            }
+        }
     }
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
     // ponytail: match the button's openTab target, not its label —
@@ -4021,22 +4111,54 @@ async function syncBlurSettings() {
 }
 document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
 
+// worst-wins ladder: a source may only ever *raise* the rating, never lower it
+const RATING_RANK = { safe: 0, sensitive: 1, questionable: 2, explicit: 3 };
+// the folder the downloader wrote is the real rating, so it is read as whole
+// path segments (mirrors matches_any_rating on the server)
+const RATING_SEGS = {
+    explicit: ['nsfw', 'explicit'],
+    sensitive: ['sensitive', 'suggestive'],
+    questionable: ['questionable'],
+    safe: ['safe', 'general'],
+};
+// tags are only a fallback and are matched whole. Substring matching here is
+// what left a Questionable image unblurred: `sexually_suggestive` contains
+// "suggestive", so it sniffed as sensitive and left the blur list entirely.
+const RATING_TAGS = {
+    explicit: ['nsfw', 'explicit', 'rating:e', 'r18', 'r18g'],
+    sensitive: ['rating:sensitive', 'rating:s', 'suggestive'],
+    questionable: ['rating:questionable', 'rating:q', 'borderline', 'moderate'],
+    safe: ['rating:safe', 'rating:g', 'rating:general'],
+};
+
 function getGalleryImageRating(img) {
     if (!img) return "safe";
-    // stored per-image rating wins — a mixed Safe_Sensitive_Questionable
+    // stored per-image rating wins outright — a mixed Safe_Sensitive_Questionable
     // folder name would otherwise sniff as questionable for every file in it
     const stored = (img.rating || "").toLowerCase();
-    if (["safe", "sensitive", "questionable", "explicit"].includes(stored)) return stored;
-    let allTags = [];
-    let tagsDict = normalizeTags(img.tags || {});
-    TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
-    let pLow = ((img.filepath || img.filename || "") + " " + allTags.join(' ')).toLowerCase();
-    let siteLower = (img.site || "").toLowerCase();
+    if (RATING_RANK[stored] !== undefined) return stored;
+    const siteLower = (img.site || "").toLowerCase();
     if (siteLower === "rule34") return "explicit";
-    if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e') || pLow.includes('r18') || pLow.includes('/nsfw')) return "explicit";
-    if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive') || pLow.includes('suggestive') || pLow.includes('rating:s')) return "sensitive";
-    if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q') || pLow.includes('borderline')) return "questionable";
-    return "safe";
+    const fpl = (img.filepath || img.filename || "").toLowerCase();
+    const segs = new Set(fpl.split(/[\\/]+/).map(s => s.trim()).filter(Boolean));
+    // pixiv: R18 tier is its questionable, only R18G is explicit
+    if (siteLower === "pixiv") {
+        if (segs.has('r18g')) return "explicit";
+        if (segs.has('r18')) return "questionable";
+        return "safe";
+    }
+    let worst = "safe";
+    const bump = c => { if (RATING_RANK[c] > RATING_RANK[worst]) worst = c; };
+    for (const canon in RATING_SEGS) {
+        if (RATING_SEGS[canon].some(s => segs.has(s))) bump(canon);
+    }
+    const tagsDict = normalizeTags(img.tags || {});
+    const tags = new Set();
+    TAG_CATEGORIES.forEach(c => { (tagsDict[c] || []).forEach(t => tags.add(String(t).toLowerCase())); });
+    for (const canon in RATING_TAGS) {
+        if (RATING_TAGS[canon].some(t => tags.has(t))) bump(canon);
+    }
+    return worst;
 }
 
 function selectAllCurrentPage() {
@@ -4074,7 +4196,7 @@ const SOURCE_RATINGS = {
     nekosia: ['safe', 'sensitive'],
     'waifu.im': ['safe', 'explicit'],
     pinterest: ['safe'],
-    pixiv: ['safe', 'explicit'],
+    pixiv: ['safe', 'questionable', 'explicit'],
     zerochan: ['safe'],
     'nekos.best': ['safe'],
     'nekos_best': ['safe'],
@@ -4122,6 +4244,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
     else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
     else if (menu.id === 'waifuRatingDropdown') onWaifuRatingChange();
+    else if (menu.id === 'nekoCatDropdown') onNekoCatChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -4179,14 +4302,12 @@ function updateRatingDropdown() {
         document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => el.style.display = '');
         return;
     }
-    let common = null;
+    // union, not intersection: sources differ in which ratings they carry, so
+    // picking gelbooru + zerochan must not collapse the menu down to "safe"
+    const common = new Set(['']);
     selectedSources.forEach(s => {
-        const r = SOURCE_RATINGS[s.toLowerCase()] || [];
-        if (common === null) common = new Set(r);
-        else common = new Set([...common].filter(x => r.includes(x)));
+        (SOURCE_RATINGS[s.toLowerCase()] || []).forEach(r => common.add(r));
     });
-    if (common === null) common = new Set();
-    common.add('');
     document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => {
         const cb = el.querySelector('input[type="checkbox"]');
         if (!cb) return;
@@ -4227,7 +4348,7 @@ function getMultiSelectValues(id) {
         itemChecks.forEach(c => c.checked = false);
         return '';
     }
-    if (checkedVals.length === 0) return '__none__';
+    if (checkedVals.length === 0) return '';
     return checkedVals.join(',');
 }
 
@@ -4239,12 +4360,9 @@ function getMultiLabel(id, defaultLabel) {
     if (allCheck && allCheck.checked) return defaultLabel;
     const checkedItems = itemChecks.filter(c => c.checked);
     if (checkedItems.length === itemChecks.length && itemChecks.length > 0) return defaultLabel;
-    if (checkedItems.length === 0) {
-        if (id === 'sourceDropdown') return 'None (No Sources)';
-        if (id === 'typeDropdown') return 'None (No Types)';
-        if (id === 'ratingDropdown') return 'None (No Ratings)';
-        return 'None Selected';
-    }
+    // deselecting everything reads as All — the state the menu starts in —
+    // not as a filter that matches nothing
+    if (checkedItems.length === 0) return defaultLabel;
     if (checkedItems.length === 1) {
         const item = checkedItems[0].closest('.dd-item');
         const span = item ? item.querySelector('span') : null;
@@ -4498,23 +4616,11 @@ function renderGallery() {
 
     const { images, total, page, total_pages, per_page } = galleryState;
     if (images.length === 0) {
-        const isNoneSource = getMultiSelectValues('sourceDropdown') === '__none__';
-        const isNoneType = getMultiSelectValues('typeDropdown') === '__none__';
-        const isNoneRating = getMultiSelectValues('ratingDropdown') === '__none__';
         const searchVal = (document.getElementById("gallerySearch") ? document.getElementById("gallerySearch").value : '').trim();
 
         let hint = "No images found";
         let detail = "No images match the current filters.";
-        if (isNoneSource) {
-            hint = "No Sources Selected";
-            detail = "The source filter is currently set to None. Open the sources dropdown and select \"All\" or pick specific downloaders.";
-        } else if (isNoneType) {
-            hint = "No Types Selected";
-            detail = "All file types are deselected. Please select at least one type in the Types dropdown.";
-        } else if (isNoneRating) {
-            hint = "No Ratings Selected";
-            detail = "All ratings are deselected. Please select at least one rating in the Ratings dropdown.";
-        } else if (searchVal) {
+        if (searchVal) {
             hint = "No Matches Found";
             detail = `No downloaded images matched "${searchVal}".`;
         } else if (galleryFavFilter) {
@@ -5181,6 +5287,11 @@ function viewerMetaHtml(img, tagsClickable) {
         ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
     } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
         ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+    } else if (pLow.includes('/r18g/')) {
+        // pixiv r18g = NSFW, r18 = questionable — r18g before r18
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+    } else if (pLow.includes('/r18/')) {
+        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Questionable</span>`;
     } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
         ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Sensitive</span>`;
     } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {

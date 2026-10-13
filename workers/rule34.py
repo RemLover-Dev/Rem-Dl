@@ -1,6 +1,6 @@
 import os, random
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
 from core.shared import pace_requests
 
 # Safeguard importlib.metadata in frozen bundles (e.g. PyInstaller standalone / portable builds)
@@ -82,7 +82,7 @@ class Rule34Worker(BaseWorker):
         self.log(f"Final Payload sent to rule34Py: {TAGS}")
 
         clean_folder_name = " ".join([t for t in tag_list if not t.startswith('-')])
-        self.safe_tag = sanitize_path_component(clean_folder_name.replace("~", ""), fallback="mixed_tags")
+        self.safe_tag = folder_component(clean_folder_name.replace("~", ""), fallback="mixed_tags")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 

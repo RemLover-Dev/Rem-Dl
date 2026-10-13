@@ -123,37 +123,56 @@ def test_clipboard_uri_missing_404(client, lib):
     popen.assert_not_called()
 
 
+class _FakeStore:
+    """Stands in for the SQLite store so a route test can't write real rows."""
+    def __init__(self):
+        self.writes = []
+
+    def set_favourite(self, gid, value):
+        self.writes.append((gid, value))
+
+    def delete_by_filename(self, fn):
+        self.writes.append(("del", fn))
+
+
 def test_favourite_single_toggle(client, monkeypatch):
     gal = {"images": [{"id": "aaa", "filename": "1.png", "filepath": "1.png", "favourite": False}]}
+    store = _FakeStore()
     monkeypatch.setattr(shared, "load_gallery", lambda: gal)
-    monkeypatch.setattr(shared, "save_gallery", lambda d: None)
+    monkeypatch.setattr(shared, "save_gallery",
+                        lambda d: pytest.fail("single toggle rewrote the whole gallery"))
+    monkeypatch.setattr(shared, "_store", lambda: store)
 
     r = client.post("/api/gallery/favourite", json={"id": "aaa"}, headers=H)
     assert r.status_code == 200
     assert r.get_json() == {"success": True, "favourite": True}
     r = client.post("/api/gallery/favourite", json={"id": "aaa"}, headers=H)
     assert r.get_json()["favourite"] is False
+    assert store.writes == [("aaa", True), ("aaa", False)]
 
 
-def test_favourite_batch_toggles_all_in_one_save(client, monkeypatch):
+def test_favourite_batch_toggles_all_in_one_pass(client, monkeypatch):
     gal = {"images": [
         {"id": "a", "filename": "1.png", "filepath": "1.png", "favourite": False},
         {"id": "b", "filename": "2.png", "filepath": "2.png", "favourite": True},
         {"id": "c", "filename": "3.png", "filepath": "3.png", "favourite": False},
     ]}
-    saves = []
+    store = _FakeStore()
     monkeypatch.setattr(shared, "load_gallery", lambda: gal)
-    monkeypatch.setattr(shared, "save_gallery", saves.append)
+    monkeypatch.setattr(shared, "save_gallery",
+                        lambda d: pytest.fail("batch toggle rewrote the whole gallery"))
+    monkeypatch.setattr(shared, "_store", lambda: store)
 
     r = client.post("/api/gallery/favourite_batch", json={"ids": ["a", "b"]}, headers=H)
     assert r.get_json() == {"success": True, "flipped": 2}
     assert [i["favourite"] for i in gal["images"]] == [True, False, False]
-    assert len(saves) == 1  # whole batch = one gallery.json write
+    # one targeted row update per id touched, nothing else
+    assert store.writes == [("a", True), ("b", False)]
 
-    # unknown ids are a no-op — no rewrite
+    # unknown ids are a no-op — no writes at all
     r = client.post("/api/gallery/favourite_batch", json={"ids": ["nope"]}, headers=H)
     assert r.get_json() == {"success": True, "flipped": 0}
-    assert len(saves) == 1
+    assert store.writes == [("a", True), ("b", False)]
 
 
 def test_gallery_rating_and_site_filters():
@@ -165,7 +184,7 @@ def test_gallery_rating_and_site_filters():
         {"id": "5", "filename": "nsfw2.png", "site": "yande", "filepath": "Yande/NSFW/nsfw2.png", "tags": {"tag": ["explicit", "nipples"]}},
     ]
     # Filter safe only
-    safe_res = Rems_Dl._apply_gallery_filters(mock_images, "", [], False, [], ["safe"])
+    safe_res = Rems_Dl._apply_gallery_filters(mock_images, None, [], False, [], ["safe"])
     safe_ids = {i["id"] for i in safe_res}
     assert "1" in safe_ids
     assert "2" in safe_ids
@@ -174,14 +193,14 @@ def test_gallery_rating_and_site_filters():
     assert "5" not in safe_ids
 
     # Filter explicit only
-    nsfw_res = Rems_Dl._apply_gallery_filters(mock_images, "", [], False, [], ["explicit"])
+    nsfw_res = Rems_Dl._apply_gallery_filters(mock_images, None, [], False, [], ["explicit"])
     nsfw_ids = {i["id"] for i in nsfw_res}
     assert "4" in nsfw_ids
     assert "5" in nsfw_ids
     assert "1" not in nsfw_ids
 
     # Filter by specific site
-    site_res = Rems_Dl._apply_gallery_filters(mock_images, "", ["zerochan"], False, [], [])
+    site_res = Rems_Dl._apply_gallery_filters(mock_images, None, ["zerochan"], False, [], [])
     assert len(site_res) == 1
     assert site_res[0]["id"] == "1"
 

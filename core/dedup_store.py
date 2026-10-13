@@ -353,7 +353,12 @@ class DedupStore:
     and safely purges ghost records if an original file was removed by the user.
     """
 
-    def __init__(self, db_path: str = DEDUP_DB_FILE):
+    def __init__(self, db_path: str = None):
+        # resolved here, not in the signature: def-arg defaults are bound at
+        # import time, so a later redirect of DEDUP_DB_FILE would be ignored
+        # and a test would write into the app's real dedup db
+        if db_path is None:
+            db_path = DEDUP_DB_FILE
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self._lock = threading.RLock()

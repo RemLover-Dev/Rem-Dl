@@ -30,7 +30,7 @@ import requests
 
 from core.shared import (
     BaseDownloader, save_history, add_to_gallery, send_tags,
-    check_duplicate, absorb_duplicate, MASTER_FOLDER, sanitize_path_component,
+    check_duplicate, absorb_duplicate, MASTER_FOLDER, folder_component,
     sanitize_filename, safe_ensure_dir, media_subdir, pace_session
 )
 from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
@@ -39,6 +39,8 @@ CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
 HASH_SECRET = "28c1fdd170a5204386cb1313c7077b34f83e4aaf4aa829ce78c231e05b0bae2c"
 RATING_CODES = {0: "General", 1: "R18", 2: "R18G"}
+# gallery-canonical rating per x_restrict — R18 is pixiv's questionable tier
+RATING_CANON = {0: "safe", 1: "questionable", 2: "explicit"}
 
 
 class PixivAppAPI:
@@ -209,8 +211,8 @@ class PixivWorker(BaseDownloader):
             kept = " ".join(w for w in words if not w.startswith("-"))
             if self.exclude_tags and kept:
                 self.value = kept
-        safe_mode = sanitize_path_component(self.mode, fallback="artworks")
-        safe_value = sanitize_path_component(self.value, fallback="pixiv")
+        safe_mode = folder_component(self.mode, fallback="artworks")
+        safe_value = folder_component(self.value, fallback="pixiv")
         self.tag_dir = os.path.join(self.site_root, safe_mode, safe_value)
         safe_ensure_dir(self.tag_dir)
 
@@ -335,20 +337,22 @@ class PixivWorker(BaseDownloader):
             suffix = f"_p{num:02}" if num > 0 else ""
             filename = sanitize_filename(f"{work_id}{suffix}.{ext}", fallback=f"pixiv_{work_id}{suffix}.jpg")
 
-            rating_label = sanitize_path_component(RATING_CODES.get(x_restrict, "Unknown"), fallback="Unknown")
+            rating_label = folder_component(RATING_CODES.get(x_restrict, "Unknown"), fallback="Unknown")
             # ugoira zips become .gif below — route them with the gif, not the zip
             rating_dir = os.path.join(self.tag_dir, rating_label,
-                                      "gifs" if is_u else media_subdir(ext))
+                                      "Gifs" if is_u else media_subdir(ext))
             safe_ensure_dir(rating_dir)
             filepath = os.path.join(rating_dir, filename)
 
             if is_u and ext == "zip":
-                ok = await self._process_ugoira(work_id, tags, artists, rating_dir)
+                ok = await self._process_ugoira(work_id, tags, artists, rating_dir,
+                                                RATING_CANON.get(x_restrict, "safe"))
                 if ok: count += 1
                 continue
 
             if await self.enqueue_download(url, filepath, filename,
-                                           tags, artists):
+                                           tags, artists,
+                                           rating=RATING_CANON.get(x_restrict, "safe")):
                 count += 1
 
         return count
@@ -385,7 +389,7 @@ class PixivWorker(BaseDownloader):
         return [{"url": url, "ext": ext, "num": 0}]
 
     async def _process_ugoira(self, work_id, tags,
-                              artists, rating_dir):
+                              artists, rating_dir, rating):
         try:
             api = self._api_instance()
             meta = await asyncio.to_thread(api.ugoira_meta, work_id)
@@ -433,7 +437,7 @@ class PixivWorker(BaseDownloader):
             self.dl_history.add(gif_name)
             await asyncio.to_thread(save_history, self.site_root, self.dl_history)
             rel = os.path.relpath(gif_path, MASTER_FOLDER)
-            await asyncio.to_thread(add_to_gallery, self.name, gif_name, rel, tags, artists)
+            await asyncio.to_thread(add_to_gallery, self.name, gif_name, rel, tags, artists, rating=rating)
             await asyncio.to_thread(send_tags, self.name, gif_name, tags, artists, rel)
             self.log(f"[SUCCESS] Ugoira -> GIF: {gif_name}")
             return True

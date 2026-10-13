@@ -1,6 +1,6 @@
 import os
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
 import core.shared as shared
 
 
@@ -26,9 +26,10 @@ class WaifuImWorker(BaseWorker):
 
         self.api_timeout = int(net_config.get("api_timeout", 10))
         self.retry_wait = int(net_config.get("retry_wait", 5))
+        self.exclude_gifs = bool(net_config.get("exclude_gifs"))
 
         clean_tag = " ".join(include)
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="waifu")
+        self.safe_tag = folder_component(clean_tag, fallback="waifu")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         for sub in ("Safe", "NSFW"):
             safe_ensure_dir(os.path.join(self.tag_dir, sub))
@@ -52,6 +53,10 @@ class WaifuImWorker(BaseWorker):
         if self.exclude_slugs:
             params["ExcludedTags"] = self.exclude_slugs
         return params
+
+    def skip_url(self, url):
+        # Exclude GIF: filter by file extension, since gif isn't an excludable tag
+        return self.exclude_gifs and url.split("?", 1)[0].lower().endswith(".gif")
 
     async def scraper_task(self):
         self.log(f"Initializing worker for tags: '{self.original_tag}' -> slugs {self.include_slugs} (IsNsfw: {self.is_nsfw_param()})")
@@ -97,6 +102,8 @@ class WaifuImWorker(BaseWorker):
                     break
                 url = img.get("url")
                 if not url:
+                    continue
+                if self.skip_url(url):
                     continue
 
                 raw_filename = url.split('/')[-1]

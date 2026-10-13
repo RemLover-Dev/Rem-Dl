@@ -87,8 +87,8 @@ SITE_CANONICAL = {
     "sankaku": "sankaku", "safebooru": "safebooru", "safe": "safebooru", "rule34": "rule34",
     "pinterest": "pinterest", "pixiv": "pixiv",
     "zero": "zerochan", "zerochan": "zerochan",
-    "neko": "nekos.life", "nekos.life": "nekos.life",
-    "nekos.best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
+    "neko": "nekos.life", "nekos.life": "nekos.life", "nekos_life": "nekos.life",
+    "nekos.best": "nekos.best", "nekos_best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
     "waifu": "waifu.im", "waifu.im": "waifu.im",
     "anime_dl": "anime_dl", "animepictures": "anime_dl",
 }
@@ -167,6 +167,48 @@ _WINDOWS_RESERVED_NAMES = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
 }
 
+def pretty_folder_name(name) -> str:
+    """Folder naming policy for tag-derived download directories.
+
+    Underscores become spaces, and the first letter at the start of the name or
+    directly after a space, '-' or '(' is capitalised
+    ("reze_(chainsaw_man)" -> "Reze (Chainsaw Man)").
+
+    Kept separate from sanitize_path_component on purpose: that one also runs on
+    filenames and on individual components of absolute paths, where turning
+    "images" into "Images" would fork the download tree or rename "/home".
+    A digit at a boundary is not capitalised, so "1st_costume" stays "1st Costume".
+    """
+    if not name:
+        return name
+    try:
+        spaced = re.sub(r"\s+", " ", str(name).replace("_", " ")).strip()
+        out = []
+        cap = True
+        for ch in spaced:
+            if ch in " -(":
+                cap = True
+                out.append(ch)
+            elif cap and ch.isalpha():
+                cap = False
+                out.append(ch.upper())
+            else:
+                # a letter or digit has consumed the boundary; punctuation
+                # (', :, .) leaves it pending for the next real word
+                if ch.isalnum():
+                    cap = False
+                out.append(ch)
+        return "".join(out)
+    except Exception:
+        return str(name)
+
+def folder_component(name: str, fallback: str = "misc", max_length: int = 120) -> str:
+    """sanitize_path_component(pretty_folder_name(...)) — the folder name a worker
+    should use. Prettify first so the Windows reserved-name guard still sees "CON"
+    rather than the " CON" that underscore-to-space would leave behind. The fallback
+    is prettified too: "anime_pictures" is a folder name as much as a tag is."""
+    return sanitize_path_component(pretty_folder_name(name), pretty_folder_name(fallback), max_length)
+
 def sanitize_path_component(name: str, fallback: str = "misc", max_length: int = 120) -> str:
     """Make a tag or directory name completely safe for Windows and POSIX filesystems.
 
@@ -211,10 +253,10 @@ def media_subdir(ext: str) -> str:
     """Leaf folder under <tag>/<rating> for a file's media kind."""
     e = (ext or "").lower().lstrip(".")
     if e in VIDEO_EXTS:
-        return "videos"
+        return "Videos"
     if e == "gif":
-        return "gifs"
-    return "images"
+        return "Gifs"
+    return "Images"
 
 def safe_ensure_dir(path: str) -> str:
     """Ensure directory exists with safe, sanitized components across all platforms (Windows, Linux, macOS).
@@ -257,38 +299,71 @@ def default_emit(event, data): pass
 emit_callback = default_emit
 def socketio_emit(event, data): emit_callback(event, data)
 
-GALLERY_FILE = os.path.join(BASE_DIR, "database", "gallery.json")
 TAG_TYPE_MAP = {0: "tag", 1: "artist", 3: "copyright", 4: "character", 5: "metadata"}
 
 def load_gallery():
-    """Return the gallery, cached in memory after first disk read.
+    """Return the gallery, cached in memory after first store read.
 
     All readers/mutators share one object (guarded by _GALLERY_LOCK), so
-    concurrent workers can't clobber each other's entries. Call
-    flush_gallery() or save_gallery() to persist.
+    concurrent workers can't clobber each other's entries.
+
+    Entries carry every column EXCEPT tags: tags live in their own table and
+    are read on demand via gallery_tags_for(). That split is what stops
+    resident memory from growing with the size of the library.
+    Call save_gallery() to persist.
     """
     with _GALLERY_LOCK:
         return _gallery_cached_locked()
 
-def _load_gallery_from_disk():
-    if os.path.exists(GALLERY_FILE):
-        try:
-            with open(GALLERY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            # quarantine the bad file — returning an empty gallery here would
-            # get persisted over all real entries by the next save
-            try:
-                os.replace(GALLERY_FILE, GALLERY_FILE + ".corrupt")
-            except OSError:
-                pass
-            return {"images": []}
-        try:
-            _migrate_gallery_tags(data)
-        except Exception:
-            pass
-        return data
-    return {"images": []}
+def _store():
+    from core.gallery_store import get_store
+    return get_store()
+
+def gallery_tags_for(ids):
+    """{entry id: tags} for a batch — the on-demand tag read.
+
+    Do not stash the result on the entries: keeping tags resident again is
+    the exact growth this split exists to prevent.
+    """
+    return _store().get_tags_many(ids)
+
+def search_tag_ids(term, exact=False):
+    """Ids whose tags match `term`, answered by the database.
+
+    Reading all 497725 tag rows to filter them in Python cost ~0.8s per
+    gallery request; this touches only the matching rows instead.
+    """
+    return _store().ids_matching_tags(term, exact)
+
+def all_gallery_ids():
+    return _store().all_ids()
+
+def entry_tags(img):
+    """Tags for one gallery entry.
+
+    The resident list carries no tags, so a bare img.get("tags") reads as
+    "no tags" — and code that writes its verdict back would then overwrite
+    the real stored tags with nothing. Every tag reader goes through here
+    instead, and the result is deliberately not stored on the entry.
+    """
+    tags = img.get("tags")
+    if tags is not None:
+        return tags
+    gid = img.get("id") or img.get("filename")
+    if gid is None:
+        return {}
+    return gallery_tags_for([gid]).get(gid) or {}
+
+def _load_gallery_from_store():
+    images = _store().lightweight_entries()
+    # site names are canonicalised at read time (the rescan writes raw folder
+    # names); filters match on the canonical form
+    for img in images:
+        site = img.get("site", "")
+        canon = normalize_site(site)
+        if canon != site:
+            img["site"] = canon
+    return {"images": images}
 
 def _migrate_gallery_tags(data):
     """Convert old flat-list tags to categorized dicts and normalize site names in-place."""
@@ -314,41 +389,44 @@ def _migrate_gallery_tags(data):
         save_gallery(data)
 
 def save_gallery(data):
+    """Persist the gallery.
+
+    save_entries() writes tags only for entries carrying a `tags` key, so the
+    tagless copies load_gallery() returns update their own columns and cannot
+    clear the tags stored for them. Entries missing from the list are pruned
+    (that is how a rescan drops entries whose file is gone).
+    """
     with _GALLERY_LOCK:
-        # write under the lock: a worker save racing a route save used to
-        # interleave two truncate+dumps and corrupt gallery.json
-        _write_gallery(data)
+        _store().save_entries(data.get("images", []))
         if data is _gallery_cache["data"]:
             _gallery_cache["filenames"] = {i.get("filename") for i in data.get("images", [])}
             _gallery_cache["dirty"] = 0
 
-def _write_gallery(data):
-    # compact separators: gallery.json is gitignored data, indent only
-    # cost parse time and disk on every write; tmp+replace so a crash
-    # mid-write can't truncate the live file
-    tmp = GALLERY_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, separators=(",", ":"))
-    os.replace(tmp, GALLERY_FILE)
-
 _GALLERY_LOCK = threading.RLock()
 _gallery_cache = {"data": None, "filenames": set(), "dirty": 0}
 _GALLERY_FLUSH_EVERY = 10
+# entries whose tags are read per pass (heal, filtering) — keeps a whole
+# library's tags off the heap at once
+_TAG_CHUNK = 500
 
 def _gallery_cached_locked():
     g = _gallery_cache["data"]
     if g is None:
-        g = _load_gallery_from_disk()
+        g = _load_gallery_from_store()
         _gallery_cache["data"] = g
         _gallery_cache["filenames"] = {i.get("filename") for i in g.get("images", [])}
         _gallery_cache["dirty"] = 0
     return g
 
 def flush_gallery():
-    """Persist pending gallery appends, if any."""
+    """Persist pending gallery appends, if any.
+
+    SQLite commits per operation now, so this only matters for callers that
+    mutated the shared object without saving (kept for the exit hooks).
+    """
     with _GALLERY_LOCK:
         if _gallery_cache["data"] is not None and _gallery_cache["dirty"]:
-            _write_gallery(_gallery_cache["data"])
+            _store().save_entries(_gallery_cache["data"].get("images", []))
             _gallery_cache["dirty"] = 0
 
 # A batched write plus an exit (Ctrl-C, an exception, a CLI run) used to drop
@@ -444,11 +522,19 @@ def recategorize_all():
     changed_g = 0
     with _GALLERY_LOCK:
         gal = _gallery_cached_locked()
-        for img in gal.get("images", []):
-            if recategorize_tags(img.get("tags"), img.get("site"), caches):
-                changed_g += 1
-        if changed_g:
-            save_gallery(gal)
+        images = gal.get("images", [])
+        # tags are fetched a chunk at a time: materialising them for the whole
+        # library here is exactly the resident growth this split removes
+        for start in range(0, len(images), _TAG_CHUNK):
+            chunk = images[start:start + _TAG_CHUNK]
+            tagmap = _store().get_tags_many(
+                [x.get("id") or x.get("filename") for x in chunk])
+            for img in chunk:
+                gid = img.get("id") or img.get("filename")
+                tags = tagmap.get(gid) or {}
+                if recategorize_tags(tags, img.get("site"), caches):
+                    changed_g += 1
+                    _store().set_tags(gid, tags)
     from core.database import DatabaseManager
     changed_h = DatabaseManager.recat_image_history(caches)
     _recat_fp = fp  # cache state fully healed — later passes skip until it changes
@@ -465,17 +551,24 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
                                          groups, hair, eyes)
             existing = next((i for i in gallery["images"]
                              if i.get("filename") == filename), None)
-            if existing is None or count_tags(fresh) <= count_tags(existing.get("tags")):
+            if existing is None:
+                return
+            gid = existing.get("id") or filename
+            # compare against the STORED tags: the resident copy carries none,
+            # and comparing against empty would let a folder-name placeholder
+            # beat real tags
+            have = existing.get("tags")
+            if have is None:
+                have = _store().get_tags(gid)
+            if count_tags(fresh) <= count_tags(have):
                 return
             existing["tags"] = fresh
             if filepath:
                 existing["filepath"] = filepath
             if rating:
                 existing["rating"] = rating
-            _gallery_cache["dirty"] += 1
-            if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
-                _write_gallery(gallery)
-                _gallery_cache["dirty"] = 0
+            _store().update_fields(gid, existing)
+            _store().set_tags(gid, fresh)
             return
         tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
         record = {
@@ -493,10 +586,7 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             record["rating"] = rating
         gallery["images"].insert(0, record)
         _gallery_cache["filenames"].add(filename)
-        _gallery_cache["dirty"] += 1
-        if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
-            _write_gallery(gallery)
-            _gallery_cache["dirty"] = 0
+        _store().insert_entry(record)
 
 
 def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=None,
@@ -521,11 +611,17 @@ def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=
                 rec = next((i for i in gallery["images"] if i.get("filename") == base), None)
             if rec is None:
                 return False
+            gid = rec.get("id") or rec.get("filename")
             changed = False
             fresh = tags_dict_from_lists(tags_list, artists, characters,
                                          copyrights, metadata_tags, outfits,
                                          groups, hair, eyes)
-            tags = rec.setdefault("tags", {})
+            # union into the STORED tags: rec is a tagless resident copy, and
+            # setdefault() on it would build from empty and drop what is stored
+            stored = rec.get("tags")
+            if stored is None:
+                stored = _store().get_tags(gid)
+            tags = {b: list(v) for b, v in stored.items()} if isinstance(stored, dict) else {}
             for bucket, vals in fresh.items():
                 have = tags.setdefault(bucket, [])
                 for v in vals:
@@ -543,10 +639,9 @@ def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=
                 sources.append(ns)
                 changed = True
             if changed:
-                _gallery_cache["dirty"] += 1
-                if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
-                    _write_gallery(gallery)
-                    _gallery_cache["dirty"] = 0
+                rec["tags"] = tags
+                _store().set_tags(gid, tags)
+                _store().update_fields(gid, rec)
             return True
     except Exception as e:
         print(f"[DEDUP] absorb failed for {getattr(dup, 'matched_path', '?')}: {e}")
@@ -1109,7 +1204,7 @@ class BaseDownloader:
         self.anti_ban_pause = float(net_config.get("anti_ban_pause", 3.0))
         self.dl_retries = int(net_config.get("download_retries", 3))
 
-        safe_folder = sanitize_path_component(site_folder, fallback=self.name)
+        safe_folder = folder_component(site_folder, fallback=self.name)
         self.site_root = os.path.join(MASTER_FOLDER, safe_folder)
         os.makedirs(self.site_root, exist_ok=True)
         self.dl_history = load_history(self.site_root)

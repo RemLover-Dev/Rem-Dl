@@ -1,6 +1,6 @@
 import os, re, asyncio, json
 import requests
-from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_session
+from core.shared import BaseDownloader, folder_component, sanitize_filename, safe_ensure_dir, pace_session
 
 class EShuushuuWorker(BaseDownloader):
     def __init__(self, tag, amount, exclusions, user_id, net_config):
@@ -25,7 +25,7 @@ class EShuushuuWorker(BaseDownloader):
         self.tag_id = ",".join(self.tag_ids)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="all")
+        self.safe_tag = folder_component(clean_tag, fallback="all")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
@@ -249,7 +249,7 @@ class EShuushuuWorker(BaseDownloader):
                     out_name = sanitize_filename(f"{img_id}.{ext}")
 
                     if self.user_id and username:
-                        user_dir = sanitize_path_component(username, fallback="user")
+                        user_dir = folder_component(username, fallback="user")
                         base = self.tag_dir if self.original_tag else self.site_root
                         download_dir = os.path.join(base, user_dir)
                     else:

@@ -78,7 +78,7 @@
 
                     <div style="margin-top: 15px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
                         <p style="color: var(--title-color); font-size: 14px; font-weight: bold; margin-bottom: 8px;">Favorite Tags</p>
-                        <div id="favoritesListUI" style="display: flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto;">
+                        <div id="favoritesListUI" style="display: flex; flex-wrap: wrap; gap: 8px; max-height: 120px; overflow-y: auto; padding: 2px;">
                             </div>
                     </div>
 
@@ -546,7 +546,11 @@
                         <option value="GIFs">GIFs</option>
                     </select>
                     <label>Category:</label>
-                    <select id="nekoCat" style="width: 140px;"></select>
+                    <div class="gallery-dropdown" style="flex:1; margin-right: 6px;">
+                        <button class="gallery-dropdown-btn" onclick="toggleDropdown('nekoCatDropdown')" style="width: 100%;">All Categories ▾</button>
+                        <div id="nekoCatDropdown" class="gallery-dropdown-menu dd-cols"></div>
+                        <input type="hidden" id="nekoCat" value="">
+                    </div>
                     <label>Amount:</label>
                     <input type="number" id="nekoAmount" value="20" min="0" style="width: 80px;">
                     <button id="runBtn_neko" class="action-btn" onclick="toggleWorker('neko')">START</button>
@@ -566,7 +570,7 @@
                 <h2>Nekos.life Downloader</h2>
                 <div class="input-group">
                     <label>Category:</label>
-                    <select id="nekosLifeCat" style="width: 150px;" onchange="updateNekosLifeType()">
+                    <select id="nekosLifeCat" style="width: 150px;">
                         <optgroup label="GIF Only">
                             <option value="ngif">nekoGif</option><option value="hug">hug</option><option value="pat">pat</option>
                             <option value="cuddle">cuddle</option><option value="tickle">tickle</option><option value="feed">feed</option>
@@ -583,12 +587,11 @@
                             <option value="lizard">lizard</option><option value="span">span</option>
                         </optgroup>
                     </select>
-                    <span id="nekosLifeType" style="color: var(--accent-color); font-size: 12px; font-weight: bold; margin-left: 5px;"></span>
-                    <label id="nekosLifeFormatLabel" style="margin-left: 10px; display: none;">Format:</label>
-                    <select id="nekosLifeFormat" style="width: 120px; display: none;">
-                        <option value="both">Both (GIF & Image)</option>
-                        <option value="gif">GIF Only</option>
-                        <option value="image">Image Only</option>
+                    <label id="nekosLifeFormatLabel" style="margin-left: 10px;">Format:</label>
+                    <select id="nekosLifeFormat" style="width: 130px;" onchange="updateNekosLifeFormat()">
+                        <option value="gif">GIFs</option>
+                        <option value="image">Images</option>
+                        <option value="both">Mixed (GIF &amp; Image)</option>
                     </select>
                     <label style="margin-left: 10px;">Amount:</label>
                     <input type="number" id="nekosLifeAmount" value="20" min="0" style="width: 80px;">
@@ -997,6 +1000,9 @@
                     </div>
                     <button id="runBtn_waifu" class="action-btn" onclick="toggleWorker('waifu')">START</button>
                 </div>
+                <div class="input-group" style="margin-top: 10px; font-size: 14px;">
+                    <input type="checkbox" id="waifuExGif"> <label for="waifuExGif">Exclude GIF</label>
+                </div>
                 <input type="hidden" id="waifuTag" value="">
                 <div class="dual-progress-container" id="dualProgress_waifu" style="display:none; flex-direction:column; gap:5px; margin-top:10px;">
                     
@@ -1077,7 +1083,7 @@
 
     <!-- gallery viewer lives at body level so previews work from any tab -->
     <div id="galleryViewer" class="gallery-viewer" style="display: none;">
-        <button class="gallery-viewer-top-btn close" onclick="closeGalleryViewer()" title="Close (Esc)">✕</button>
+        <button class="gallery-viewer-top-btn close" onclick="closeGalleryViewer()" title="Close (Esc)"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M18 6L6 18M6 6l12 12"/></svg></button>
         <button class="gallery-viewer-top-btn fav" id="galleryViewerFav" onclick="toggleViewerFav()" title="Favourite"><svg width="1em" height="1em" viewBox="-1 -1 18 18" shape-rendering="geometricPrecision" style="display:block;"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" d="M16 5c0 -2.20914 -1.7909 -4 -4 -4 -2.20914 0 -4 1.79086 -4 4 0 -2.20914 -1.79086 -4 -4 -4S0 2.79086 0 5c0 6.5 8 10 8 10s8 -3.5 8 -10Z"/></svg></button>
         <button id="galleryViewerCopy" class="gallery-viewer-top-btn copy" onclick="copyViewerImage()" title="Copy to Clipboard"><svg width="1em" height="1em" viewBox="0 0 48 48" fill="none"><path fill="currentColor" fill-rule="evenodd" d="M17.5535 0.678504C19.0646 0.585621 21.2133 0.5 23.9996 0.5c2.7865 0 4.9354 0.085632 6.4467 0.178522 0.9153 0.056262 1.7297 0.431898 2.3401 1.013578 0.0486 -0.00131 0.0976 -0.00087 0.1469 0.00138 1.9679 0.08977 3.6262 0.20096 4.975 0.31121 3.5231 0.288 6.2657 3.00338 6.5533 6.54187C44.7266 11.8067 45 16.9901 45 24.501c0 7.5109 -0.2734 12.6943 -0.5384 15.9544 -0.2876 3.5385 -3.0302 6.2539 -6.5533 6.5419 -3.0518 0.2494 -7.6879 0.5037 -13.9083 0.5037 -6.2204 0 -10.8565 -0.2543 -13.9083 -0.5037 -3.52314 -0.288 -6.26573 -3.0034 -6.55333 -6.5419C3.2734 37.1953 3 32.0119 3 24.501c0 -7.5109 0.2734 -12.6943 0.53837 -15.95444 0.2876 -3.53848 3.03019 -6.25387 6.55333 -6.54187 1.3488 -0.11025 3.0071 -0.22144 4.9748 -0.3112 0.0494 -0.00225 0.0983 -0.00269 0.1469 -0.00139 0.6104 -0.58168 1.4247 -0.957331 2.3401 -1.013596ZM14.1563 5.74299c-1.4462 0.07621 -2.6925 0.16289 -3.7387 0.24841 -1.58575 0.12962 -2.76472 1.30856 -2.89238 2.8792C7.26992 12.0117 7 17.0863 7 24.501c0 7.4146 0.26992 12.4892 0.52522 15.6304 0.12766 1.5706 1.30663 2.7496 2.89238 2.8792 2.9437 0.2406 7.4711 0.4904 13.5824 0.4904s10.6387 -0.2498 13.5824 -0.4904c1.5858 -0.1296 2.7647 -1.3086 2.8924 -2.8792 0.2553 -3.1412 0.5252 -8.2158 0.5252 -15.6304 0 -7.4147 -0.2699 -12.4893 -0.5252 -15.6304 -0.1277 -1.57064 -1.3067 -2.74958 -2.8924 -2.8792 -1.0463 -0.08553 -2.2925 -0.1722 -3.7389 -0.24841 -0.0339 0.44693 -0.0705 0.86533 -0.1069 1.24504 -0.1654 1.72545 -1.4854 3.11107 -3.2524 3.26737 -1.4089 0.1246 -3.5319 0.2446 -6.4846 0.2446 -2.9525 0 -5.0753 -0.1199 -6.4841 -0.2446 -1.7669 -0.1563 -3.0868 -1.54188 -3.2522 -3.26725 -0.0364 -0.37974 -0.073 -0.79818 -0.107 -1.24516Z" clip-rule="evenodd"></path></svg></button>
         <button class="gallery-viewer-top-btn trash" onclick="deleteViewerImage()" title="Delete Image"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path fill="currentColor" d="M15.2188 0c0.2229 0.0000058603 0.4394 0.0747674 0.6152 0.211914 0.1757 0.137143 0.3013 0.328695 0.3555 0.544922L16.6182 3H24v2h-3v16c0 0.7957 -0.3163 1.5585 -0.8789 2.1211S18.7957 24 18 24H6c-0.79565 0 -1.55849 -0.3163 -2.12109 -0.8789C3.3163 22.5585 3 21.7957 3 21V5H0V3h7.38184L7.81055 0.756836c0.05418 -0.216227 0.17973 -0.407779 0.35547 -0.544922C8.34176 0.0747674 8.55833 0.0000058603 8.78125 0zM8 19h2V8H8zm6 -11v11h2V8z"></path></svg></button>
@@ -1085,8 +1091,8 @@
 
         <span class="gallery-viewer-top-btn zoom-label" id="galleryViewerZoom">100%</span>
 
-        <button class="gallery-viewer-nav prev" onclick="viewerNav(-1)" title="Previous (←)">❮</button>
-        <button class="gallery-viewer-nav next" onclick="viewerNav(1)" title="Next (→)">❯</button>
+        <button class="gallery-viewer-nav prev" onclick="viewerNav(-1)" title="Previous (←)"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></svg></button>
+        <button class="gallery-viewer-nav next" onclick="viewerNav(1)" title="Next (→)"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 18l6-6-6-6"/></svg></button>
 
         <img id="galleryViewerImg" src="">
 

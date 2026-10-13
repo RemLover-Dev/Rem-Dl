@@ -43,4 +43,18 @@ def _isolate_data_files():
 
     import core.database as database
     database.SettingsManager._env_path = lambda self: os.path.join(tmp, ".env")
+
+    # A store singleton built while collecting tests captured the REAL paths
+    # in its constructor, so the redirect above never reached it and every
+    # test that touched a store wrote into the app's live data. Drop it so
+    # the first use rebuilds against the temp dir.
+    from core import dedup_store, gallery_store
+    for mod, attr in ((gallery_store, "_store"), (dedup_store, "_store_instance")):
+        s = getattr(mod, attr, None)
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+            setattr(mod, attr, None)
     yield tmp

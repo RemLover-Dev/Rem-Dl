@@ -143,6 +143,14 @@ from workers.anime_dl import worker_anime_dl
 from workers.pinterest_worker import worker_pinterest
 from workers.pixiv import worker_pixiv
 
+# One-time: retitle any pre-update download tree (and the paths stored for it)
+# to the current folder naming policy. Idempotent, and it never deletes data.
+try:
+    from core.folder_policy import migrate_folder_policy
+    migrate_folder_policy(os.path.join(BASE_DIR, DOWNLOAD_DIR_NAME))
+except Exception as _folder_policy_exc:
+    print(f"Folder naming policy migration skipped: {_folder_policy_exc}")
+
 DATABASE_DIR = os.path.join(BASE_DIR, "database")
 
 settings = SettingsManager(BASE_DIR)
@@ -344,12 +352,29 @@ def custom_wallpaper(filename):
 
 @app.route("/api/upload_wallpaper", methods=["POST"])
 def upload_wallpaper():
+    custom_dir = os.path.join(BASE_DIR, "user_wallpapers")
+    os.makedirs(custom_dir, exist_ok=True)
+
+    # native picker (KDE kdialog) returns a server-side path — the webview
+    # can't read arbitrary paths itself, so copy it in like an uploaded file
+    src_path = (request.form.get("path") or "").strip()
+    if src_path and "file" not in request.files:
+        import shutil
+        src = os.path.realpath(src_path)
+        if not os.path.isfile(src) or \
+                os.path.splitext(src)[1].lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+            return jsonify({"success": False, "error": "not an image file"}), 400
+        filename = "".join([c for c in os.path.basename(src) if c.isalpha() or c.isdigit() or c in " ._-"]).rstrip()
+        if not filename: filename = f"wallpaper_{random.randint(1000, 9999)}.png"
+        target = os.path.realpath(os.path.join(custom_dir, filename))
+        if not target.startswith(os.path.realpath(custom_dir) + os.sep):
+            return jsonify({"success": False, "error": "invalid filename"}), 400
+        shutil.copyfile(src, target)
+        return jsonify({"success": True, "filename": filename})
+
     if "file" not in request.files: return jsonify({"success": False, "error": "No file uploaded"}), 400
     file = request.files["file"]
     if file.filename == "": return jsonify({"success": False, "error": "No selected file"}), 400
-
-    custom_dir = os.path.join(BASE_DIR, "user_wallpapers")
-    os.makedirs(custom_dir, exist_ok=True)
 
     filename = "".join([c for c in file.filename if c.isalpha() or c.isdigit() or c in " ._-"]).rstrip()
     if not filename: filename = f"wallpaper_{random.randint(1000, 9999)}.png"
@@ -561,6 +586,49 @@ def browse_folder():
     _invalidate_fp_cache()
     _TS_CACHE.clear()
     return jsonify({"folder": path})
+
+
+def _pick_image_file_desktop():
+    """Native image picker via kdialog/zenity (same CLI-dialog pattern as
+    _pick_folder_desktop's Linux branch — argv elements are literals).
+    Returns path str if selected, None if cancelled, or False if no picker available."""
+    import subprocess
+    dialog_home = os.path.expanduser("~")
+    for cmd in (
+        ["kdialog", "--getopenfilename", dialog_home, "Images|*.png *.jpg *.jpeg *.webp *.gif"],
+        ["zenity", "--file-selection", "--file-filter=Images | *.png *.jpg *.jpeg *.webp *.gif",
+         f"--filename={dialog_home}/"],
+    ):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if r.returncode == 0:
+                out = (r.stdout or "").strip().split("\n")[0].strip()
+                return out or None
+            if not (r.stdout or "").strip():
+                return None
+        except Exception:
+            continue
+    return False
+
+
+@app.route("/api/file/browse", methods=["POST"])
+def browse_file():
+    """Native image picker — KDE gets kdialog/Dolphin's dialog; every other
+    desktop falls back to the webview's own file input (unchanged behaviour)."""
+    if not (sys.platform.startswith("linux") and
+            "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()):
+        return jsonify({"error": "no native picker"}), 501
+    try:
+        picked = _pick_image_file_desktop()
+    except Exception as e:
+        print("File browse error:", e)
+        return jsonify({"error": "file browse failed"}), 500
+    if picked is None:
+        return jsonify({"cancelled": True})
+    if picked is False:
+        return jsonify({"error": "No file picker available"}), 500
+    return jsonify({"path": picked})
+
 
 @app.route("/api/clipboard", methods=["POST"])
 def set_clipboard():
@@ -1308,6 +1376,53 @@ def _refresh_nekosapi_live_tags(net_config):
         pass
     return disk
 
+@app.route("/api/tags/nekosbest", methods=["POST"])
+def get_nekosbest_endpoints():
+    data = request.json or {}
+    return jsonify(_refresh_nekosbest_endpoints(data.get("net_config", {})))
+
+_nekosbest_eps_cache = {"eps": {}, "at": 0.0}
+
+def _refresh_nekosbest_endpoints(net_config):
+    # /endpoints is the API's own category catalogue — daily refresh like nekosapi
+    import time as _time
+    now = _time.time()
+    if _nekosbest_eps_cache["eps"] and now - _nekosbest_eps_cache["at"] < 86400:
+        return _nekosbest_eps_cache["eps"]
+    eps_file = os.path.join(DATABASE_DIR, "nekosbest_endpoints.json")
+    disk = {}
+    try:
+        import json as _json
+        with open(eps_file, "r", encoding="utf-8") as f:
+            saved = _json.load(f)
+        disk = saved.get("eps", {}) or {}
+        if disk and now - float(saved.get("at", 0)) < 86400:
+            _nekosbest_eps_cache.update(eps=disk, at=now)
+            return disk
+    except Exception:
+        pass
+    try:
+        session = get_session("neko", net_config or {})
+        # nekos.best Cloudflare-blocks bare Mozilla — same UA the worker sends
+        session.headers.update({"User-Agent": "Rems_Dl/5.0 (by RemLover on GitHub)"})
+        resp = session.get("https://nekos.best/api/v2/endpoints", timeout=10)
+        if resp.status_code == 200:
+            raw = resp.json() or {}
+            eps = {k: str((v or {}).get("format", "png")).lower()
+                   for k, v in raw.items() if isinstance(k, str)}
+            if eps:
+                try:
+                    import json as _json
+                    with open(eps_file, "w", encoding="utf-8") as f:
+                        _json.dump({"eps": eps, "at": now}, f)
+                except Exception:
+                    pass
+                _nekosbest_eps_cache.update(eps=eps, at=now)
+                return eps
+    except Exception:
+        pass
+    return disk
+
 _nekosia_tags_cache = {"tags": [], "at": 0}
 
 @app.route("/api/tags/nekosia", methods=["POST"])
@@ -1458,7 +1573,7 @@ def _image_timestamp(img):
     return ts
 
 
-def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=None):
+def _apply_gallery_filters(images, keep_ids, site_filters, fav_only, type_filters, rating_filters, ts_range=None):
     def _get_all_tags(img):
         tags = img.get("tags", {})
         if isinstance(tags, dict):
@@ -1469,33 +1584,11 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             return result
         return tags if isinstance(tags, list) else []
 
-    if search:
-        # ponytail: commas separate tags so multi-word tags need no underscores;
-        # underscore == space on both sides (lowered at intake);
-        # 'tag' or "tag" matches the whole tag exactly (so bra won't hit braid),
-        # bare terms stay substring; leading "-" excludes
-        terms = []
-        for part in search.split(","):
-            p = part.strip()
-            if not p:
-                continue
-            neg = False
-            if p.startswith("-") and len(p) > 1:
-                neg, p = True, p[1:].strip()
-            exact = False
-            if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"":
-                exact, p = True, p[1:-1]
-            p = p.replace("_", " ").strip()
-            if p:
-                terms.append((p, neg, exact))
-        def _matches(img):
-            tags = [t.lower().replace("_", " ").strip() for t in _get_all_tags(img)]
-            for q, neg, exact in terms:
-                hit = (q in tags) if exact else any(q in t for t in tags)
-                if hit == neg:
-                    return False
-            return True
-        images = [i for i in images if _matches(i)]
+    if keep_ids is not None:
+        # already resolved to a set of ids by _search_id_set — the tag rows
+        # were never read, so filtering them here would only be slower
+        images = [i for i in images
+                  if (i.get("id") or i.get("filename")) in keep_ids]
     if site_filters:
         images = [i for i in images if i.get("site", "").lower() in site_filters]
     if fav_only:
@@ -1522,7 +1615,7 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             "nekosapi": {"safe", "sensitive", "questionable", "explicit"},
             "nekosia": {"safe", "sensitive"},
             "waifu.im": {"safe", "explicit"},
-            "pixiv": {"safe", "explicit"},
+            "pixiv": {"safe", "questionable", "explicit"},
             "zerochan": {"safe"},
             "nekos.best": {"safe"},
             "nekos_best": {"safe"},
@@ -1554,6 +1647,12 @@ def _apply_gallery_filters(images, search, site_filters, fav_only, type_filters,
             # whole path segments only: ".../Safe_Sensitive_Questionable/..."
             # must not count as Safe (nor Sensitive, nor Questionable)
             fpl_segs = frozenset(seg for seg in fpl.split("/") if seg)
+            # pixiv's R18 tier is its questionable, only R18G is explicit —
+            # the generic "r18" alias would drag R18 into the NSFW filter
+            if site == "pixiv":
+                canon = ("explicit" if "r18g" in fpl_segs else
+                         "questionable" if "r18" in fpl_segs else "safe")
+                return canon in rating_filters
             all_tags_l = [t.lower() for t in _get_all_tags(img)]
             # Safe-only / SFW imageboards and sources:
             is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
@@ -1592,6 +1691,73 @@ def _parse_ts_range():
     return (from_ts, to_ts)
 
 
+def _parse_search_terms(search):
+    """(term, negated, exact) tuples from a search string.
+
+    Commas separate tags so multi-word tags need no underscores; underscore
+    == space on both sides (lowered at intake); 'tag' or "tag" matches the
+    whole tag exactly (so bra won't hit braid), bare terms stay substring;
+    leading "-" excludes.
+    """
+    terms = []
+    for part in search.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        neg = False
+        if p.startswith("-") and len(p) > 1:
+            neg, p = True, p[1:].strip()
+        exact = False
+        if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"":
+            exact, p = True, p[1:-1]
+        p = p.replace("_", " ").strip()
+        if p:
+            terms.append((p, neg, exact))
+    return terms
+
+
+def _search_id_set(search):
+    """The ids a tag query matches, resolved in the database.
+
+    Filtering in Python meant materialising all 497725 tag rows on every
+    request (~0.8s). Each term is answered by the store instead and the
+    results are intersected here — positive terms narrow the set, negative
+    ones are subtracted from it.
+    """
+    terms = _parse_search_terms(search)
+    keep = None
+    for q, neg, exact in terms:
+        if neg:
+            continue
+        found = shared.search_tag_ids(q, exact)
+        keep = found if keep is None else (keep & found)
+    if keep is None:
+        # every term was a negation: start from the whole library
+        keep = shared.all_gallery_ids()
+    for q, neg, exact in terms:
+        if neg:
+            keep -= shared.search_tag_ids(q, exact)
+    return keep
+
+
+def _filter_gallery(images, search, site_filters, fav_only, type_filters,
+                    rating_filters):
+    """Apply the gallery filters without materialising the tag table.
+
+    A tag query becomes a set of ids answered by SQL, and a rating is
+    decided by the filepath and the stored rating field — only 31 of
+    497725 tag rows carry a rating alias, so loading them all for a rating
+    filter was ~0.8s spent answering nothing. The remaining predicates are
+    elementwise on the tagless copies.
+    """
+    ts_range = _parse_ts_range()
+    keep = _search_id_set(search) if search else None
+    return _apply_gallery_filters(images, keep, site_filters, fav_only,
+                                  type_filters, rating_filters,
+                                  ts_range=ts_range)
+
+_TAG_CHUNK = 500   # peak tags resident while reading: one chunk, not the whole library
+
 @app.route("/api/gallery", methods=["GET"])
 def get_gallery():
     search = request.args.get("search", "").lower().strip()
@@ -1617,7 +1783,8 @@ def get_gallery():
         if cached and img.get("filepath") != cached:
             img["filepath"] = cached
     images = [i for i in images if i.get("filepath")]
-    images = _apply_gallery_filters(images, search, site_filters, fav_only, type_filters, rating_filters, ts_range=_parse_ts_range())
+    images = _filter_gallery(images, search, site_filters, fav_only,
+                             type_filters, rating_filters)
 
     if sort_by == "newest":
         images.sort(key=_image_timestamp, reverse=True)
@@ -1632,6 +1799,12 @@ def get_gallery():
     start = (page - 1) * per_page
     page_imgs = images[start:start + per_page]
     warm_page_thumbs(page_imgs)
+    # tags are read for the page being returned, never for the whole gallery
+    # — and onto copies, so the resident list does not slowly regrow them
+    page_tags = shared.gallery_tags_for(
+        [p.get("id") or p.get("filename") for p in page_imgs])
+    page_imgs = [dict(p, tags=page_tags.get(p.get("id") or p.get("filename")) or {})
+                 for p in page_imgs]
 
     return jsonify({
         "images": page_imgs,
@@ -1650,26 +1823,27 @@ def toggle_gallery_fav():
         for img in gallery["images"]:
             if img.get("id") == img_id:
                 img["favourite"] = not img.get("favourite", False)
-                shared.save_gallery(gallery)
+                # targeted write — a full save rewrites every row to flip one
+                shared._store().set_favourite(img_id, img["favourite"])
                 return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
 @app.route("/api/gallery/favourite_batch", methods=["POST"])
 def toggle_gallery_fav_batch():
-    # one load+save for the whole selection — N single toggles do N full
-    # gallery.json rewrites and crawl with large selections
+    # N targeted row updates instead of N full gallery rewrites — with large
+    # selections the old full save per toggle was the crawl
     ids = set((request.json or {}).get("ids") or [])
     if not ids:
         return jsonify({"success": True, "flipped": 0})
     with shared._GALLERY_LOCK:
         gallery = shared.load_gallery()
+        store = shared._store()
         flipped = 0
         for img in gallery["images"]:
             if img.get("id") in ids:
                 img["favourite"] = not img.get("favourite", False)
+                store.set_favourite(img.get("id"), img["favourite"])
                 flipped += 1
-        if flipped:
-            shared.save_gallery(gallery)
     return jsonify({"success": True, "flipped": flipped})
 
 # --- Extensions & Addons Management API ---
@@ -1763,22 +1937,24 @@ def toggle_gallery_fav_by_name():
         for img in gallery["images"]:
             if img.get("filename") == fn:
                 img["favourite"] = not img.get("favourite", False)
-                shared.save_gallery(gallery)
+                shared._store().set_favourite(img.get("id") or fn, img["favourite"])
                 return jsonify({"success": True, "favourite": img["favourite"]})
     return jsonify({"success": False, "error": "not found"}), 404
 
 @app.route("/api/gallery/delete_by_name", methods=["POST"])
 def delete_gallery_image_by_name():
     fn = (request.json or {}).get("filename", "")
-    # lock the whole find+pop+save: a download finishing in between mutates
-    # the same live gallery dict and our save would resurrect the entry
+    # lock the whole find+pop+delete: a download finishing in between mutates
+    # the same live gallery dict
     with shared._GALLERY_LOCK:
         gallery = shared.load_gallery()
         for i, img in enumerate(gallery["images"]):
             if img.get("filename") == fn:
                 full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
                 gallery["images"].pop(i)
-                shared.save_gallery(gallery)
+                # delete one row (and its tags) — a full save would rewrite
+                # every other row just to drop this one
+                shared._store().delete_by_filename(fn)
                 break
         else:
             return jsonify({"success": False, "error": "not found"}), 404
@@ -2014,7 +2190,7 @@ def get_gallery_sources():
     now = time.time()
     if _sources_cache["key"] == key and now - _sources_cache["at"] < _FP_CACHE_TTL:
         return jsonify(_sources_cache["data"])
-    images = _apply_gallery_filters(images, search, [], fav_only, type_filters, rating_filters, ts_range=ts_range)
+    images = _filter_gallery(images, search, [], fav_only, type_filters, rating_filters)
     counts = {}
     for img in images:
         s = shared.normalize_site(img.get("site", "unknown"))
@@ -2037,7 +2213,9 @@ def delete_gallery_image():
                 full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
                 fn = img.get("filename", "")
                 gallery["images"].pop(i)
-                shared.save_gallery(gallery)
+                # one row (and its tags) — a full save would rewrite every
+                # other row just to drop this one
+                shared._store().delete_by_filename(fn)
                 break
         else:
             return jsonify({"success": False, "error": "Not found"}), 404
@@ -2095,6 +2273,17 @@ def _scan_and_merge_gallery():
     count_added = 0
     count_fixed = 0
     count_checked = 0
+
+    def _stored(img):
+        """Tags as STORED — the resident copy carries none.
+
+        Comparing against the resident copy would read as 0 tags and let a
+        folder-name placeholder overwrite real tags, so this always asks the
+        store. It deliberately does not cache on the entry: hydrating every
+        entry here would put the whole library's tags back on the heap. Only
+        an entry we actually rewrite keeps them (existing["tags"] below).
+        """
+        return shared.entry_tags(img)
     for root, dirs, files in os.walk(MASTER_FOLDER):
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
@@ -2118,12 +2307,13 @@ def _scan_and_merge_gallery():
                 # read a file's own tags at most once per file version: most
                 # bare files carry nothing, and re-reading gigabytes of them
                 # on every launch is not a scan, it's a benchmark
-                if (shared.count_tags(existing.get("tags")) <= 1
+                have = _stored(existing)
+                if (shared.count_tags(have) <= 1
                         and existing.get("meta_mtime") != mtime):
                     existing["meta_mtime"] = mtime
                     count_checked += 1
                     file_tags = _tags_from_file(full)
-                    if shared.count_tags(file_tags) > shared.count_tags(existing.get("tags")):
+                    if shared.count_tags(file_tags) > shared.count_tags(have):
                         existing["tags"] = file_tags
                         count_fixed += 1
             else:
@@ -2152,8 +2342,13 @@ def _scan_and_merge_gallery():
             seen[fn] = img
             unique.append(img)
         else:
-            if shared.count_tags(img.get("tags")) > shared.count_tags(prev.get("tags")):
-                prev["tags"] = img["tags"]
+            # compare STORED tags on both sides: a resident copy reads as 0,
+            # so comparing it against a twin's tags would swap real tags out
+            # for nothing (or for a poorer folder-name set)
+            t_img = _stored(img)
+            t_prev = _stored(prev)
+            if shared.count_tags(t_img) > shared.count_tags(t_prev):
+                prev["tags"] = t_img
             if not prev.get("filepath") and img.get("filepath"):
                 prev["filepath"] = img["filepath"]
             if img.get("favourite"):
@@ -2729,15 +2924,26 @@ def _heal_bare_gallery_tags():
     from core import md5_refetch
     gallery = shared.load_gallery().get("images", [])
     md5_refetch.clear_stale_md5_misses(gallery)
-    # unsupported sites and posts the API already denied are not work — and
-    # counting them would print this line on every launch for the rest of time
-    todo = [i for i in gallery if md5_refetch.worth_trying(i)]
+    # bare-ness is the only predicate that reads tags: fetch them a chunk at a
+    # time and keep only the verdict, so this pass never puts the whole
+    # library's tags on the heap (and never re-queries per entry)
+    bare, todo = [], []
+    for start in range(0, len(gallery), _TAG_CHUNK):
+        chunk = gallery[start:start + _TAG_CHUNK]
+        tagmap = shared.gallery_tags_for(
+            [c.get("id") or c.get("filename") for c in chunk])
+        for i in chunk:
+            tags = tagmap.get(i.get("id") or i.get("filename")) or {}
+            if not md5_refetch.is_bare(i, tags):
+                continue
+            bare.append(i)
+            if md5_refetch.worth_trying(i, tags):
+                todo.append(i)
     if not todo:
         return
     # the counts survive a shutdown mid-run: they are read from the gallery,
     # so the next launch says how much is already done instead of starting
     # the story over
-    bare = [i for i in gallery if md5_refetch.is_bare(i)]
     no_api = sum(1 for i in bare if not md5_refetch.supports(i.get("site", "")))
     checked = sum(1 for i in bare
                   if md5_refetch.miss_count(i) >= md5_refetch.MISS_LIMIT)

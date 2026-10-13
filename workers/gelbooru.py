@@ -1,6 +1,6 @@
 import html, os
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
 from core.shared import TAG_TYPE_MAP, media_subdir
 from core.database import DatabaseManager, DATABASE_DIR
 
@@ -44,7 +44,7 @@ class GelbooruWorker(BaseWorker):
         self.api_tag, self.rating_allowed, self.rating_display = build_query(self.original_tag, rating)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag_name = sanitize_path_component(clean_tag, fallback="gelbooru")
+        self.safe_tag_name = folder_component(clean_tag, fallback="gelbooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag_name)
         safe_ensure_dir(self.tag_dir)
 
@@ -178,7 +178,7 @@ class GelbooruWorker(BaseWorker):
 
                 raw_filename = file_url.split('/')[-1].split('?')[0]
                 filename = sanitize_filename(raw_filename, fallback=f"gelbooru_{post.get('id', 'item')}.jpg")
-                rating_label = sanitize_path_component(self.rating_label_map.get(post_rating, "Unknown"), fallback="Unknown")
+                rating_label = folder_component(self.rating_label_map.get(post_rating, "Unknown"), fallback="Unknown")
 
                 raw_tags = [html.unescape(t.strip()) for t in post.get("tags", "").split() if t.strip()]
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(raw_tags)

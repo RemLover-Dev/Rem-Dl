@@ -1,7 +1,7 @@
 import os, re, json, random
 import asyncio
 from pathlib import Path
-from workers import BaseWorker, sanitize_path_component, safe_ensure_dir
+from workers import BaseWorker, folder_component, safe_ensure_dir
 import core.shared as shared
 
 
@@ -87,7 +87,7 @@ class PinterestWorker(BaseWorker):
         self.min_h = min_h
 
         cleaned = url_or_query.strip().lower().replace("https://", "").replace("http://", "").replace("/", "_")
-        safe_name = sanitize_path_component(cleaned[:60], fallback="pinterest_query")
+        safe_name = folder_component(cleaned[:60], fallback="pinterest_query")
         self.site_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
         safe_ensure_dir(self.site_root)
         self.tag_dir = self.site_root

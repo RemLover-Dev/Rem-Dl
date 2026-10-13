@@ -7,7 +7,7 @@ from core.shared import (
     BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
     write_image_metadata, save_history, build_tagd, check_duplicate,
     absorb_duplicate,
-    sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_wait
+    folder_component, sanitize_filename, safe_ensure_dir, pace_wait
 )
 
 API = "https://api.anime-pictures.net/api/v3"
@@ -58,7 +58,7 @@ class AnimeDlWorker(BaseDownloader):
         self.exclude_tags = [t[1:] for t in toks if t.startswith('-') and len(t) > 1]
         self._exclude_norm = {t.replace("_", " ").strip().lower() for t in self.exclude_tags}
         self.tag = " ".join(t for t in toks if not t.startswith('-'))
-        self.tag_slug = sanitize_path_component(self.tag.replace(" ", "_"), fallback="anime_pictures")
+        self.tag_slug = folder_component(self.tag, fallback="anime_pictures")
         self.tag_dir = os.path.join(self.site_root, self.tag_slug)
         safe_ensure_dir(self.tag_dir)
         

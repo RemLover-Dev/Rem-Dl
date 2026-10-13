@@ -929,7 +929,12 @@ select option:hover, select option:checked { background: var(--title-color); col
     height: 100%;
     object-fit: cover;
     object-position: 50% 20%;
-    transition: filter 0.25s ease, transform 0.25s ease;
+}
+/* box size and blur must animate on the same timing, or the shrinking box
+   outruns the blur and the transparent edge fade is briefly inside the clip */
+.gallery-card img,
+.gallery-hover-media {
+    transition: filter 0.25s ease, inset 0.25s ease, width 0.25s ease, height 0.25s ease;
 }
 /* hover-to-play media sits exactly where the thumb does */
 .gallery-hover-media {
@@ -964,15 +969,26 @@ select option:hover, select option:checked { background: var(--title-color); col
 }
 
 /* NSFW Blur Filter — one switch (blur-nsfw on <body>), same is-nsfw marker everywhere */
+/* blur() samples transparent pixels past the image edge, so the border fades
+   toward the card's dark background. An overscan in *pixels* (not a scale,
+   which is only a few px on a small tile) pushes that fade outside the
+   overflow:hidden clip: keep the inset at ~2x the blur radius. */
 body.blur-nsfw .gallery-card.is-nsfw img,
 body.blur-nsfw .gallery-card.is-nsfw .gallery-hover-media {
-    filter: blur(22px);
-    transform: scale(1.08);
+    filter: blur(18px);
+    inset: -36px;
+    width: calc(100% + 72px);
+    height: calc(100% + 72px);
 }
 body.blur-nsfw .gallery-card.is-nsfw:hover img,
 body.blur-nsfw .gallery-card.is-nsfw:hover .gallery-hover-media {
+    /* delay only on entering hover (transition props come from the new state),
+       so a quick pointer pass never starts an animation that then reverses mid-flight */
+    transition-delay: 0.15s;
     filter: blur(0);
-    transform: scale(1);
+    inset: 0;
+    width: 100%;
+    height: 100%;
 }
 body.blur-nsfw .image-card-log.is-nsfw img,
 body.blur-nsfw .image-card-log.is-nsfw .gallery-hover-media {
@@ -1185,7 +1201,8 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
     cursor: grabbing;
 }
 
-.gallery-viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(15, 15, 20, 0.6); backdrop-filter: blur(5px); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); color: white; font-size: 24px; cursor: pointer; z-index: 10010; width: 50px; height: 50px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; line-height: 1; padding-bottom: 2px; }
+.gallery-viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(15, 15, 20, 0.6); backdrop-filter: blur(5px); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); color: white; font-size: 24px; cursor: pointer; z-index: 10010; width: 50px; height: 50px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; line-height: 1; }
+.gallery-viewer-nav svg { width: 1em; height: 1em; display: block; }
 .gallery-viewer-nav:hover { background: var(--title-color); color: #000; transform: translateY(-50%) scale(1.1); }
 .gallery-viewer-nav.prev { left: 40px; }
 .gallery-viewer-nav.next { right: 40px; }
@@ -1238,7 +1255,7 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 .toast-icon svg { width: 1em; height: 1em; vertical-align: -0.125em; shape-rendering: geometricPrecision; }
 #wpFade { position: fixed; inset: 0; z-index: -1; background-size: cover; background-position: center; background-repeat: no-repeat; opacity: 0; pointer-events: none; }
 .log-item svg { shape-rendering: geometricPrecision; }
-.gallery-viewer-top-btn.close { right: 40px; font-size: 24px; color: #ff6b6b; padding-bottom: 2px; }
+.gallery-viewer-top-btn.close { right: 40px; font-size: 24px; color: #ff6b6b; }
 .gallery-viewer-top-btn.close:hover { background: #ff6b6b; color: #fff; box-shadow: 0 0 0 1px #ff6b6b; }
 .gallery-viewer-top-btn.fav { right: 100px; color: #ff9ff3; font-size: 22px; }
 .gallery-viewer-top-btn.fav:hover { background: #ff9ff3; color: #000; box-shadow: 0 0 0 1px #ff9ff3; }

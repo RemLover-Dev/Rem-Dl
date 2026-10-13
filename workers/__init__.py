@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from core.shared import (
     BaseDownloader,
     sanitize_path_component,
+    folder_component,
     sanitize_filename,
     safe_ensure_dir,
     safe_filepath,
@@ -14,6 +15,7 @@ __all__ = [
     "BaseWorker",
     "BaseDownloader",
     "sanitize_path_component",
+    "folder_component",
     "sanitize_filename",
     "safe_ensure_dir",
     "safe_filepath",

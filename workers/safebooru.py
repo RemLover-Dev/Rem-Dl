@@ -1,7 +1,7 @@
 import html, os
 import asyncio
 import xml.etree.ElementTree as ET
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
 import core.shared as shared
 from core.database import DatabaseManager, DATABASE_DIR
 
@@ -15,7 +15,7 @@ class SafebooruWorker(BaseWorker):
         self.exclusions = exclusions
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="safebooru")
+        self.safe_tag = folder_component(clean_tag, fallback="safebooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
         # persistent across runs — known tags never refetch (verified types only)

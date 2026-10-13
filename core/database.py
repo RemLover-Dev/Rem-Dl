@@ -26,12 +26,13 @@ IMAGE_HISTORY_FILE = os.path.join(DATABASE_DIR, "image_history.json")
 UI_CONFIG_FILE = os.path.join(DATABASE_DIR, "ui_config.json")
 LEARNED_TAGS_FILE = os.path.join(DATABASE_DIR, "user_learned_tags.json")
 
-# image history is the download hot path: keep the parsed list in memory and
-# batch disk writes like gallery (_GALLERY_FLUSH_EVERY); flush_image_history()
-# persists whatever is still pending
-_hist_cache = None
-_hist_dirty = 0
-_HIST_FLUSH_EVERY = 10
+# image history lives in gallery.db now. There is deliberately no parsed
+# copy in memory: the old _hist_cache was read in full once and kept forever,
+# so memory grew one entry per lifetime download. flush_image_history()
+# stays registered for the exit hooks but has nothing left to write.
+def _store():
+    from core.gallery_store import get_store
+    return get_store()
 _learned_cache = None
 
 
@@ -148,86 +149,63 @@ class DatabaseManager:
     # --- Image History ---
     @staticmethod
     def load_image_history():
-        global _hist_cache, _hist_dirty
-        from core.shared import tags_dict_from_lists
+        """Read straight from the store, newest first.
+
+        No resident cache on purpose — see the note by _store().
+        """
         with _DB_LOCK:
-            if _hist_cache is None:
-                data = DatabaseManager.load_json(IMAGE_HISTORY_FILE)
-                changed = False
-                for entry in data:
-                    tags = entry.get("tags")
-                    if isinstance(tags, list):
-                        entry["tags"] = tags_dict_from_lists(tags, entry.get("artists", []))
-                        changed = True
-                if changed:
-                    DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
-                _hist_cache = data
-            return _hist_cache
+            return _store().history_all()
 
     @staticmethod
     def save_image_history(data):
-        global _hist_cache, _hist_dirty
+        """Replace the whole history (route and maintenance callers pass a
+        complete list). Commits immediately: there is no batch left to lose."""
         with _DB_LOCK:
-            _hist_cache = data
-            if not data:  # clear writes through so a stale cache can't resurrect it
-                _hist_dirty = 0
-                DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
-            else:
-                _hist_dirty += 1
-                if _hist_dirty >= _HIST_FLUSH_EVERY:
-                    _hist_dirty = 0
-                    DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
+            _store().history_replace(data)
 
     @staticmethod
     def flush_image_history():
-        global _hist_dirty
-        with _DB_LOCK:
-            if _hist_cache is not None and _hist_dirty:
-                DatabaseManager.save_json(IMAGE_HISTORY_FILE, _hist_cache)
-                _hist_dirty = 0
+        """No-op: the store commits per write. Kept for the exit hooks."""
+        pass
 
     @staticmethod
     def add_image_history(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         from core.shared import tags_dict_from_lists
         with _DB_LOCK:
-            hist = DatabaseManager.load_image_history()
             tags_dict = tags_dict_from_lists(tags_list, artist_list, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-            entry = {
+            # one row — the old load-everything/rewrite-everything pair turned
+            # each download into a rewrite of the entire history
+            _store().history_insert({
                 "site": worker_name,
                 "filename": filename,
                 "tags": dict(tags_dict),
                 "filepath": filepath,
                 "downloaded_at": time.time()
-            }
-            hist.insert(0, entry)
-            # ponytail: unbounded like gallery.json (~830B/entry — a few MB
-            # rewritten per add at normal rates); move to sqlite if it outgrows that
-            DatabaseManager.save_image_history(hist)
+            })
 
     @staticmethod
     def remove_image_history(filename):
         with _DB_LOCK:
-            hist = [x for x in DatabaseManager.load_image_history() if x.get("filename") != filename]
-            DatabaseManager.save_image_history(hist)
+            _store().history_delete(filename)
 
     @staticmethod
     def clear_image_history():
-        DatabaseManager.save_image_history([])
+        with _DB_LOCK:
+            _store().history_clear()
 
     @staticmethod
     def recat_image_history(caches):
         """Move history entries' tags to the category their site's cache knows."""
         from core.shared import recategorize_tags
         with _DB_LOCK:
-            hist = DatabaseManager.load_image_history()
+            hist = _store().history_all()
             n = 0
             for entry in hist:
                 if isinstance(entry, dict) and recategorize_tags(entry.get("tags"), entry.get("site"), caches):
                     n += 1
             if n:
-                DatabaseManager.save_image_history(hist)
-                # rare maintenance op — persist now, don't wait for a batch flush
-                DatabaseManager.flush_image_history()
+                # rare maintenance op — one rewrite is fine here
+                _store().history_replace(hist)
             return n
 
     # --- Favorites ---

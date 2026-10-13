@@ -134,3 +134,8 @@ database/*.sqlite3.bak-*
 database/*_tag_types.json
 database/preview_cache/
 database/image_history.json.tmp
+# generated at runtime — per-install data, never source (gallery.db alone is 51MB)
+database/gallery.db*
+database/.folder_policy_v2
+database/folder_rename_map.json
+database/*_endpoints.json

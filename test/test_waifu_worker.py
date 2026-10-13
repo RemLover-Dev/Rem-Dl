@@ -22,7 +22,7 @@ def test_waifu_include_and_exclude_slugs(master):
     w = WaifuImWorker("waifu maid -uniform -lingerie", 10, "", [], NET_CONFIG)
     assert w.include_slugs == ["waifu", "maid"]
     assert w.exclude_slugs == ["uniform", "lingerie"]
-    assert w.safe_tag == "waifu maid"
+    assert w.safe_tag == "Waifu Maid"
 
 
 def test_waifu_exclusions_arg_merges_with_dash_tokens(master):
@@ -36,14 +36,14 @@ def test_waifu_exclusion_only_query_browses_all(master):
     w = WaifuImWorker("-uniform", 10, "", [], NET_CONFIG)
     assert w.include_slugs == []
     assert w.exclude_slugs == ["uniform"]
-    assert w.safe_tag == "waifu"
+    assert w.safe_tag == "Waifu"
 
 
 def test_waifu_empty_tag_falls_back_to_all(master):
     w = WaifuImWorker("", 10, "", [], NET_CONFIG)
     assert w.include_slugs == []
     assert w.exclude_slugs == []
-    assert w.safe_tag == "waifu"
+    assert w.safe_tag == "Waifu"
 
 
 def test_waifu_rating_param_mapping(master):
@@ -77,3 +77,14 @@ def test_waifu_slug_fallback_and_name_map(master, monkeypatch):
     assert waifu_name_to_slug("Long Hair") == "long-hair"
     monkeypatch.setitem(shared.WAIFU_TAG_MAP, "long hair", "long_hair")
     assert waifu_name_to_slug("Long Hair") == "long_hair"
+
+
+def test_waifu_exclude_gifs_flag(master):
+    on = WaifuImWorker("", 10, "", [], {**NET_CONFIG, "exclude_gifs": True})
+    assert on.exclude_gifs is True
+    assert on.skip_url("https://i.waifu.im/abc.gif")
+    assert on.skip_url("https://i.waifu.im/abc.GIF?size=large")
+    assert not on.skip_url("https://i.waifu.im/abc.jpg")
+    off = WaifuImWorker("", 10, "", [], NET_CONFIG)
+    assert off.exclude_gifs is False
+    assert not off.skip_url("https://i.waifu.im/abc.gif")

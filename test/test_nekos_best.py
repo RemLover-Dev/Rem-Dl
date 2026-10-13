@@ -1,5 +1,6 @@
 """nekos.best image results carry artist_name — it must ride the queue as the artist bucket."""
 import asyncio
+import os
 
 from workers.nekos_best import NekosBestWorker
 
@@ -63,3 +64,38 @@ def test_blank_artist_treated_as_missing(tmp_path, monkeypatch):
         {"url": "https://nekos.best/api/v2/neko/abc.png", "artist_name": ""}]})
     asyncio.run(w.scraper_task())
     assert calls == [(["neko"], [], [])], calls
+
+
+def test_multi_category_round_robin(tmp_path, monkeypatch):
+    # the dropdown sends "neko hug" — batches must rotate and tag with the fetched category
+    monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
+    w = NekosBestWorker("neko hug", 2, NET_CONFIG)
+    urls = []
+
+    class _S:
+        async def get(self, url):
+            urls.append(url)
+            return _Resp({"results": [{"url": url.split("?")[0] + "/x.png", "artist_name": "A"}]})
+
+    w.session = _S()
+    calls = []
+
+    async def fake_enqueue(url, filepath, filename, tags_list, artists=None, copyrights=None, **kw):
+        calls.append((url, tags_list))
+        return True
+
+    w.enqueue_download = fake_enqueue
+    asyncio.run(w.scraper_task())
+    assert urls == ["https://nekos.best/api/v2/neko?amount=2",
+                    "https://nekos.best/api/v2/hug?amount=1"], urls
+    assert calls == [("https://nekos.best/api/v2/neko/x.png", ["neko"]),
+                     ("https://nekos.best/api/v2/hug/x.png", ["hug"])], calls
+    # each category downloads into its own folder
+    assert os.path.isdir(os.path.join(str(tmp_path), "Nekos.best", "Neko"))
+    assert os.path.isdir(os.path.join(str(tmp_path), "Nekos.best", "Hug"))
+
+
+def test_empty_category_falls_back_to_neko(tmp_path, monkeypatch):
+    w, calls = _worker(tmp_path, monkeypatch, {"results": [
+        {"url": "https://nekos.best/api/v2/neko/abc.png"}]}, category="")
+    assert w.categories == ["neko"]

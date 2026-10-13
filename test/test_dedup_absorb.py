@@ -4,17 +4,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import shared
+from core import gallery_store, shared
 
 
 @pytest.fixture
 def lib(tmp_path, monkeypatch):
     (tmp_path / "pixiv" / "art").mkdir(parents=True)
-    monkeypatch.setattr(shared, "GALLERY_FILE", str(tmp_path / "gallery.json"))
     monkeypatch.setattr(shared, "MASTER_FOLDER", str(tmp_path))
     monkeypatch.setattr(shared, "_gallery_cache",
                         {"data": {"images": []}, "filenames": set(), "dirty": 0})
-    return tmp_path
+    gallery_store.use_store_path(str(tmp_path / "gallery.db"))
+    yield tmp_path
+    gallery_store.use_store_path(None)
 
 
 def _original(lib, filename="a.jpg"):

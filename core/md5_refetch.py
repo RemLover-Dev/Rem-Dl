@@ -223,9 +223,12 @@ def miss_count(img):
         return 0
 
 
-def worth_trying(img):
-    """Bare, on an md5-capable site, and not already known to be absent."""
-    return (is_bare(img) and supports(img.get("site", ""))
+def worth_trying(img, tags=None):
+    """Bare, on an md5-capable site, and not already known to be absent.
+
+    `tags` lets a caller that just bulk-read a chunk pass what it already
+    has; omit it and the store is asked."""
+    return (is_bare(img, tags) and supports(img.get("site", ""))
             and miss_count(img) < MISS_LIMIT)
 
 
@@ -246,9 +249,12 @@ def clear_stale_md5_misses(images):
     return dropped
 
 
-def is_bare(img):
+def is_bare(img, tags=None):
     """Folder-name-only entry (or no tags at all) — the rescan signature."""
-    tags = img.get("tags")
+    if tags is None:
+        # the resident gallery list carries no tags: an unqualified
+        # img.get("tags") would report every entry as bare
+        tags = shared.entry_tags(img)
     if not isinstance(tags, dict):
         return True
     return _count(tags) <= 1

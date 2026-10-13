@@ -1,6 +1,6 @@
 import os, hashlib
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
 from core.shared import TAG_TYPE_MAP, media_subdir
 from core.database import DatabaseManager, DATABASE_DIR
 
@@ -33,7 +33,7 @@ class KonachanWorker(BaseWorker):
             self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="konachan")
+        self.safe_tag = folder_component(clean_tag, fallback="konachan")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
@@ -179,7 +179,7 @@ class KonachanWorker(BaseWorker):
                     continue
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"kona_{post.get('id', 'item')}.jpg")
-                rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
+                rating_label = folder_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
                 safe_ensure_dir(rating_dir)
                 filepath = os.path.join(rating_dir, filename)

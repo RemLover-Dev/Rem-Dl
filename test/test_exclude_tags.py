@@ -29,14 +29,14 @@ def test_gsbooru_dash_tags_stripped_from_query(master):
     w = GsbooruWorker("solo -smile -gloves", 10, "", [], NET_CONFIG)
     assert w.api_tag == "solo"
     assert w.exclude_tags == ["smile", "gloves"]
-    assert w.safe_tag_name == "solo"
+    assert w.safe_tag_name == "Solo"
 
 
 def test_gsbooru_exclusion_only_query(master):
     w = GsbooruWorker("-smile", 10, "", [], NET_CONFIG)
     assert w.api_tag == ""
     assert w.exclude_tags == ["smile"]
-    assert w.safe_tag_name == "all"
+    assert w.safe_tag_name == "All"
 
 
 def test_gsbooru_post_filter_matches_tag_string(master):
@@ -109,7 +109,7 @@ def test_anime_dl_dash_tags_stripped_from_search(master):
     w = AnimeDlWorker("blue_hair -landscape", 10, NET_CONFIG)
     assert w.tag == "blue_hair"
     assert w.exclude_tags == ["landscape"]
-    assert w.tag_slug == "blue_hair"
+    assert w.tag_slug == "Blue Hair"
 
 
 def test_anime_dl_exclusion_filter_normalizes_underscores(master):
@@ -123,4 +123,4 @@ def test_anime_dl_exclusion_only_query(master):
     w = AnimeDlWorker("-landscape", 10, NET_CONFIG)
     assert w.tag == ""
     assert w.exclude_tags == ["landscape"]
-    assert w.tag_slug == "anime_pictures"
+    assert w.tag_slug == "Anime Pictures"
