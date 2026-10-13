@@ -26,7 +26,8 @@ class DanbooruWorker(BaseWorker):
         self.rating_display = ", ".join(self.rating_map[c] for c in codes)
         self.dan_login = os.getenv("DANBOORU_LOGIN", "")
         self.dan_api_key = os.getenv("DANBOORU_API_KEY", "")
-        self._auth = aiohttp.BasicAuth(self.dan_login, self.dan_api_key) if (self.dan_login and self.dan_api_key) else None
+        # BasicAuth objects are deprecated in aiohttp 3.14 — pass the encoded header instead
+        self._auth = {"Authorization": aiohttp.encode_basic_auth(self.dan_login, self.dan_api_key)} if (self.dan_login and self.dan_api_key) else None
 
         FORMAT_WORDS = {"video", "image"}
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-') and t not in FORMAT_WORDS)
@@ -40,7 +41,7 @@ class DanbooruWorker(BaseWorker):
         try:
             async with self.session.get(
                     "https://danbooru.donmai.us/profile.json",
-                    auth=self._auth,
+                    headers=self._auth,
                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     # non-200 here means bad credentials — this must not
@@ -74,7 +75,7 @@ class DanbooruWorker(BaseWorker):
                 self.log(f"Scanning API... (Page {page})")
                 limit_val = min(200, self.amount - collected_count if self.amount > 0 else 200)
 
-                resp = await self.session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}, auth=self._auth)
+                resp = await self.session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}, headers=self._auth)
                 if resp.status in [403, 429]:
                     self.log(f"ERROR {resp.status}. Change proxy.")
                     break

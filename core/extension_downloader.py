@@ -180,7 +180,7 @@ def install_from_github(repo: str, ext_id: Optional[str] = None) -> Tuple[bool, 
         # Validate that manifest.json exists
         manifest_file = os.path.join(target_dir, "manifest.json")
         if not os.path.exists(manifest_file):
-            return False, f"Downloaded archive does not contain a valid manifest.json."
+            return False, "Downloaded archive does not contain a valid manifest.json."
 
         # Enable and load dynamically
         manager.enable_extension(ext_id)

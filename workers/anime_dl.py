@@ -231,7 +231,8 @@ class AnimeDlWorker(BaseDownloader):
 
             sem = asyncio.Semaphore(6)
 
-            async def fetch_detail(pid):
+            # bind sem as a default arg — closures must not late-bind the loop variable
+            async def fetch_detail(pid, sem=sem):
                 async with sem:
                     if self.stop_event.is_set():
                         return None

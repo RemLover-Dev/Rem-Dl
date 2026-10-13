@@ -393,7 +393,7 @@ class ZerochanWorker(BaseDownloader):
         try:
             probe = subprocess.run(
                 [sys.executable, "-m", "gallery_dl", "--version"],
-                capture_output=True, text=True, timeout=60)
+                capture_output=True, text=True, timeout=60, check=False)
             if probe.returncode == 0:
                 launcher = [sys.executable, "-m", "gallery_dl"]
         except Exception:

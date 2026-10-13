@@ -195,7 +195,8 @@ class EShuushuuWorker(BaseDownloader):
                 break
             sem = asyncio.Semaphore(4)
 
-            async def fetch_post(img_id):
+            # bind sem as a default arg — closures must not late-bind the loop variable
+            async def fetch_post(img_id, sem=sem):
                 if self.stop_event.is_set():
                     return None
                 async with sem:

@@ -23,7 +23,7 @@ import time
 import hashlib
 import zipfile
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import unquote
 from PIL import Image
 import requests
@@ -79,7 +79,7 @@ class PixivAppAPI:
             "refresh_token": self.refresh_token,
             "get_secure_url": "1",
         }
-        ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         headers = {
             "X-Client-Time": ts,
             "X-Client-Hash": hashlib.md5(

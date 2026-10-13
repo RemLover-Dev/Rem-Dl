@@ -515,7 +515,7 @@ def _pick_folder_desktop(start: str):
                 "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
             )
             r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-                               capture_output=True, text=True, timeout=120)
+                               capture_output=True, text=True, timeout=120, check=False)
             if r.returncode == 0:
                 out = (r.stdout or "").strip()
                 return out or None
@@ -524,7 +524,7 @@ def _pick_folder_desktop(start: str):
     elif sys.platform == "darwin":
         try:
             osa = f'POSIX path of (choose folder with prompt "Select download folder:" default location POSIX file "{safe_start}")'
-            r = subprocess.run(["osascript", "-e", osa], capture_output=True, text=True, timeout=120)
+            r = subprocess.run(["osascript", "-e", osa], capture_output=True, text=True, timeout=120, check=False)
             if r.returncode == 0:
                 out = (r.stdout or "").strip()
                 return out or None
@@ -540,7 +540,7 @@ def _pick_folder_desktop(start: str):
             ["zenity", "--file-selection", "--directory", f"--filename={dialog_home}/"],
         ):
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
                 if r.returncode == 0:
                     out = (r.stdout or "").strip().split("\n")[0].strip()
                     return out or None
@@ -600,7 +600,7 @@ def _pick_image_file_desktop():
          f"--filename={dialog_home}/"],
     ):
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
             if r.returncode == 0:
                 out = (r.stdout or "").strip().split("\n")[0].strip()
                 return out or None
@@ -695,7 +695,7 @@ def set_clipboard():
                 paths_arg = ", ".join(f'"{p}"' for p in resolved_paths)
                 ps_cmd = f"Set-Clipboard -Path {paths_arg}"
                 r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
-                                   capture_output=True, text=True, timeout=5)
+                                   capture_output=True, text=True, timeout=5, check=False)
                 if r.returncode == 0:
                     return jsonify({"ok": True})
             except Exception as e:
@@ -709,7 +709,7 @@ def set_clipboard():
             try:
                 osa_items = ", ".join(f'(POSIX file "{p}")' for p in resolved_paths)
                 osa_cmd = f"set the clipboard to {{{osa_items}}}"
-                r = subprocess.run(["osascript", "-e", osa_cmd], capture_output=True, text=True, timeout=5)
+                r = subprocess.run(["osascript", "-e", osa_cmd], capture_output=True, text=True, timeout=5, check=False)
                 if r.returncode == 0:
                     return jsonify({"ok": True})
             except Exception as e:
@@ -2064,7 +2064,7 @@ def _cached_thumb(full):
     if ext in EXTENSIONS_VIDEO:
         import subprocess
         proc = subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-                              capture_output=True, timeout=10)
+                              capture_output=True, timeout=10, check=False)
         if proc.returncode == 0 and proc.stdout:
             data = proc.stdout
         else:

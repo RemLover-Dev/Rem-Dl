@@ -148,6 +148,34 @@ def test_like_metacharacters_are_literal(seeded):
     assert _search("ai_gen%", IMAGES, seeded) == []
 
 
+def test_exact_match_is_case_insensitive(seeded):
+    # stored tags are lowered at index time; an uppercase exact term used to
+    # be compared raw and could never match
+    store = get_store()
+    store.insert_entry({
+        "id": "e", "filename": "e.png", "filepath": "gelbooru/e.png",
+        "site": "gelbooru", "favourite": False,
+        "downloaded_at": "2026-01-01T00:00:00", "tags": ["ALIENSTAGE"],
+    })
+    images = IMAGES + BRA + [{"id": "e", "filename": "e.png",
+                              "filepath": "gelbooru/e.png", "site": "gelbooru"}]
+    assert _search('"alienstage"', images, seeded) == ["e.png"]
+
+
+def test_index_survives_a_tag_write(seeded):
+    # the search index is derived from gallery_tags; a write after the first
+    # search must still be visible to the next one
+    store = get_store()
+    store.insert_entry({
+        "id": "late", "filename": "late.png", "filepath": "gelbooru/late.png",
+        "site": "gelbooru", "favourite": False,
+        "downloaded_at": "2026-01-01T00:00:00", "tags": ["hoshimachi_suisei"],
+    })
+    images = IMAGES + [{"id": "late", "filename": "late.png",
+                        "filepath": "gelbooru/late.png", "site": "gelbooru"}]
+    assert _search("suisei", images, seeded) == ["a.png", "late.png"]
+
+
 def test_all_negation_keeps_everything_else(seeded):
     # no positive term: the set starts from the whole library, not from nothing
     assert _search("-nothing_matches_this", IMAGES, seeded) == [
