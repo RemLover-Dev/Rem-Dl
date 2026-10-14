@@ -510,20 +510,7 @@ class GalleryStore:
         with self._lock:
             norm = self._norm_idx
             if norm is None:
-                # built in python, not SQL: `SELECT DISTINCT LOWER(...)` groups
-                # inside sqlite but still ships every row out one at a time
-                # (measured 504ms here, against 552ms fetching and grouping in
-                # python), so the DISTINCT buys nothing
-                norm = {}
-                for key, gid in conn.execute(
-                        "SELECT DISTINCT LOWER(REPLACE(tag, '_', ' ')), "
-                        "gallery_id FROM gallery_tags"):
-                    norm.setdefault(key, set()).add(gid)
-                # published only while holding the lock: a write committing
-                # between "index is None" and this publish would never be
-                # invalidated again (writes maintain, they don't drop), so
-                # its tags would be missing from every future search
-                self._norm_idx = norm
+                norm = self._build_idx_locked(conn)
             needle = term.lower().replace("_", " ")
             if exact:
                 # a copy, not the live set: _search_id_set does
@@ -543,6 +530,37 @@ class GalleryStore:
         must agree exactly or a search silently changes results.
         """
         return self._norm_tag_ids(self._connect(), term, exact)
+
+    def _build_idx_locked(self, conn):
+        """Build the whole search index and publish it. Caller holds the lock.
+
+        Built in python, not SQL: `SELECT DISTINCT LOWER(...)` groups inside
+        sqlite but still ships every row out one at a time (measured 504ms
+        here, against 552ms fetching and grouping in python), so the DISTINCT
+        buys nothing. Published only while holding the lock: a write
+        committing between "index is None" and this publish would never be
+        invalidated again (writes maintain, they don't drop), so its tags
+        would be missing from every future search.
+        """
+        norm = {}
+        for key, gid in conn.execute(
+                "SELECT DISTINCT LOWER(REPLACE(tag, '_', ' ')), "
+                "gallery_id FROM gallery_tags"):
+            norm.setdefault(key, set()).add(gid)
+        self._norm_idx = norm
+        return norm
+
+    def warm_search_index(self):
+        """Build the search index up front if it isn't built yet.
+
+        Startup runs this in a background thread so the first gallery search
+        doesn't pay the one-off ~800ms build (measured on a 19k-entry
+        library); every search after is a few ms. Idempotent and cheap when
+        already built.
+        """
+        with self._lock:
+            if self._norm_idx is None:
+                self._build_idx_locked(self._connect())
 
     def all_ids(self):
         """Every gallery id — the starting set for an all-negation search."""

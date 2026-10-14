@@ -207,6 +207,20 @@ def test_delete_drops_ids_from_the_index(seeded):
     assert _search("kafka", IMAGES, seeded) == ["b.png"]
 
 
+def test_warm_index_builds_before_the_first_search(seeded):
+    # startup warms the index in a background thread so the first user search
+    # doesn't pay the one-off build; it must be idempotent and answer
+    # correctly afterwards
+    store = get_store()
+    assert store._norm_idx is None
+    store.warm_search_index()
+    assert store._norm_idx is not None
+    built = store._norm_idx
+    store.warm_search_index()                    # no-op the second time
+    assert store._norm_idx is built
+    assert _search("kafka", IMAGES, seeded) == ["b.png", "d.png"]
+
+
 def test_all_negation_keeps_everything_else(seeded):
     # no positive term: the set starts from the whole library, not from nothing
     assert _search("-nothing_matches_this", IMAGES, seeded) == [

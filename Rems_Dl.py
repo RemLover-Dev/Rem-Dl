@@ -3014,7 +3014,46 @@ if __name__ == "__main__":
             pass
 
     threading.Thread(target=_warm_tag_dbs, daemon=True).start()
-    threading.Thread(target=startup_rescan, daemon=True).start()
+    _rescan_thread = threading.Thread(target=startup_rescan, daemon=True)
+    _rescan_thread.start()
+
+    def _warm_caches(rescan_thread):
+        """Move the first-interaction cold costs off the user's first click.
+
+        load_gallery warms the resident copy immediately (a save never drops
+        it). The sort keys, filepath walk, and search index wait for the
+        rescan to finish because it ends in save_gallery (drops the index)
+        and _invalidate_fp_cache (drops the filepath cache) — warming before
+        that would just be undone. Measured on the real library: ~837ms
+        index build, ~75ms os.walk, ~63ms gallery load — all three were
+        paid on the first search / first gallery page load.
+        """
+        try:
+            shared.load_gallery()
+        except Exception:
+            pass
+        try:
+            rescan_thread.join()
+        except Exception:
+            pass
+        try:
+            # precompute sort keys: entries without downloaded_at stat their
+            # file on first sort — one stat storm moved off the first page
+            for img in shared.load_gallery().get("images", []):
+                _image_timestamp(img)
+        except Exception:
+            pass
+        try:
+            _build_filepath_cache()
+        except Exception:
+            pass
+        try:
+            from core.gallery_store import get_store
+            get_store().warm_search_index()
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm_caches, args=(_rescan_thread,), daemon=True).start()
     pixiv_notify.start_watcher(
         get_config=lambda: {
             "use_proxy": settings.get("use_proxy"),
