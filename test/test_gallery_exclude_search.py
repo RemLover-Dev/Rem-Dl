@@ -176,6 +176,37 @@ def test_index_survives_a_tag_write(seeded):
     assert _search("suisei", images, seeded) == ["a.png", "late.png"]
 
 
+def test_tag_write_maintains_a_built_index(seeded):
+    # the perf contract behind concurrent use: a tag write (per downloaded
+    # image, per healed entry) must keep the built index, not drop it —
+    # dropping made every search during a download session pay the full
+    # ~770ms rebuild, which is the "gallery search crawls while the app is
+    # busy" regression. Results must also reflect the write in both
+    # directions: added tags findable, removed tags gone.
+    store = get_store()
+    _search("kafka", IMAGES, seeded)              # forces the build
+    assert store._norm_idx is not None
+    store.set_tags("d", ["totally_new_tag"])      # the hot write path
+    assert store._norm_idx is not None            # maintained, not dropped
+    assert _search("kafka", IMAGES, seeded) == ["b.png"]
+    assert _search("totally_new_tag", IMAGES, seeded) == ["d.png"]
+
+
+def test_exact_positive_with_exclusion_leaves_the_index_intact(seeded):
+    # _search_id_set mutates its first result in place (`keep -=`); handing
+    # it the live index set for an exact term let this search carve p1 out of
+    # the index itself, so the next exact "bra" search came back empty
+    assert _search('"bra", -braid', BRA, seeded) == []
+    assert _search('"bra"', BRA, seeded) == ["both.png"]
+
+
+def test_delete_drops_ids_from_the_index(seeded):
+    store = get_store()
+    _search("kafka", IMAGES, seeded)              # forces the build
+    store.delete("d")
+    assert _search("kafka", IMAGES, seeded) == ["b.png"]
+
+
 def test_all_negation_keeps_everything_else(seeded):
     # no positive term: the set starts from the whole library, not from nothing
     assert _search("-nothing_matches_this", IMAGES, seeded) == [

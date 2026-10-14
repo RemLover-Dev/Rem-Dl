@@ -64,6 +64,18 @@ def _normalize_tags(tags):
     return {}
 
 
+def _idx_key(tag):
+    """Python twin of the builder's SQL `LOWER(REPLACE(tag, '_', ' '))`.
+
+    ASCII-only lower on purpose: SQLite's LOWER() leaves non-ASCII alone, and
+    a full str.lower() here would file a non-ASCII-tagged tag under a
+    different key than the build query produced — making results depend on
+    whether that tag had been rewritten since startup.
+    """
+    return "".join(c.lower() if "A" <= c <= "Z" else c
+                   for c in str(tag)).replace("_", " ")
+
+
 def _tags_fingerprint(tags):
     """Order- and duplicate-insensitive identity for an entry's tags.
 
@@ -115,9 +127,10 @@ class GalleryStore:
         self._lock = threading.RLock()
         self._conn = None
         self._migrated = False
-        # search index, None until first use and invalidated on every tag
-        # write: normalized-tag (lower + '_'->space) -> gallery ids.
-        # See _norm_tag_ids.
+        # search index, None until first use: normalized-tag (ASCII-lower +
+        # '_'->space) -> gallery ids. Tag writes MAINTAIN it incrementally
+        # (see _set_tags_locked / _idx_drop_locked) — only a full-replace
+        # save drops it. See _norm_tag_ids.
         self._norm_idx = None
 
     # --- connection / schema -------------------------------------------------
@@ -126,12 +139,12 @@ class GalleryStore:
         with self._lock:
             if self._conn is not None:
                 if self._norm_idx is not None and self._conn.in_transaction:
-                    # an open write transaction means the tag table is being
-                    # mutated; the index is derived state, so mark it dirty
-                    # and let the next search pay the one-off rebuild. Doing
-                    # this here rather than at each write site keeps the rule
-                    # to one place, so a future write path cannot silently
-                    # ship a stale index.
+                    # safety net, not the hot path: tag writes maintain the
+                    # index themselves (see _set_tags_locked), and the lock
+                    # this method takes means no healthy write can be
+                    # mid-transaction here. This only catches a transaction
+                    # leaked by a failed batch — rebuild once instead of
+                    # shipping an index that cannot describe partial rows.
                     self._norm_idx = None
                 return self._conn
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -274,21 +287,42 @@ class GalleryStore:
         """Replace one entry's tags. Only ever called with real tag data."""
         conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
         tags = _normalize_tags(tags)
-        # dirty-marked here as well as in _connect: a batch may have built
-        # the index mid-transaction, and that snapshot cannot describe the
-        # rows this statement is about to change
-        self._norm_idx = None
-        if not tags:
-            return
         rows = []
-        for bucket, vals in tags.items():
-            if not isinstance(vals, (list, tuple, set)):
-                continue
-            rows.extend((gid, str(bucket), str(v)) for v in vals if v)
+        if tags:
+            for bucket, vals in tags.items():
+                if not isinstance(vals, (list, tuple, set)):
+                    continue
+                rows.extend((gid, str(bucket), str(v)) for v in vals if v)
         if rows:
             conn.executemany(
                 "INSERT OR IGNORE INTO gallery_tags (gallery_id, bucket, tag) VALUES (?,?,?)",
                 rows)
+        # maintain the index, don't drop it: this path runs per downloaded
+        # image and per healed entry, and dropping here made every search
+        # during activity pay the full ~770ms rebuild — the "search crawls
+        # while downloading" regression. One scan over the index keys (~1ms)
+        # keeps it exact instead.
+        self._idx_drop_locked((gid,))
+        idx = self._norm_idx
+        if idx is not None:
+            for _gid, _bucket, tag in rows:
+                idx.setdefault(_idx_key(tag), set()).add(gid)
+
+    def _idx_drop_locked(self, gids):
+        """Pull `gids` out of the search index — one pass over its keys.
+
+        No reverse map on purpose: a ~20k-key scan (~1ms) per write is a
+        cheaper thing to keep than a second structure every write path could
+        desync. No-op when the index isn't built yet.
+        """
+        idx = self._norm_idx
+        if idx is None:
+            return
+        for key in list(idx):
+            ids = idx[key]
+            ids.difference_update(gids)
+            if not ids:
+                del idx[key]
 
     def _import_history_locked(self, conn):
         if not os.path.exists(self.history_json):
@@ -426,6 +460,11 @@ class GalleryStore:
         deletes entries whose file is gone.
         """
         with self._lock:
+            # full-replace semantics: the prune below rewrites the id space,
+            # so drop the index once here instead of letting the per-entry
+            # writes maintain a structure this pass is about to overwrite —
+            # one rebuild on the next search, not one per entry
+            self._norm_idx = None
             conn = self._connect()
             present = set()
             for e in entries:
@@ -455,8 +494,9 @@ class GalleryStore:
         — hid the tag column from SQLite and forced a 547k-row scan per term
         (~130ms, measured on a 56MB library). Instead the whole table is
         normalized once into a keyed index, which costs ~770ms the first time
-        a search runs after startup (or after a write invalidates it) and
-        nothing after: every term after that is a 1-2ms dict scan. Measured
+        a search runs after startup and nothing after: writes maintain it in
+        place (see _set_tags_locked), so only a full-replace save forces a
+        rebuild. Every term after the build is a 1-2ms dict scan. Measured
         2-term query: 237ms -> 1.6ms.
 
         547k rows collapse to ~20k distinct tags, so the index is small
@@ -467,24 +507,32 @@ class GalleryStore:
         are the same query — which is what _parse_search_terms relies on when
         it rewrites the term's underscores to spaces before we ever see it.
         """
-        norm = self._norm_idx
-        if norm is None:
-            # built in python, not SQL: `SELECT DISTINCT LOWER(...)` groups
-            # inside sqlite but still ships every row out one at a time
-            # (measured 504ms here, against 552ms fetching and grouping in
-            # python), so the DISTINCT buys nothing
-            norm = {}
-            for key, gid in conn.execute(
-                    "SELECT DISTINCT LOWER(REPLACE(tag, '_', ' ')), "
-                    "gallery_id FROM gallery_tags"):
-                norm.setdefault(key, set()).add(gid)
-            self._norm_idx = norm
-        needle = term.lower().replace("_", " ")
-        if exact:
-            return norm.get(needle, set())
-        if not norm:
-            return set()
-        return set().union(*(norm[key] for key in norm if needle in key))
+        with self._lock:
+            norm = self._norm_idx
+            if norm is None:
+                # built in python, not SQL: `SELECT DISTINCT LOWER(...)` groups
+                # inside sqlite but still ships every row out one at a time
+                # (measured 504ms here, against 552ms fetching and grouping in
+                # python), so the DISTINCT buys nothing
+                norm = {}
+                for key, gid in conn.execute(
+                        "SELECT DISTINCT LOWER(REPLACE(tag, '_', ' ')), "
+                        "gallery_id FROM gallery_tags"):
+                    norm.setdefault(key, set()).add(gid)
+                # published only while holding the lock: a write committing
+                # between "index is None" and this publish would never be
+                # invalidated again (writes maintain, they don't drop), so
+                # its tags would be missing from every future search
+                self._norm_idx = norm
+            needle = term.lower().replace("_", " ")
+            if exact:
+                # a copy, not the live set: _search_id_set does
+                # `keep -= ...` in place and would otherwise carve ids out
+                # of the index itself
+                return set(norm.get(needle, ()))
+            if not norm:
+                return set()
+            return set().union(*(norm[key] for key in norm if needle in key))
 
     def ids_matching_tags(self, term, exact=False):
         """Ids whose stored tag equals/contains `term` — the search side of a
@@ -547,6 +595,7 @@ class GalleryStore:
             conn = self._connect()
             conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
             conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
+            self._idx_drop_locked((gid,))
             conn.commit()
 
     def delete_by_filename(self, filename):
@@ -557,12 +606,16 @@ class GalleryStore:
             for gid in gids:
                 conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
                 conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
+            self._idx_drop_locked(gids)
             conn.commit()
             return bool(gids)
 
     def replace_all(self, entries):
         """Wholesale rewrite (offline scripts). Writes tags from real data."""
         with self._lock:
+            # DELETE FROM gallery_tags bypasses _set_tags_locked: ids the new
+            # entries don't recreate would linger in the index forever
+            self._norm_idx = None
             conn = self._connect()
             conn.execute("BEGIN")
             try:
