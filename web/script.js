@@ -14,6 +14,68 @@ document.addEventListener("keydown", function (e) {
     e.preventDefault();
     window.pywebview.api.toggle_fullscreen();
 });
+// CSS gives every scroller scroll-behavior:smooth; programmatic position
+// restores/tail-follow must be instant or they animate and fight the user
+function jumpScroll(el, top) {
+    if (!el) return;
+    const prev = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    el.scrollTop = top;
+    el.style.scrollBehavior = prev;
+}
+// Mouse-wheel smoothing: CSS scroll-behavior only smooths programmatic scrolls,
+// the wheel itself jumps in WebKitGTK — so ease every scroller toward its target.
+(function () {
+    const anim = new WeakMap();
+    function scrollableAncestor(el) {
+        while (el && el !== document.documentElement && el.nodeType === 1) {
+            const oy = getComputedStyle(el).overflowY;
+            if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) return el;
+            el = el.parentElement;
+        }
+        return null;
+    }
+    document.addEventListener("wheel", function (e) {
+        if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+        if (e.target.closest && e.target.closest("#galleryViewer")) return; // viewer owns wheel = zoom
+        const el = scrollableAncestor(e.target);
+        if (!el) return;
+        let dy = e.deltaY;
+        if (e.deltaMode === 1) dy *= 40; else if (e.deltaMode === 2) dy *= el.clientHeight;
+        const max = el.scrollHeight - el.clientHeight;
+        let s = anim.get(el);
+        if (!s) { s = { raf: 0, pos: 0, target: 0 }; anim.set(el, s); }
+        if (!s.raf) { s.pos = el.scrollTop; s.target = el.scrollTop; }
+        const next = Math.max(0, Math.min(max, s.target + dy));
+        if (next === s.target && !s.raf) return; // already at the edge: let it chain naturally
+        e.preventDefault();
+        s.target = next;
+        if (s.raf) return;
+        el.style.scrollBehavior = "auto";
+        const step = function () {
+            const diff = s.target - s.pos;
+            if (Math.abs(diff) < 0.5) {
+                el.scrollTop = s.target;
+                s.raf = 0;
+                el.style.scrollBehavior = "";
+                return;
+            }
+            s.pos += diff * 0.2;
+            el.scrollTop = s.pos;
+            s.raf = requestAnimationFrame(step);
+        };
+        s.raf = requestAnimationFrame(step);
+    }, { passive: false });
+})();
+// history rows already played their slide-in once; re-renders must not replay it
+const _histAnimated = new Set();
+function histRowKey(img) { return String(img.filepath || img.filename || ""); }
+function markHistRowsAnimated(rows) {
+    const ui = document.getElementById("imageHistoryUI");
+    if (!ui || ui.offsetParent === null) return; // hidden tab: animation hasn't played yet
+    rows.forEach(img => _histAnimated.add(histRowKey(img)));
+}
 function escapeHtml(str) {
     return String(str)
         .replace(/&/g, "&amp;")
@@ -364,21 +426,14 @@ function _drainWpWaiters(url) {
     delete _wpWaiters[url];
     fns.forEach(fn => { try { fn(); } catch (e) {} });
 }
-let _wpLayerA = null;
-let _wpLayerB = null;
-let _wpFrontIsA = true;
+let _wpLayer = null;
 let _wpGen = 0;
 
 function _ensureWpLayers() {
-    if (_wpLayerA) return;
-    _wpLayerA = document.createElement('div');
-    _wpLayerA.id = 'wpFade'; // reuses existing #wpFade CSS (position/size/etc.)
-    _wpLayerB = document.createElement('div');
-    _wpLayerB.id = 'wpFade';
-    document.body.prepend(_wpLayerB);
-    document.body.prepend(_wpLayerA);
-    _wpLayerA.style.opacity = '1';
-    _wpLayerB.style.opacity = '0';
+    if (_wpLayer) return;
+    _wpLayer = document.createElement('div');
+    _wpLayer.className = 'wp-bg';
+    document.body.prepend(_wpLayer);
 }
 
 function updateBackground(tabName) {
@@ -390,28 +445,21 @@ function updateBackground(tabName) {
 
     _ensureWpLayers();
 
-    // ponytail: rapid tab switches used to tangle the two layers (roles
-    // flipped sync while images arrived async) — a stale switch now bails
+    // ponytail: rapid tab switches used to tangle the layers — a stale
+    // switch now bails
     const myGen = ++_wpGen;
-
-    const crossfade = () => {
+    if (_wpLayer.dataset.url === url) return;
+    // Instant decode-gated swap: every wallpaper fade tried on WebKitGTK
+    // (layer crossfades, pinned compositor layers, dip-through-cover)
+    // blinked, and the cover read as a black flash on tab change. A swap
+    // of an already-decoded image is atomic, so nothing can flash.
+    const apply = () => {
         if (myGen !== _wpGen) return;
-        const front = _wpFrontIsA ? _wpLayerA : _wpLayerB;
-        const back = _wpFrontIsA ? _wpLayerB : _wpLayerA;
-        if (front.style.backgroundImage.includes(filename)) return;
-        back.style.transition = 'none';
-        back.style.backgroundImage = `url('${url}')`;
-        back.style.opacity = '0';
-        void back.offsetWidth; // force reflow before enabling transition
-        back.style.transition = 'opacity 0.45s ease';
-        front.style.transition = 'opacity 0.45s ease';
-        back.style.opacity = '1';
-        front.style.opacity = '0'; // old layer fades out at the same time
-        _wpFrontIsA = !_wpFrontIsA; // back becomes the new front for next switch
+        _wpLayer.style.backgroundImage = `url('${url}')`;
+        _wpLayer.dataset.url = url;
     };
-
-    if (_wpReady[url]) crossfade();
-    else warmWallpaper(url, crossfade);
+    if (_wpReady[url]) apply();
+    else warmWallpaper(url, apply);
 }
 
 // ponytail: backgrounds swapped per tab with zero preload, so first visit
@@ -422,15 +470,26 @@ function preloadWallpapers() {
     if (_wallpapersPreloaded || !uiConfig.wallpapers) return;
     _wallpapersPreloaded = true;
     const seen = new Set();
+    const urls = [];
     Object.values(uiConfig.wallpapers).forEach(wp => {
         if (!wp) return;
         [wp.dark, wp.light].forEach(fn => {
             if (fn && !seen.has(fn)) {
                 seen.add(fn);
-                warmWallpaper(_wpUrl(fn));
+                urls.push(_wpUrl(fn));
             }
         });
     });
+    // one at a time, in idle windows: forty parallel Image+decode() calls
+    // starved WebKitGTK's main thread for seconds — the first tab switch
+    // right after launch froze until they finished
+    const next = i => {
+        if (i >= urls.length) return;
+        const go = () => warmWallpaper(urls[i], () => next(i + 1));
+        if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 2000 });
+        else setTimeout(go, 100);
+    };
+    next(0);
 }
 
 async function saveColors() {
@@ -576,7 +635,7 @@ function appendLogCard(cb, card) {
     if (atBottom) {
         cb.appendChild(card);
         capConsole(cb);
-        cb.scrollTop = cb.scrollHeight;
+        jumpScroll(cb, cb.scrollHeight);
     } else {
         // capping trims the head while you read — pin the first visible card so
         // a flood of new downloads can't drag what you're looking at upward
@@ -586,7 +645,7 @@ function appendLogCard(cb, card) {
         const before = ref ? ref.getBoundingClientRect().top : null;
         cb.appendChild(card);
         capConsole(cb);
-        if (ref && ref.parentElement === cb && before !== null) cb.scrollTop += ref.getBoundingClientRect().top - before;
+        if (ref && ref.parentElement === cb && before !== null) jumpScroll(cb, cb.scrollTop + ref.getBoundingClientRect().top - before);
     }
     // a new card may have joined the box the open viewer walks — update now so
     // the next/prev arrows appear without reopening the image
@@ -631,8 +690,12 @@ function logToConsole(tabID, msg) {
             var logArtistBadge = "";
             tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
         }
+        // filenames may contain spaces (anime_dl: "Tag Name_123.jpg") — the
+        // token after "Downloaded" truncates there and the viewer's tag-box
+        // lookup misses; the |PATH| tail is the real name (same as viewerNav)
+        let pathSeg = rawPath ? (rawPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || "") : "";
         let fnMatch = raw.match(/Downloaded ([^\s]+)/);
-        let fn = fnMatch ? fnMatch[1] : "image";
+        let fn = pathSeg || (fnMatch ? fnMatch[1] : "image");
 
         let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn).replace(/'/g, "%27");
 
@@ -640,32 +703,32 @@ function logToConsole(tabID, msg) {
         let logRating = "";
         let pLow = rawPath.toLowerCase().replace(/\\/g, '/');
         if (pLow.includes('/rule34/') || pLow.includes('\\rule34\\') || pLow.includes('rule34')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
             logRating = "explicit";
         }
         else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
             logRating = "explicit";
         }
         // pixiv stores files under <tag>/R18/ and <tag>/R18G/ — r18g before r18
         else if (pLow.includes('/r18g/')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
             logRating = "explicit";
         }
         else if (pLow.includes('/r18/')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Rating: Questionable</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
             logRating = "questionable";
         }
         else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Rating: Sensitive</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Sensitive</div>`;
             logRating = "sensitive";
         }
         else if (pLow.includes('moderate') || pLow.includes('questionable')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Rating: Questionable</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
             logRating = "questionable";
         }
         else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Rating: Safe</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Safe</div>`;
             logRating = "safe";
         }
         // ponytail: badge only matters when the tab's rating filter doesn't pin it down
@@ -2612,6 +2675,11 @@ window.onload = async function () {
     socket.emit("get_queue");
     // buttons must exist before any queue state arrives
     Object.keys(WORKER_TO_TAB).forEach(renderRunBtn);
+    // ponytail: not waste — the first Gallery click after launch otherwise queues
+    // behind startup_rescan's save_gallery (_GALLERY_LOCK) and the thumb cache's
+    // no-cache revalidations. Fire page 1 now so that wait happens here;
+    // openTab still refetches with the real per-page count when shown.
+    loadGallery(1);
     try {
         let resp = await fetch("/api/config");
         let config = await resp.json();
@@ -2845,7 +2913,12 @@ function openTab(tabName, btn) {
     }
     // gallery keeps its hearts fresh by reloading on open; the history tab
     // must refetch too, or favourites toggled in the gallery stay stale here
-    if (tabName === "History") loadTagsData();
+    if (tabName === "History") {
+        // rows rendered while the tab was hidden start their slide-in only now —
+        // mark them played so the refetch/re-render below can't replay it
+        if (typeof imgHistFiltered !== "undefined" && imgHistFiltered.length) markHistRowsAnimated(imgHistFiltered.slice(0, imageHistoryVisible));
+        loadTagsData();
+    }
     if (tabName === "Notifications") loadNotifications();
 }
 
@@ -3261,7 +3334,11 @@ function startWorker(workerName) {
     return true;
 }
 
+const PENDING_TAG_ADD = { zero:'addZerochanTag', anime_dl:'addAnimeDlTag', dan:'addDanTag', gelbooru:'addGelbooruTag', eshuushuu:'addEshuushuuTag', gsbooru:'addGsbooruTag', kona:'addKonaTag', nekosia:'addNekosiaTag', safe:'addSafeTag', sankaku:'addSankakuTag', yande:'addYandeTag', rule34:'addRule34Tag' };
 function addWorkerToQueue(workerName) {
+    // a tag typed in the box but never committed with Enter must still be queued
+    const addFn = window[PENDING_TAG_ADD[workerName]];
+    if (addFn) addFn();
     const payload = buildWorkerPayload(workerName);
     if (!payload) return false;
     delete stoppedWorker[workerName];
@@ -3747,20 +3824,20 @@ function renderHistory() {
         });
     }
     ui.innerHTML = htmlStr;
-    ui.parentElement.scrollTop = currentScroll;
+    jumpScroll(ui.parentElement, currentScroll);
 }
 
 function renderFavorites() {
     let ui = document.getElementById("favoritesListUI");
     if(!ui) return;
-    ui.innerHTML = "";
     if (favoriteTags.length === 0) {
         ui.innerHTML = "<p style='color: var(--text-color); opacity: 0.7; font-size: 12px;'>Click the heart icon in the History tab to add favorites.</p>";
         return;
     }
-    favoriteTags.forEach(item => {
-        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(siteLabel(item.site))}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
-    });
+    // array + one innerHTML: `ui.innerHTML +=` in a loop re-parses the whole list per item
+    ui.innerHTML = favoriteTags.map(item =>
+        `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(siteLabel(item.site))}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`
+    ).join("");
 }
 
 async function toggleFavorite(site, tag) {
@@ -3948,6 +4025,7 @@ function appendHistoryRows(n) {
     if (!next.length) return;
     imageHistoryVisible += next.length;
     ui.insertAdjacentHTML("beforeend", next.map(historyRowHtml).join(""));
+    markHistRowsAnimated(next);
 }
 
 function historyRowHtml(img) {
@@ -3990,7 +4068,7 @@ function historyRowHtml(img) {
     const hHoverSrc = hHoverKind === 'video' ? previewImageUrl(safeFp, img.filename) : fullImageUrl(safeFp, img.filename);
     const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${hHoverSrc}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
     return `
-    <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+    <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}${_histAnimated.has(histRowKey(img)) ? ' no-anim' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
     <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
     <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
@@ -4019,6 +4097,11 @@ function renderImageHistory() {
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
     imgHistFiltered = filteredImageHistory();
+    // rows rendered while the tab is hidden would all play slide-in the moment
+    // it first shows — thirty blur rasters in one frame = the multi-second
+    // stall. Bake no-anim in now (the class is markup, marking after the
+    // innerHTML below is too late)
+    if (ui.offsetParent === null) imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => _histAnimated.add(histRowKey(img)));
     let htmlStr = "";
     if (imageHistory.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No images downloaded yet.</p>";
@@ -4029,7 +4112,8 @@ function renderImageHistory() {
         imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => { htmlStr += historyRowHtml(img); });
     }
     ui.innerHTML = htmlStr;
-    if (scroller) scroller.scrollTop = currentScroll;
+    if (imgHistFiltered.length) markHistRowsAnimated(imgHistFiltered.slice(0, imageHistoryVisible));
+    if (scroller) jumpScroll(scroller, currentScroll);
     // if the rendered list still doesn't fill the view, keep loading —
     // ponytail: never while hidden (clientHeight 0), or the startup render
     // walks the whole history; the scroll listener pages from there.
@@ -4206,6 +4290,41 @@ const SOURCE_RATINGS = {
     eshuushuu: ['safe']
 };
 
+// when the applied filter leaves a menu with exactly one option, "All" points
+// at that same set anyway — hide it and let the one option stand alone
+function dropdownAllItem(menu) {
+    const allCheck = menu ? menu.querySelector('input[value=""]') : null;
+    return allCheck ? allCheck.closest('.dd-item') : null;
+}
+
+function dropdownAllHidden(menu) {
+    const item = dropdownAllItem(menu);
+    return !!item && item.style.display === 'none';
+}
+
+function snapAloneMenu(menuId, defaultLabel) {
+    const menu = document.getElementById(menuId);
+    if (!menu) return;
+    const allItem = dropdownAllItem(menu);
+    if (!allItem) return;
+    const alone = [...menu.querySelectorAll('.dd-item')].filter(el => {
+        const cb = el.querySelector('input[type="checkbox"]');
+        return el !== allItem && cb && el.style.display !== 'none';
+    });
+    if (alone.length !== 1) {
+        allItem.style.display = '';
+        return;
+    }
+    allItem.style.display = 'none';
+    const cb = alone[0].querySelector('input[type="checkbox"]');
+    if (!cb.checked) {
+        menu.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = (c === cb); });
+    }
+    // the label has to follow: with All hidden, that one checked item IS the filter
+    const btn = document.querySelector('[onclick="toggleDropdown(\'' + menuId + '\')"]');
+    if (btn) btn.textContent = getMultiLabel(menuId, defaultLabel) + ' ▾';
+}
+
 function toggleDropdownCheck(el, event) {
     if (event && event.target && event.target.tagName === 'INPUT') {
         // Native checkbox clicked, checked state already toggled
@@ -4225,10 +4344,14 @@ function toggleDropdownCheck(el, event) {
         itemChecks.forEach(c => c.checked = false);
     } else {
         // Clicking items drops "All"; if they end up covering everything, collapse to All
+        // — unless All is hidden (alone menu), where "All" is exactly this option
+        const aloneMenu = dropdownAllHidden(menu);
         const allItemsChecked = itemChecks.length > 0 && itemChecks.every(c => c.checked);
-        if (allCheck) {
+        if (allCheck && !aloneMenu) {
             allCheck.checked = allItemsChecked;
             if (allItemsChecked) itemChecks.forEach(c => c.checked = false);
+        } else if (allCheck) {
+            allCheck.checked = false;
         }
     }
 
@@ -4300,6 +4423,7 @@ function updateRatingDropdown() {
 
     if (allSelected) {
         document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => el.style.display = '');
+        snapAloneMenu('ratingDropdown', 'All Ratings');
         return;
     }
     // union, not intersection: sources differ in which ratings they carry, so
@@ -4314,6 +4438,7 @@ function updateRatingDropdown() {
         const show = common.has(cb.value);
         el.style.display = show ? '' : 'none';
     });
+    snapAloneMenu('ratingDropdown', 'All Ratings');
 }
 
 function updateSourceDropdown() {
@@ -4324,6 +4449,7 @@ function updateSourceDropdown() {
 
     if (allSelected) {
         document.querySelectorAll('#sourceDropdown .dd-item').forEach(el => el.style.display = '');
+        snapAloneMenu('sourceDropdown', 'All Sources');
         return;
     }
     document.querySelectorAll('#sourceDropdown .dd-item').forEach(el => {
@@ -4333,6 +4459,7 @@ function updateSourceDropdown() {
         const show = ratings && selectedRatings.some(r => ratings.includes(r));
         el.style.display = show ? '' : 'none';
     });
+    snapAloneMenu('sourceDropdown', 'All Sources');
 }
 
 function getMultiSelectValues(id) {
@@ -4342,7 +4469,7 @@ function getMultiSelectValues(id) {
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
     if (allCheck && allCheck.checked) return '';
     const checkedVals = itemChecks.filter(c => c.checked).map(c => c.value);
-    if (checkedVals.length === itemChecks.length && itemChecks.length > 0) {
+    if (checkedVals.length === itemChecks.length && itemChecks.length > 0 && !dropdownAllHidden(menu)) {
         // every item selected == All; keep only All's checkmark
         if (allCheck) allCheck.checked = true;
         itemChecks.forEach(c => c.checked = false);
@@ -4359,7 +4486,7 @@ function getMultiLabel(id, defaultLabel) {
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
     if (allCheck && allCheck.checked) return defaultLabel;
     const checkedItems = itemChecks.filter(c => c.checked);
-    if (checkedItems.length === itemChecks.length && itemChecks.length > 0) return defaultLabel;
+    if (checkedItems.length === itemChecks.length && itemChecks.length > 0 && !dropdownAllHidden(menu)) return defaultLabel;
     // deselecting everything reads as All — the state the menu starts in —
     // not as a filter that matches nothing
     if (checkedItems.length === 0) return defaultLabel;
@@ -4515,6 +4642,9 @@ function resetGalleryFilters() {
             menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = cb.value === '');
         }
     });
+    // restore any "All" item a snap hid (All is checked everywhere now → not alone)
+    updateSourceDropdown();
+    updateRatingDropdown();
     const srcBtn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
     if (srcBtn) srcBtn.textContent = 'All Sources ▾';
     const typeBtn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]');
@@ -5284,20 +5414,20 @@ function viewerMetaHtml(img, tagsClickable) {
     let pLow = ((img.filepath || "") + " " + _viewerAllTags.join(' ')).toLowerCase();
     let vSiteLower = (img.site || "").toLowerCase();
     if (vSiteLower === "rule34") {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
     } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
     } else if (pLow.includes('/r18g/')) {
         // pixiv r18g = NSFW, r18 = questionable — r18g before r18
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
     } else if (pLow.includes('/r18/')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Questionable</span>`;
+        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
     } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Sensitive</span>`;
+        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
     } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Questionable</span>`;
+        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
     } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:g')) {
-        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Safe</span>`;
+        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
     }
     let _srcLabels = (Array.isArray(img.sources) && img.sources.length ? img.sources : [img.site])
         .filter(Boolean).map(siteLabel);
@@ -5734,9 +5864,11 @@ function toggleViewerFav() {
                 closeGalleryViewer();
             }
         }
-        else if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey
+        else if ((e.code === 'KeyF' || e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey
                  && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
-            // f toggles focus mode (same as the 👁 button); skip when typing
+            // f toggles focus mode (same as the 👁 button); skip when typing.
+            // e.code first: with a non-English layout e.key is the layout
+            // character (а, ß, …), not 'f'
             viewer.classList.toggle("focus");
             syncFocusCursor();
         }
