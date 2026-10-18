@@ -139,3 +139,7 @@ database/gallery.db*
 database/.folder_policy_v2
 database/folder_rename_map.json
 database/*_endpoints.json
+
+# Per-install runtime state (was tracked — never upload)
+database/ui_config.json
+database/image_history.db
