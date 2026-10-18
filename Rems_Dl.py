@@ -42,7 +42,8 @@ from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from core.database import DatabaseManager, SettingsManager
 from core import notifications, pixiv_notify, watchers
-from core.preview_cache import preview_path, evict as evict_preview
+from core.preview_cache import (preview_path, ready_for as preview_ready_for,
+                                evict as evict_preview)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1996,14 +1997,23 @@ def gallery_file(filepath):
 @app.route("/api/gallery/preview/<path:filepath>")
 def gallery_preview(filepath):
     # hover previews never play audio — serve an audio-free remux so WebKitGTK's
-    # muted-video teardown doesn't freeze the main thread (multi-second pause())
+    # muted-video teardown doesn't freeze the main thread (multi-second pause()).
+    # the remux is generated OFF the request: an inline ffmpeg (up to 120s) froze
+    # the first hover after launch — that hover gets an empty reply instead and
+    # the warm pool has the copy ready for the next one
     full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     if not os.path.isfile(full):
         return "Image was deleted", 404
-    resp = send_file(preview_path(full, PREVIEW_CACHE_DIR),
-                     mimetype="video/mp4", conditional=True)
+    try:
+        dst = preview_ready_for(full, PREVIEW_CACHE_DIR)
+    except Exception:
+        dst = full  # src vanished mid-check rather than stall, serve original
+    if dst is None:
+        _preview_warm_pool.submit(_warm_preview, full)
+        return "", 204
+    resp = send_file(dst, mimetype="video/mp4", conditional=True)
     resp.headers["Cache-Control"] = "private, no-cache"
     return resp
 
@@ -2101,6 +2111,14 @@ def _cached_thumb(full):
 # paying ~100-300ms of PNG decode each. Failures aren't cached, so the
 # browser request still retries.
 _thumb_warm_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="thumbwarm")
+# own pool: a remux can run minutes (ffmpeg timeout), never block thumb workers
+_preview_warm_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="previewwarm")
+
+def _warm_preview(full):
+    try:
+        preview_path(full, PREVIEW_CACHE_DIR)
+    except Exception as e:
+        print("Preview remux failed:", full, e)
 
 
 def _warm_thumb(full):
@@ -2121,7 +2139,11 @@ def warm_page_thumbs(images):
     for img in images:
         fp = img.get("filepath")
         if fp:
-            _thumb_warm_pool.submit(_warm_thumb, os.path.join(MASTER_FOLDER, fp))
+            afp = os.path.join(MASTER_FOLDER, fp)
+            _thumb_warm_pool.submit(_warm_thumb, afp)
+            # remux in the background now, so the first hover finds the cache
+            if os.path.splitext(fp)[1].lower() in EXTENSIONS_VIDEO:
+                _preview_warm_pool.submit(_warm_preview, afp)
 
 
 def _send_thumb(cache_path):
@@ -2358,7 +2380,9 @@ def _scan_and_merge_gallery():
 
 def _hash_missing_dedup(gallery):
     """Backfill dedup records for gallery images that were never hashed
-    (files dropped into the folder manually). Safe to call after every scan."""
+    (files dropped into the folder manually). Safe to call after every scan.
+    Also generates the sites' hash formats for stored images that predate
+    source hashing — one resumable pass; a no-op once every row has hashes."""
     try:
         from core.dedup_store import get_store
         entries = []
@@ -2372,6 +2396,7 @@ def _hash_missing_dedup(gallery):
         n = get_store().add_missing(entries)
         if n:
             print(f"Backfilled {n} dedup records for unhashed images")
+        get_store().backfill_source_hashes()
         return n
     except Exception as e:
         print("Dedup backfill error:", e)

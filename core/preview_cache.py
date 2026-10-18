@@ -42,6 +42,18 @@ def evict(src: str, cache_dir: str) -> bool:
         return False
 
 
+def ready_for(src: str, cache_dir: str):
+    """Path to serve NOW: the cached no-audio copy, or src itself when it has
+    no audio. None when the remux is not generated yet (side-effect-free —
+    generation is the caller's business, on a thread that isn't a request)."""
+    dst = _cache_path(src, cache_dir)
+    if os.path.exists(dst):
+        return dst
+    if _has_audio(src):
+        return None
+    return src
+
+
 def preview_path(src: str, cache_dir: str) -> str:
     """Return a path to a video-only copy of src (or src itself if it has no audio)."""
     if not _has_audio(src):

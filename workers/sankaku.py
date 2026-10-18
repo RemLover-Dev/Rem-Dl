@@ -75,14 +75,21 @@ class SankakuWorker(BaseWorker):
 
         return session
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None):
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, source_md5=None):
         if artists is None: artists = []
         if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
+            return False
+        if not self._claim_source_md5(filepath, source_md5, tags_list, artists,
+                                      characters, copyrights, metadata_tags):
             return False
         self.queued_items.add(filename)
         self.enqueued_count += 1
         # Download immediately — Sankaku signed URLs expire before queued download starts
-        return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+        try:
+            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+        finally:
+            # no worker loop owns this item — the outcome is known right here
+            self._release_source_claims((filepath,))
 
     def _tags_param(self):
         # live-verified: sankaku's API honors '-tag' exclusion
@@ -206,7 +213,7 @@ class SankakuWorker(BaseWorker):
                     copyrights = []
                     metadata_tags = []
 
-                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

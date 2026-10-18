@@ -27,6 +27,7 @@ from core.shared import (
     pace_session,
 )
 from core.gallery_dl_interop import ensure_zerochan_page_html
+from core.dedup_store import hash_bytes
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -765,8 +766,12 @@ class ZerochanWorker(BaseDownloader):
 
                 os.replace(part_path, filepath)
 
-                # persistent perceptual-hash dedup (see core/shared.py)
-                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
+                # persistent perceptual-hash dedup (see core/shared.py); all
+                # formats of the bytes just served are the site's own hashes
+                generated = hash_bytes(content)
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name,
+                                              source_md5=generated["md5"],
+                                              generated_hashes=generated)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)

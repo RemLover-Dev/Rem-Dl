@@ -164,7 +164,7 @@ class DanbooruWorker(BaseWorker):
                 meta_set = set(metadata_tags)
                 tags_list = [t for t in tags_list if t not in artist_set and t not in char_set and t not in copy_set and t not in meta_set]
 
-                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

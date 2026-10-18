@@ -141,7 +141,7 @@ class SafebooruWorker(BaseWorker):
                 metadata_tags = cats["metadata"]
                 tags_list = cats["tag"]
 
-                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("hash")):
                     collected_count += 1
                     had_valid = True
 

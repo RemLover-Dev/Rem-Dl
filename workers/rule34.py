@@ -197,7 +197,9 @@ class Rule34Worker(BaseWorker):
                     tags_list = [str(t).strip() for t in tags_raw if str(t).strip()]
                     artists, characters, copyrights, metadata_tags = [], [], [], []
 
-                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                # rule34Py maps the API's JSON `hash` (the source md5) to the
+                # Post.hash property — `pHash` in the lib is a local variable
+                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=getattr(result, "hash", None)):
                     collected_count += 1
                     had_valid = True
 

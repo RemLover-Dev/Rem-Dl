@@ -370,7 +370,8 @@ class GsbooruWorker(BaseWorker):
                     artists,
                     characters,
                     copyrights,
-                    metadata_tags
+                    metadata_tags,
+                    source_md5=post.get("md5")
                 ):
                     page_enqueued += 1
 

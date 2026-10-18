@@ -188,7 +188,7 @@ class KonachanWorker(BaseWorker):
                 tags_list = [t.strip() for t in tags_raw.split() if t.strip()]
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(tags_list)
 
-                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

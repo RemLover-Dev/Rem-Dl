@@ -189,7 +189,7 @@ class GelbooruWorker(BaseWorker):
                     made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
-                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 
