@@ -9,10 +9,12 @@
     <link rel="stylesheet" href="vendor/fonts.css">
     <link rel="stylesheet" href="style.css">
     <script src="vendor/socket.io.min.js"></script>
+    <link rel="stylesheet" href="jxl.css">
 </head>
 <body style="background-image: url('wallpaper/Rem_main_d.png');">
 
-    <div class="toast-container" id="toastContainer"></div>
+    <div class="toast-container" id="toastContainer" role="status" aria-live="polite" aria-atomic="false"></div>
+    <div id="connectionBanner" class="ux-connection" role="status" aria-live="polite" hidden><span id="connectionMessage"></span><button id="connectionRetry" class="action-btn">Retry now</button><button id="connectionSignIn" class="action-btn" hidden>Sign in again</button></div>
 
     <div class="glass-panel">
         <div class="tab-buttons">
@@ -49,7 +51,7 @@
             <div class="tab-group-title" onclick="toggleMenu('group-settings')">Settings <span class="chevron">▼</span></div>
             <div class="tab-group-content" id="group-settings">
                 <button class="tab-btn" onclick="openTab('Customize', this)">Customize</button>
-                <button class="tab-btn" onclick="openTab('Options', this)">Settings</button>
+                <button class="tab-btn" onclick="openTab('Options', this)">Settings<span id="settingsDirtyMark" hidden aria-label="Unsaved changes"> •</span></button>
             </div>
         </div>
         <div class="glass-panel-content">
@@ -614,6 +616,25 @@
                     <p style="font-size: 13px; color: var(--text-color); opacity: 0.8; margin-bottom: 20px;">Configure API credentials and download behavior.</p>
 
                     <div class="settings-cards-grid">
+                        <section class="settings-card jxl-tools" aria-labelledby="jxlTitle">
+                            <h3 id="jxlTitle">JPEG XL image tools</h3>
+                            <p>Convert an image or folder to JXL, or restore JXL files made here to their previous format. Each verified result replaces its source in the same folder. Embedded Rems tags and their categories are preserved and verified.</p>
+                            <div class="jxl-row"><label for="jxlPath">Image or folder</label><input id="jxlPath" class="jxl-path" type="text" placeholder="Paste a local path, or browse" autocomplete="off"><button id="jxlBrowseFile" class="action-btn" type="button">Image…</button><button id="jxlBrowseFolder" class="action-btn" type="button">Folder…</button></div>
+                            <div class="jxl-options">
+                                <label for="jxlMode">Operation <select id="jxlMode"><option value="auto">JXL — lossless / reversible JPEG</option><option value="lossless">JXL — lossless normalized pixels</option><option value="lossy">JXL — smaller file (lossy)</option><option value="restore">Restore previous format</option></select></label>
+                                <label for="jxlQuality">Quality <input id="jxlQuality" type="number" min="1" max="99" value="90" disabled></label>
+                                <label for="jxlEffort">Effort <input id="jxlEffort" type="number" min="1" max="9" value="5"></label>
+                                <label><input id="jxlRecursive" type="checkbox"> Include subfolders</label>
+                            </div>
+                            <p id="jxlModeHint">Default: JPEGs can be reconstructed byte for byte; 8-bit inputs use lossless normalized pixels; 16-bit PNG retains its precision and colour profile (requires FFmpeg with libjxl). Higher effort takes longer. Still PNG, JPG/JPEG and WebP only. GIFs, videos and animated images are excluded.</p>
+                            <p>Restore recreates the previous format. Lossy encoding cannot recover discarded detail. Only reversible JPEG mode restores original file bytes. The source is deleted only after the replacement and its tag categories are verified.</p>
+                            <div class="jxl-row"><button id="jxlStart" class="action-btn" type="button">Convert to JXL</button><button id="jxlCancel" class="action-btn" type="button" disabled>Cancel</button><button id="jxlRefresh" class="action-btn" type="button">Refresh status</button><button id="jxlReveal" class="action-btn" type="button" disabled>Open containing folder</button></div>
+                            <progress id="jxlProgress" max="1" value="0" aria-label="Image conversion progress"></progress>
+                            <div id="jxlStatus" class="jxl-status" role="status" aria-live="polite">Ready. Conversion replaces images locally, one at a time.</div>
+                            <div id="jxlOutput" class="jxl-output"></div>
+                            <div id="jxlResults" class="jxl-results" aria-label="Conversion results"></div>
+                        </section>
+
                         <div class="settings-card">
                             <h3><svg width="1em" height="1em" viewBox="0 0 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M10.5 11c3.0375 0 5.5 -2.4625 5.5 -5.5S13.5375 0 10.5 0 5 2.4625 5 5.5c0 0.584375 0.090625 1.15 0.259375 1.678125L0.21875 12.21875c-0.140625 0.140625 -0.21875 0.33125 -0.21875 0.53125v2.5c0 0.415625 0.334375 0.75 0.75 0.75h2.5c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.415625 0 0.75 -0.334375 0.75 -0.75v-1.25h1.25c0.2 0 0.390625 -0.078125 0.53125 -0.21875l1.040625 -1.040625c0.528125 0.16875 1.09375 0.259375 1.678125 0.259375zm1.25 -8a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 1 1 0 -2.5z"/></svg>  Danbooru Credentials</h3>
                             <div class="field-row"><label>Username:</label><input type="text" id="danLogin" placeholder="Danbooru Username" style="flex:1;"></div>
@@ -687,8 +708,12 @@
                         </div>
 
                         <div class="settings-card">
+                            <h3>Performance</h3>
+                            <div class="field-row"><label for="performanceMode">Visual effects:</label><select id="performanceMode" onchange="savePerformanceMode()"><option value="lite">Lightweight (recommended)</option><option value="full">Full effects</option></select></div>
+                            <p style="font-size:12px;opacity:0.8;margin:8px 0 18px;">Lightweight reduces decorative effects and background image memory. Image quality, rating blur and download features stay enabled.</p>
                             <h3>Keybinds</h3>
                             <div class="field-row"><label>Fullscreen:</label><input type="text" id="fullscreenKey" readonly value="F11" placeholder="Click, then press a key" onclick="startFullscreenKeyCapture()" onkeydown="return captureFullscreenKey(event)" onblur="cancelFullscreenKeyCapture()" style="width: 140px; text-align: center; cursor: pointer;"></div>
+                            <div class="field-row"><label>Viewer zoom speed:</label><input type="number" id="viewerZoomStep" min="1" max="100" step="1" value="15" onchange="saveViewerZoomStep()" style="width: 100px; text-align: center;"> <span style="font-size: 11px; opacity: 0.7;">% per step (mouse wheel / +− keys)</span></div>
                         </div>
 
                         <div class="settings-card" style="grid-column: 1 / -1;">
@@ -701,14 +726,19 @@
                                 <div class="field-row" style="flex-direction: column; align-items: flex-start; gap: 4px;"><label style="min-width: unset; font-size: 12px; opacity: 0.8;">Request Limit (req/s)</label><input type="number" id="reqRateLimit" value="4" min="1" max="100" style="width: 100%;"></div>
                             </div>
                             <div class="field-row" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 10px;">
+                                <input type="checkbox" id="verifyTls" checked style="width: 18px; height: 18px; cursor: pointer;">
+                                <label for="verifyTls" style="font-size: 13px; cursor: pointer;">Verify TLS certificates</label>
+                            </div>
+                            <p style="font-size: 12px; opacity: 0.8; margin: 4px 0 10px;">Checks HTTPS server identities. Uncheck to allow connections with untrusted certificates. Applies to new downloads and requests after saving.</p>
+                            <div class="field-row" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 10px;">
                                 <input type="checkbox" id="dedupEnabled" checked style="width: 18px; height: 18px; cursor: pointer;">
                                 <label for="dedupEnabled" style="font-size: 13px; opacity: 0.95; cursor: pointer;">Enable Perceptual Image Deduplication (automatically skip duplicates & re-uploads across scrapers)</label>
                             </div>
                         </div>
 
                         <div class="settings-card" style="grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 16px;">
-                            <button class="action-btn" onclick="saveAllSettings()"><svg width="1em" height="1em" viewBox="-1 -1 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M4.875 0.000507706C4.49342 0.0104768 4.12949 0.165624 3.85789 0.435009l-0.00144 0.001442L0.436447 3.85645l-0.000003 0 -0.00144 0.00145c-0.277116 0.27939 -0.43334264 0.65649 -0.4349995595 1.05H0V12.5c0 0.3978 0.158035 0.7794 0.43934 1.0607C0.720644 13.842 1.10217 14 1.5 14l0.63361 0V9.5c0 -0.34137 0.16522 -0.63802 0.40467 -0.83561 0.23602 -0.19478 0.53448 -0.28939 0.82624 -0.28939h7.27088c0.2918 0 0.5903 0.09461 0.8263 0.28939 0.2394 0.19759 0.4047 0.49424 0.4047 0.83561V14l0.6336 0c0.3978 0 0.7794 -0.158 1.0607 -0.4393S14 12.8978 14 12.5v-11c0 -0.39782 -0.158 -0.779351 -0.4393 -1.060656C13.2794 0.15804 12.8978 0.0000044107 12.5 0.0000044107L11.8664 0v3.5c0 0.32845 -0.1506 0.6227 -0.3827 0.82488 -0.2294 0.19978 -0.5242 0.30012 -0.8165 0.30012H6.07414c-0.29227 0 -0.58703 -0.10034 -0.81644 -0.30012C5.02555 4.1227 4.875 3.82845 4.875 3.5V0.000507706ZM10.6164 0H6.125v3.375h4.4914V0Zm0 14H3.38361V9.625h7.23279V14Z"/></svg> Save Settings</button>
-                            <span id="settingsSaveStatus" style="font-size: 13px; color: var(--title-color);"></span>
+                            <button id="saveAllSettingsBtn" class="action-btn" onclick="saveAllSettings()"><svg width="1em" height="1em" viewBox="-1 -1 16 16" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M4.875 0.000507706C4.49342 0.0104768 4.12949 0.165624 3.85789 0.435009l-0.00144 0.001442L0.436447 3.85645l-0.000003 0 -0.00144 0.00145c-0.277116 0.27939 -0.43334264 0.65649 -0.4349995595 1.05H0V12.5c0 0.3978 0.158035 0.7794 0.43934 1.0607C0.720644 13.842 1.10217 14 1.5 14l0.63361 0V9.5c0 -0.34137 0.16522 -0.63802 0.40467 -0.83561 0.23602 -0.19478 0.53448 -0.28939 0.82624 -0.28939h7.27088c0.2918 0 0.5903 0.09461 0.8263 0.28939 0.2394 0.19759 0.4047 0.49424 0.4047 0.83561V14l0.6336 0c0.3978 0 0.7794 -0.158 1.0607 -0.4393S14 12.8978 14 12.5v-11c0 -0.39782 -0.158 -0.779351 -0.4393 -1.060656C13.2794 0.15804 12.8978 0.0000044107 12.5 0.0000044107L11.8664 0v3.5c0 0.32845 -0.1506 0.6227 -0.3827 0.82488 -0.2294 0.19978 -0.5242 0.30012 -0.8165 0.30012H6.07414c-0.29227 0 -0.58703 -0.10034 -0.81644 -0.30012C5.02555 4.1227 4.875 3.82845 4.875 3.5V0.000507706ZM10.6164 0H6.125v3.375h4.4914V0Zm0 14H3.38361V9.625h7.23279V14Z"/></svg> Save Settings</button>
+                            <span id="settingsSaveStatus" role="status" aria-live="polite" style="font-size: 13px; color: var(--title-color);"></span>
                         </div>
                     </div>
                 </div>
@@ -1094,12 +1124,25 @@
         <button class="gallery-viewer-nav prev" onclick="viewerNav(-1)" title="Previous (←)"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></svg></button>
         <button class="gallery-viewer-nav next" onclick="viewerNav(1)" title="Next (→)"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="display:block;"><path stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 18l6-6-6-6"/></svg></button>
 
-        <img id="galleryViewerImg" src="">
+        <img id="galleryViewerImg" alt="" style="display:none">
+        <canvas id="galleryViewerCanvas" style="display:none"></canvas>
 
         <!-- پنل نمایش اطلاعات و تگ‌ها (کپسول شیشه‌ای) -->
         <div id="galleryViewerMeta" class="gallery-viewer-meta"></div>
     </div>
 
     <script src="script.js"></script>
+    <script src="ux.js"></script>
+    <div id="jxlCompareModal" class="jxl-modal" hidden>
+        <section class="jxl-comparison" role="dialog" aria-modal="true" aria-labelledby="jxlCompareTitle">
+            <header><h3 id="jxlCompareTitle">Original / converted</h3><button id="jxlCompareClose" class="action-btn" type="button">Close (Esc)</button></header>
+            <header><label>View <select id="jxlCompareMode"><option>Reveal</option><option>Fade</option><option>Difference</option><option>Original</option><option>Converted</option></select></label><button id="jxlFit" class="action-btn" type="button">Fit</button><button id="jxlActual" class="action-btn" type="button">100%</button><button id="jxlZoomOut" class="action-btn" type="button" aria-label="Zoom out">−</button><span id="jxlZoomLabel">100%</span><button id="jxlZoomIn" class="action-btn" type="button" aria-label="Zoom in">+</button><label>Diff gain <select id="jxlDiffGain" disabled><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option></select></label></header>
+            <div class="jxl-compare-labels"><span>Original · left</span><span>Converted · right</span></div>
+            <div class="jxl-compare-stage"><canvas id="jxlCompareCanvas" tabindex="0" aria-label="Image comparison: drag divider to reveal, drag image to pan, wheel to zoom"></canvas></div>
+            <div class="jxl-mix-row"><label id="jxlMixLabel" for="jxlMix">Original reveal</label><input id="jxlMix" type="range" min="0" max="100" value="50"></div>
+            <footer><div id="jxlCompareStatus" role="status" aria-live="polite"></div>Drag divider to reveal · drag image to pan · wheel to zoom · hold Space for original · F fit · 1 actual size<br>Comparison uses 8-bit display copies. Lossless conversion verifies full 16-bit samples separately. Difference includes RGB and alpha; black means identical display samples. Zoom 100%+ uses unfiltered pixels.</footer>
+        </section>
+    </div>
+    <script src="jxl.js"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
-import os
 import asyncio
+import os
 
 try:
     from workers import BaseWorker
@@ -8,14 +8,14 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from workers import BaseWorker
 
+from core.database import DATABASE_DIR, DatabaseManager
 from core.shared import (
-    folder_component,
-    sanitize_filename,
-    safe_ensure_dir,
-    media_subdir,
     TAG_TYPE_MAP,
+    folder_component,
+    media_subdir,
+    safe_ensure_dir,
+    sanitize_filename,
 )
-from core.database import DatabaseManager, DATABASE_DIR
 
 POSTS_API = "https://gsbooru.org/api/posts"
 TAGS_API = "https://gsbooru.org/api/tags"

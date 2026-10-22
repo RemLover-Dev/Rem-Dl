@@ -1,6 +1,13 @@
-import os
 import asyncio
-from core.shared import BaseDownloader, folder_component, sanitize_filename, safe_ensure_dir
+import os
+
+from core.shared import (
+    BaseDownloader,
+    folder_component,
+    safe_ensure_dir,
+    sanitize_filename,
+)
+
 
 class NekosiaWorker(BaseDownloader):
     def __init__(self, tag, amount, rating, net_config):

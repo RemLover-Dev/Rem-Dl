@@ -1,7 +1,15 @@
-import os
 import asyncio
+import os
+
 import aiohttp
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir, media_subdir
+
+from workers import (
+    BaseWorker,
+    folder_component,
+    media_subdir,
+    safe_ensure_dir,
+    sanitize_filename,
+)
 
 
 class DanbooruWorker(BaseWorker):

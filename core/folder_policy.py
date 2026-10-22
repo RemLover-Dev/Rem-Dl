@@ -130,9 +130,18 @@ def _retitle_paths(root, folder_component):
                 if len(parts) < 2:
                     continue
                 *dirs, filename = parts
-                new_path = "/".join([folder_component(d) for d in dirs] + [filename])
+                new_parts = [folder_component(d) for d in dirs] + [filename]
+                new_path = "/".join(new_parts)
                 if new_path != filepath:
-                    updates.append((new_path, rowid))
+                    # the rename pass can skip a directory (locked file,
+                    # permissions): rewriting the row anyway would strand it
+                    # at a path that does not exist, and the next rescan
+                    # prunes every entry whose file is missing. Leave the
+                    # row at its (still-valid) old path instead.
+                    if os.path.isdir(os.path.join(root, *new_parts[:-1])):
+                        updates.append((new_path, rowid))
+                    else:
+                        unresolved += 1
                 elif not os.path.exists(os.path.join(root, new_path)):
                     unresolved += 1
             if updates:

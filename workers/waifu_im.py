@@ -1,7 +1,8 @@
-import os
 import asyncio
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
-import core.shared as shared
+import os
+
+from core import shared
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 
 def waifu_name_to_slug(name):
@@ -71,7 +72,7 @@ class WaifuImWorker(BaseWorker):
 
             try:
                 self.log(f"Scanning API... (Page {page})")
-                resp = await self.session.get("https://api.waifu.im/images", params=params, headers={"User-Agent": "Mozilla/5.0"})
+                resp = await self.session.get("https://api.waifu.im/images", params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=self.api_timeout)
                 if resp.status == 404:
                     self.log("ERROR 404: Tag not found!")
                     break

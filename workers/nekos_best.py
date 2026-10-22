@@ -1,6 +1,7 @@
-import os
 import asyncio
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
+import os
+
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 
 class NekosBestWorker(BaseWorker):

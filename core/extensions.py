@@ -1,10 +1,12 @@
-import os
-import json
-import shutil
-import logging
 import importlib.util
-from typing import Dict, Any, List, Optional
-from core.database import _app_base_dir, DATABASE_DIR, DatabaseManager
+import json
+import logging
+import os
+import shutil
+import re
+from typing import Any
+
+from core.database import DATABASE_DIR, DatabaseManager, _app_base_dir
 
 logger = logging.getLogger("RemsDl.Extensions")
 
@@ -32,18 +34,18 @@ class ExtensionManager:
     def __init__(self, app=None, socketio=None):
         self.app = app
         self.socketio = socketio
-        self.active_plugins: Dict[str, Any] = {}
-        self.plugin_modules: Dict[str, Any] = {}
+        self.active_plugins: dict[str, Any] = {}
+        self.plugin_modules: dict[str, Any] = {}
         os.makedirs(EXTENSIONS_DIR, exist_ok=True)
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> dict[str, Any]:
         data = DatabaseManager.load_json(EXTENSIONS_CONFIG_FILE)
         if not isinstance(data, dict):
             data = {}
         data.setdefault("extensions", {})
         return data
 
-    def _save_config(self, data: Dict[str, Any]) -> None:
+    def _save_config(self, data: dict[str, Any]) -> None:
         DatabaseManager.save_json(EXTENSIONS_CONFIG_FILE, data)
 
     def is_enabled(self, ext_id: str) -> bool:
@@ -58,7 +60,7 @@ class ExtensionManager:
         ext_cfg["enabled"] = bool(enabled)
         self._save_config(cfg)
 
-    def discover_installed(self) -> List[Dict[str, Any]]:
+    def discover_installed(self) -> list[dict[str, Any]]:
         """Scan extensions directory and load manifest.json from each subfolder."""
         installed = []
         if not os.path.exists(EXTENSIONS_DIR):
@@ -66,7 +68,7 @@ class ExtensionManager:
 
         for entry in os.listdir(EXTENSIONS_DIR):
             entry_path = os.path.join(EXTENSIONS_DIR, entry)
-            if not os.path.isdir(entry_path):
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", entry) or os.path.islink(entry_path) or not os.path.isdir(entry_path):
                 continue
 
             manifest_path = os.path.join(entry_path, "manifest.json")
@@ -80,6 +82,8 @@ class ExtensionManager:
                     continue
 
                 ext_id = manifest["id"]
+                if ext_id != entry or os.path.islink(manifest_path):
+                    continue
                 manifest["installed"] = True
                 manifest["enabled"] = self.is_enabled(ext_id)
                 manifest["is_active"] = ext_id in self.active_plugins
@@ -90,7 +94,7 @@ class ExtensionManager:
 
         return installed
 
-    def get_catalog(self) -> List[Dict[str, Any]]:
+    def get_catalog(self) -> list[dict[str, Any]]:
         """Combine official catalog with local installation status."""
         installed_map = {item["id"]: item for item in self.discover_installed()}
         catalog = []
@@ -144,7 +148,13 @@ class ExtensionManager:
 
         manifest = installed[ext_id]
         entry_point = manifest.get("entry_point", "plugin.py")
-        plugin_file = os.path.join(manifest["folder"], entry_point)
+        if not isinstance(entry_point, str):
+            return False
+        folder = os.path.realpath(manifest["folder"])
+        plugin_file = os.path.realpath(os.path.join(folder, entry_point))
+        if not plugin_file.startswith(folder + os.sep):
+            logger.error("Extension entry point escapes its directory")
+            return False
 
         if not os.path.exists(plugin_file):
             logger.error(f"Extension '{ext_id}' entry point missing: {plugin_file}")
@@ -206,7 +216,7 @@ class ExtensionManager:
         logger.info(f"Extension '{ext_id}' unloaded.")
         return True
 
-    def load_all_enabled(self) -> Dict[str, bool]:
+    def load_all_enabled(self) -> dict[str, bool]:
         """Load all enabled extensions."""
         results = {}
         for ext in self.discover_installed():
@@ -241,7 +251,7 @@ class ExtensionManager:
                 return False
         return True
 
-    def get_ui_contributions(self) -> Dict[str, Any]:
+    def get_ui_contributions(self) -> dict[str, Any]:
         """Collect dynamic navigation tabs, header badges, and UI fragments from active extensions."""
         nav_tabs = []
         panels = []
@@ -267,7 +277,7 @@ class ExtensionManager:
 
 
 # Singleton manager instance
-_extension_manager: Optional[ExtensionManager] = None
+_extension_manager: ExtensionManager | None = None
 
 
 def get_extension_manager(app=None, socketio=None) -> ExtensionManager:

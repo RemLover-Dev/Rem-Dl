@@ -1,12 +1,11 @@
-flask
-flask-socketio
-requests
-PySocks
-python-dotenv
-pillow
-aiohttp
-curl_cffi
-rule34Py
-gallery-dl
-pinterest-dl
-pywebview
+# Core runtime dependencies. Keep an existing working environment for updates.
+# Desktop GUI backends and optional service integrations are documented separately.
+Flask>=3.0,<4
+Flask-SocketIO>=5.3,<6
+requests>=2.32,<3
+urllib3>=2,<3
+python-dotenv>=1,<2
+Pillow>=10.4,<13
+aiohttp>=3.12,<4
+curl-cffi>=0.11,<1
+rule34Py>=4.2,<5

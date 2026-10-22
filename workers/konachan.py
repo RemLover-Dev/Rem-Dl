@@ -1,8 +1,10 @@
-import os, hashlib
 import asyncio
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
+import hashlib
+import os
+
+from core.database import DATABASE_DIR, DatabaseManager
 from core.shared import TAG_TYPE_MAP, media_subdir
-from core.database import DatabaseManager, DATABASE_DIR
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "konachan_tag_types.json")
 
@@ -38,9 +40,9 @@ class KonachanWorker(BaseWorker):
         safe_ensure_dir(self.tag_dir)
 
     async def _fetch_tag_types(self, tag_names):
-        # ponytail: cap per run — v1 cache migration drops unverified "tag"
-        # entries; heal incrementally instead of stalling the first run
-        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
+        # no cap: capping made every tag past #150 feed the folder
+        # classifier as a miscategorized "tag"; Semaphore(4) keeps the pace
+        uncached = [t for t in tag_names if t not in self.tag_cache]
         if not uncached:
             return
         sem = asyncio.Semaphore(4)

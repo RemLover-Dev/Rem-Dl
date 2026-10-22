@@ -20,8 +20,8 @@ mismatch it raises and leaves the JSON in place to be retried.
 import json
 import os
 import sqlite3
-import sys
 import threading
+from contextlib import contextmanager
 
 TAG_BUCKETS = (
     "tag", "artist", "character", "copyright",
@@ -37,11 +37,7 @@ ENTRY_FIELDS = (
 )
 
 
-def _app_base_dir():
-    # core/ lives one level below the repo root — go up one more.
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from core.runtime_paths import app_base_dir as _app_base_dir
 
 
 BASE_DIR = _app_base_dir()
@@ -65,7 +61,7 @@ def _normalize_tags(tags):
 
 
 def _idx_key(tag):
-    """Python twin of the builder's SQL `LOWER(REPLACE(tag, '_', ' '))`.
+    """Python twin of SQL `LOWER(REPLACE(tag, '_', ' '))`.
 
     ASCII-only lower on purpose: SQLite's LOWER() leaves non-ASCII alone, and
     a full str.lower() here would file a non-ASCII-tagged tag under a
@@ -127,27 +123,14 @@ class GalleryStore:
         self._lock = threading.RLock()
         self._conn = None
         self._migrated = False
-        # search index, None until first use: normalized-tag (ASCII-lower +
-        # '_'->space) -> gallery ids. Tag writes MAINTAIN it incrementally
-        # (see _set_tags_locked / _idx_drop_locked) — only a full-replace
-        # save drops it. See _norm_tag_ids.
-        self._norm_idx = None
 
     # --- connection / schema -------------------------------------------------
 
     def _connect(self):
         with self._lock:
             if self._conn is not None:
-                if self._norm_idx is not None and self._conn.in_transaction:
-                    # safety net, not the hot path: tag writes maintain the
-                    # index themselves (see _set_tags_locked), and the lock
-                    # this method takes means no healthy write can be
-                    # mid-transaction here. This only catches a transaction
-                    # leaked by a failed batch — rebuild once instead of
-                    # shipping an index that cannot describe partial rows.
-                    self._norm_idx = None
                 return self._conn
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
             conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode = WAL;")
@@ -167,6 +150,7 @@ class GalleryStore:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_filename ON gallery(filename)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_filepath ON gallery(filepath)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_ts ON gallery(downloaded_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_site ON gallery(site)")
             # Tags are isolated here on purpose — see module docstring.
@@ -181,6 +165,16 @@ class GalleryStore:
                 ) WITHOUT ROWID
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gt_tag ON gallery_tags(tag)")
+            conn.execute("CREATE TABLE IF NOT EXISTS gallery_tag_terms (tag TEXT PRIMARY KEY, normalized TEXT NOT NULL) WITHOUT ROWID")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tag_terms_normalized ON gallery_tag_terms(normalized)")
+            conn.execute("CREATE TABLE IF NOT EXISTS gallery_search_state (version INTEGER PRIMARY KEY)")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS gallery_terms_insert AFTER INSERT ON gallery_tags
+                BEGIN INSERT OR IGNORE INTO gallery_tag_terms(tag, normalized)
+                VALUES (NEW.tag, LOWER(REPLACE(NEW.tag, '_', ' '))); END""")
+            if not conn.execute("SELECT 1 FROM gallery_search_state WHERE version=1").fetchone():
+                conn.execute("INSERT OR IGNORE INTO gallery_tag_terms SELECT DISTINCT tag, LOWER(REPLACE(tag, '_', ' ')) FROM gallery_tags")
+                conn.execute("INSERT INTO gallery_search_state VALUES (1)")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS image_history (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,6 +186,7 @@ class GalleryStore:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_filename ON image_history(filename)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_hist_filepath ON image_history(filepath)")
             conn.commit()
             try:
                 self._migrate_if_needed(conn)
@@ -297,32 +292,6 @@ class GalleryStore:
             conn.executemany(
                 "INSERT OR IGNORE INTO gallery_tags (gallery_id, bucket, tag) VALUES (?,?,?)",
                 rows)
-        # maintain the index, don't drop it: this path runs per downloaded
-        # image and per healed entry, and dropping here made every search
-        # during activity pay the full ~770ms rebuild — the "search crawls
-        # while downloading" regression. One scan over the index keys (~1ms)
-        # keeps it exact instead.
-        self._idx_drop_locked((gid,))
-        idx = self._norm_idx
-        if idx is not None:
-            for _gid, _bucket, tag in rows:
-                idx.setdefault(_idx_key(tag), set()).add(gid)
-
-    def _idx_drop_locked(self, gids):
-        """Pull `gids` out of the search index — one pass over its keys.
-
-        No reverse map on purpose: a ~20k-key scan (~1ms) per write is a
-        cheaper thing to keep than a second structure every write path could
-        desync. No-op when the index isn't built yet.
-        """
-        idx = self._norm_idx
-        if idx is None:
-            return
-        for key in list(idx):
-            ids = idx[key]
-            ids.difference_update(gids)
-            if not ids:
-                del idx[key]
 
     def _import_history_locked(self, conn):
         if not os.path.exists(self.history_json):
@@ -380,14 +349,49 @@ class GalleryStore:
     def _tags_for_ids(self, conn, ids):
         if not ids:
             return {}
-        marks = ",".join("?" * len(ids))
-        cur = conn.execute(
-            "SELECT gallery_id, bucket, tag FROM gallery_tags WHERE gallery_id IN (%s)"
-            % marks, ids)
         out = {}
-        for row in cur:
-            out.setdefault(row["gallery_id"], []).append((row["bucket"], row["tag"]))
+        ids = list(dict.fromkeys(ids))
+        # macOS/system SQLite builds may retain the 999-variable limit.
+        # Batch offline/full-library reads as well as normal page reads.
+        for offset in range(0, len(ids), 500):
+            batch = ids[offset:offset + 500]
+            marks = ",".join("?" * len(batch))
+            cur = conn.execute(
+                "SELECT gallery_id, bucket, tag FROM gallery_tags WHERE gallery_id IN (%s)"
+                % marks, batch)
+            for row in cur:
+                out.setdefault(row["gallery_id"], []).append((row["bucket"], row["tag"]))
         return {k: _tags_from_row(v) for k, v in out.items()}
+
+    def relocate_filepath(self, old, new, absolute_old=None, absolute_new=None):
+        """Move a file while retaining its gallery date, tags, id and favourites."""
+        fallback_date = None
+        if absolute_old:
+            from datetime import datetime
+            try:
+                fallback_date = datetime.fromtimestamp(os.path.getmtime(absolute_old)).isoformat()
+            except OSError:
+                pass
+        with self._lock:
+            conn = self._connect()
+            pairs = [(old, new)]
+            if absolute_old and absolute_old != old:
+                pairs.append((absolute_old, absolute_new))
+            try:
+                for before, after in pairs:
+                    variants = {before, before.replace('\\', '/'), before.replace('/', '\\')}
+                    for variant in variants:
+                        if fallback_date:
+                            conn.execute("UPDATE gallery SET downloaded_at = ? WHERE filepath = ? "
+                                         "AND (downloaded_at IS NULL OR downloaded_at = '')",
+                                         (fallback_date, variant))
+                        for table in ('gallery', 'image_history'):
+                            conn.execute(f'UPDATE {table} SET filepath = ?, filename = ? WHERE filepath = ?',
+                                         (after, os.path.basename(absolute_new or new), variant))
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def get_entry(self, gid):
         """One full entry (tags included) by id."""
@@ -460,11 +464,6 @@ class GalleryStore:
         deletes entries whose file is gone.
         """
         with self._lock:
-            # full-replace semantics: the prune below rewrites the id space,
-            # so drop the index once here instead of letting the per-entry
-            # writes maintain a structure this pass is about to overwrite —
-            # one rebuild on the next search, not one per entry
-            self._norm_idx = None
             conn = self._connect()
             present = set()
             for e in entries:
@@ -482,89 +481,64 @@ class GalleryStore:
             conn.commit()
             return len(stale)
 
+    def save_entries_partial(self, entries):
+        """Upsert only the given entries; rows absent here remain untouched."""
+        with self._lock:
+            conn = self._connect()
+            for e in entries:
+                gid = self._upsert_fields_locked(conn, e)
+                if gid is None:
+                    continue
+                if "tags" in e:
+                    self._set_tags_locked(conn, gid, e["tags"])
+            conn.commit()
+
+    @contextmanager
+    def _reader(self):
+        """Short-lived WAL snapshot; don't queue reads behind a Python writer."""
+        if self.db_path == ':memory:':
+            with self._lock:
+                yield self._connect()
+            return
+        if self._conn is None:
+            self._connect()
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def get_tags_many(self, ids):
         """{id: tags} for a batch — the on-demand tag read for filtering."""
-        conn = self._connect()
-        return self._tags_for_ids(conn, list(ids))
-
-    def _norm_tag_ids(self, conn, term, exact=False):
-        """Gallery ids whose stored tag equals/contains `term`.
-
-        Normalizing inside the WHERE — `TRIM(REPLACE(LOWER(tag), '_', ' '))`
-        — hid the tag column from SQLite and forced a 547k-row scan per term
-        (~130ms, measured on a 56MB library). Instead the whole table is
-        normalized once into a keyed index, which costs ~770ms the first time
-        a search runs after startup and nothing after: writes maintain it in
-        place (see _set_tags_locked), so only a full-replace save forces a
-        rebuild. Every term after the build is a 1-2ms dict scan. Measured
-        2-term query: 237ms -> 1.6ms.
-
-        547k rows collapse to ~20k distinct tags, so the index is small
-        enough to stay resident; the fetch dominates the build (355ms of the
-        770ms) because sqlite has to hand 547k rows over one at a time.
-
-        The term is normalized identically, so 'blue hair' and 'blue_hair'
-        are the same query — which is what _parse_search_terms relies on when
-        it rewrites the term's underscores to spaces before we ever see it.
-        """
-        with self._lock:
-            norm = self._norm_idx
-            if norm is None:
-                norm = self._build_idx_locked(conn)
-            needle = term.lower().replace("_", " ")
-            if exact:
-                # a copy, not the live set: _search_id_set does
-                # `keep -= ...` in place and would otherwise carve ids out
-                # of the index itself
-                return set(norm.get(needle, ()))
-            if not norm:
-                return set()
-            return set().union(*(norm[key] for key in norm if needle in key))
+        with self._reader() as conn:
+            return self._tags_for_ids(conn, list(ids))
 
     def ids_matching_tags(self, term, exact=False):
-        """Ids whose stored tag equals/contains `term` — the search side of a
-        tag filter.
+        """Search the persistent vocabulary, then indexed tag postings.
 
-        Tags are stored underscored and mixed-case while the UI filter
-        normalizes both sides, so the same normalization runs here: the two
-        must agree exactly or a search silently changes results.
+        Only distinct tag strings are scanned for substring queries. No full
+        Python inverted index is built or rebuilt after a rescan. instr is
+        literal: percent/underscore are not SQL wildcard operators here.
         """
-        return self._norm_tag_ids(self._connect(), term, exact)
-
-    def _build_idx_locked(self, conn):
-        """Build the whole search index and publish it. Caller holds the lock.
-
-        Built in python, not SQL: `SELECT DISTINCT LOWER(...)` groups inside
-        sqlite but still ships every row out one at a time (measured 504ms
-        here, against 552ms fetching and grouping in python), so the DISTINCT
-        buys nothing. Published only while holding the lock: a write
-        committing between "index is None" and this publish would never be
-        invalidated again (writes maintain, they don't drop), so its tags
-        would be missing from every future search.
-        """
-        norm = {}
-        for key, gid in conn.execute(
-                "SELECT DISTINCT LOWER(REPLACE(tag, '_', ' ')), "
-                "gallery_id FROM gallery_tags"):
-            norm.setdefault(key, set()).add(gid)
-        self._norm_idx = norm
-        return norm
+        needle = _idx_key(term)
+        predicate = "normalized = ?" if exact else "instr(normalized, ?) > 0"
+        # A separate WAL reader can search while a bulk save holds the writer
+        # lock. It sees a committed snapshot; the trigger updates vocabulary
+        # and tag rows atomically. Close immediately: no connection pool growth.
+        with self._reader() as conn:
+            return {row[0] for row in conn.execute(
+                "SELECT DISTINCT gallery_id FROM gallery_tags WHERE tag IN "
+                "(SELECT tag FROM gallery_tag_terms WHERE " + predicate + ")", (needle,))}
 
     def warm_search_index(self):
-        """Build the search index up front if it isn't built yet.
-
-        Startup runs this in a background thread so the first gallery search
-        doesn't pay the one-off ~800ms build (measured on a 19k-entry
-        library); every search after is a few ms. Idempotent and cheap when
-        already built.
-        """
-        with self._lock:
-            if self._norm_idx is None:
-                self._build_idx_locked(self._connect())
+        """Ensure the persistent vocabulary exists; no resident tag sets."""
+        self._connect()
 
     def all_ids(self):
         """Every gallery id — the starting set for an all-negation search."""
-        return {r[0] for r in self._connect().execute("SELECT id FROM gallery")}
+        with self._reader() as conn:
+            return {r[0] for r in conn.execute("SELECT id FROM gallery")}
 
     def insert_entry(self, record):
         with self._lock:
@@ -596,6 +570,8 @@ class GalleryStore:
             conn.commit()
 
     def set_favourite(self, ids, value):
+        if isinstance(ids, str):
+            ids = [ids]
         ids = list(ids)
         if not ids:
             return 0
@@ -613,7 +589,6 @@ class GalleryStore:
             conn = self._connect()
             conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
             conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
-            self._idx_drop_locked((gid,))
             conn.commit()
 
     def delete_by_filename(self, filename):
@@ -624,16 +599,12 @@ class GalleryStore:
             for gid in gids:
                 conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
                 conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
-            self._idx_drop_locked(gids)
             conn.commit()
             return bool(gids)
 
     def replace_all(self, entries):
         """Wholesale rewrite (offline scripts). Writes tags from real data."""
         with self._lock:
-            # DELETE FROM gallery_tags bypasses _set_tags_locked: ids the new
-            # entries don't recreate would linger in the index forever
-            self._norm_idx = None
             conn = self._connect()
             conn.execute("BEGIN")
             try:
@@ -717,7 +688,6 @@ class GalleryStore:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
-            self._norm_idx = None
 
 
 _store = None

@@ -1,8 +1,12 @@
-import os, re, json, random
 import asyncio
+import json
+import os
+import random
+import re
 from pathlib import Path
+
+from core import shared
 from workers import BaseWorker, folder_component, safe_ensure_dir
-import core.shared as shared
 
 
 def _disable_brotli():
@@ -97,7 +101,6 @@ class PinterestWorker(BaseWorker):
         self.proxy = None
         if self.net_config.get("use_proxy"):
             self.proxy = self.net_config.get("proxy_url")
-        return None
 
     def _apply_proxy(self, session):
         if self.net_config.get("use_proxy"):
@@ -117,8 +120,8 @@ class PinterestWorker(BaseWorker):
         if email and password:
             try:
                 from pinterest_dl import PinterestDL as PDL
-                from playwright.sync_api import BrowserType
                 from pinterest_dl.webdriver.playwright_driver import PlaywrightDriver
+                from playwright.sync_api import BrowserType
                 orig_launch = BrowserType.launch
                 orig_pw_login = PlaywrightDriver.login
                 BrowserType.launch = _launch_with_proxy(orig_launch, self.net_config)

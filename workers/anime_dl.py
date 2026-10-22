@@ -1,15 +1,26 @@
-import os
 import asyncio
+import os
 import threading
 import time
+
 from curl_cffi import requests as curl_requests
-from core.shared import (
-    BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
-    write_image_metadata, save_history, build_tagd, check_duplicate,
-    absorb_duplicate,
-    folder_component, sanitize_filename, safe_ensure_dir, pace_wait
-)
+
 from core.dedup_store import hash_bytes
+from core.shared import (
+    MASTER_FOLDER,
+    BaseDownloader,
+    absorb_duplicate,
+    add_to_gallery,
+    build_tagd,
+    check_duplicate,
+    folder_component,
+    pace_wait,
+    safe_ensure_dir,
+    sanitize_filename,
+    save_history,
+    send_tags,
+    write_image_metadata,
+)
 
 API = "https://api.anime-pictures.net/api/v3"
 PER_PAGE = 80
@@ -156,7 +167,6 @@ class AnimeDlWorker(BaseDownloader):
                     return False
 
                 self.downloaded_count += 1
-                self.downloaded_bytes += len(content)
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 

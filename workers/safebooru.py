@@ -1,9 +1,11 @@
-import html, os
 import asyncio
+import html
+import os
 import xml.etree.ElementTree as ET
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
-import core.shared as shared
-from core.database import DatabaseManager, DATABASE_DIR
+
+from core import shared
+from core.database import DATABASE_DIR, DatabaseManager
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "safebooru_tag_types.json")
 

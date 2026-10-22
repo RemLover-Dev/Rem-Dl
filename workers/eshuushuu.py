@@ -1,6 +1,18 @@
-import os, re, asyncio, json
+import asyncio
+import json
+import os
+import re
+
 import requests
-from core.shared import BaseDownloader, folder_component, sanitize_filename, safe_ensure_dir, pace_session
+
+from core.shared import (
+    BaseDownloader,
+    folder_component,
+    pace_session,
+    safe_ensure_dir,
+    sanitize_filename,
+)
+
 
 class EShuushuuWorker(BaseDownloader):
     def __init__(self, tag, amount, exclusions, user_id, net_config):
@@ -67,7 +79,7 @@ class EShuushuuWorker(BaseDownloader):
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             s.proxies = {"http": p, "https": p}
-        s.verify = self.net_config.get("verify_tls", False)
+        s.verify = self.net_config.get("verify_tls", True)
         # tag-resolve + page scans share the global ISP pace
         return pace_session(s)
 

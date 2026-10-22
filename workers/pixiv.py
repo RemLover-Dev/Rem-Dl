@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 # Adapted from gallery-dl (https://github.com/mikf/gallery-dl)
 # Original: gallery_dl/extractor/pixiv.py  |  gallery_dl/text.py
@@ -17,23 +16,33 @@
 # CLI/config/Job/postprocessor machinery, switched to the shared session
 # proxy/TLS framework, added ugoira-to-GIF conversion via Pillow.
 
-import os
-import io
-import time
-import hashlib
-import zipfile
 import asyncio
+import hashlib
+import io
+import os
+import time
+import zipfile
 from datetime import datetime, timezone
 from urllib.parse import unquote
-from PIL import Image
-import requests
 
-from core.shared import (
-    BaseDownloader, save_history, add_to_gallery, send_tags,
-    check_duplicate, absorb_duplicate, MASTER_FOLDER, folder_component,
-    sanitize_filename, safe_ensure_dir, media_subdir, pace_session
-)
+import requests
+from PIL import Image
+
 from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
+from core.shared import (
+    MASTER_FOLDER,
+    BaseDownloader,
+    absorb_duplicate,
+    add_to_gallery,
+    check_duplicate,
+    folder_component,
+    media_subdir,
+    pace_session,
+    safe_ensure_dir,
+    sanitize_filename,
+    save_history,
+    send_tags,
+)
 
 CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
@@ -188,7 +197,7 @@ class PixivWorker(BaseDownloader):
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             self.api_session.proxies = {"http": p, "https": p}
-        self.api_session.verify = self.net_config.get("verify_tls", False)
+        self.api_session.verify = self.net_config.get("verify_tls", True)
         # login/_call/ugoira zip all funnel through this session — pace it
         pace_session(self.api_session)
 
@@ -241,10 +250,21 @@ class PixivWorker(BaseDownloader):
         MAX_PAGES = 100
         while (need == 0 or collected < need) and not self.stop_event.is_set() and page < MAX_PAGES:
             try:
-                data = await asyncio.to_thread(api._call, endpoint, params)
-            except ValueError as e:
-                self.log(f"Auth error: {e}")
-                return
+                # ponytail: 3 attempts — a transient API blip must not kill
+                # a whole 50-item run; auth ValueError stays fatal
+                for attempt in range(3):
+                    try:
+                        data = await asyncio.to_thread(api._call, endpoint, params)
+                        break
+                    except ValueError as e:
+                        self.log(f"Auth error: {e}")
+                        return
+                    except Exception as e:
+                        if attempt == 2:
+                            self.log(f"API error: {e}")
+                            return
+                        self.log(f"API error (attempt {attempt + 1}/3): {e}")
+                        await asyncio.sleep(2 * (attempt + 1))
             except Exception as e:
                 self.log(f"API error: {e}")
                 return
@@ -259,7 +279,10 @@ class PixivWorker(BaseDownloader):
             for page_i, work in enumerate(works):
                 if self.stop_event.is_set() or (need and collected >= need):
                     break
-                collected += await self._process_work(work)
+                # pass the running headroom down: a 40-page manga work must
+                # not march past the quota on its own file list
+                collected += await self._process_work(
+                    work, (need - collected) if need else 0)
                 if page_i + 1 < len(works) and (need == 0 or collected < need):
                     await asyncio.sleep(self.anti_ban_pause)
             if need and collected >= need:
@@ -282,7 +305,8 @@ class PixivWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    async def _process_work(self, work):
+    async def _process_work(self, work, allowance=0):
+        """allowance = running headroom (0 = unlimited) for the per-file loop."""
         work_id = work.get("id")
         if not work_id:
             return 0
@@ -329,7 +353,7 @@ class PixivWorker(BaseDownloader):
 
         for file_info in files:
             if self.stop_event.is_set(): break
-            if self.amount > 0 and count >= self.amount: break
+            if allowance > 0 and count >= allowance: break
 
             url = file_info["url"]
             ext = file_info.get("ext")
@@ -384,7 +408,7 @@ class PixivWorker(BaseDownloader):
         is_ugoira = work.get("type") == "ugoira"
 
         if is_ugoira:
-            return [{"url": url, "ext": "zip", "num": 0, "_ugoira": True}]
+            return [{"url": url, "ext": "zip", "num": 0}]
 
         return [{"url": url, "ext": ext, "num": 0}]
 

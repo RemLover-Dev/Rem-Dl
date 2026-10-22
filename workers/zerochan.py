@@ -1,3 +1,4 @@
+import asyncio
 import json as _json
 import os
 import re
@@ -5,31 +6,30 @@ import shutil
 import subprocess
 import sys
 import threading
-import asyncio
 import urllib.parse
 from html.parser import HTMLParser
 
+import urllib3
 from curl_cffi import requests as curl_requests
 
+from core.dedup_store import hash_bytes
+from core.gallery_dl_interop import ensure_zerochan_page_html
 from core.shared import (
-    BaseDownloader,
     MASTER_FOLDER,
+    BaseDownloader,
+    absorb_duplicate,
     add_to_gallery,
-    send_tags,
-    write_image_metadata,
-    save_history,
     build_tagd,
     check_duplicate,
-    absorb_duplicate,
     folder_component,
-    sanitize_filename,
-    safe_ensure_dir,
     pace_session,
+    safe_ensure_dir,
+    sanitize_filename,
+    save_history,
+    send_tags,
+    write_image_metadata,
 )
-from core.gallery_dl_interop import ensure_zerochan_page_html
-from core.dedup_store import hash_bytes
 
-import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -315,7 +315,7 @@ class ZerochanWorker(BaseDownloader):
         return _DummyAsyncSession()
 
     def _verify_flag(self):
-        return bool(self.net_config.get("verify_tls", False))
+        return bool(self.net_config.get("verify_tls", True))
 
     def _blocking_get(self, url, headers=None, timeout=30, allow_redirects=True):
         session = self._ensure_curl_session()
@@ -391,14 +391,17 @@ class ZerochanWorker(BaseDownloader):
         if ZerochanWorker._gallery_dl_cmd is not None:
             return ZerochanWorker._gallery_dl_cmd
         launcher = None
-        try:
-            probe = subprocess.run(
-                [sys.executable, "-m", "gallery_dl", "--version"],
-                capture_output=True, text=True, timeout=60, check=False)
-            if probe.returncode == 0:
-                launcher = [sys.executable, "-m", "gallery_dl"]
-        except Exception:
-            launcher = None
+        # A frozen executable is the application, not a Python interpreter:
+        # invoking it with -m would launch another application instance.
+        if not getattr(sys, 'frozen', False):
+            try:
+                probe = subprocess.run(
+                    [sys.executable, "-m", "gallery_dl", "--version"],
+                    capture_output=True, text=True, timeout=15, check=False)
+                if probe.returncode == 0:
+                    launcher = [sys.executable, "-m", "gallery_dl"]
+            except Exception:
+                launcher = None
         if launcher is None and shutil.which("gallery-dl"):
             launcher = ["gallery-dl"]
         ZerochanWorker._gallery_dl_cmd = launcher
@@ -699,7 +702,6 @@ class ZerochanWorker(BaseDownloader):
         # size is only used for progress stats. Record 0 and continue.
         file_size = 0
         try:
-            self.total_bytes += file_size
             self.queued_items.add(filename)
             self.download_queue.put_nowait(
                 (url, filepath, filename, tags_list, artists, file_size,
@@ -786,7 +788,6 @@ class ZerochanWorker(BaseDownloader):
                     return False
 
                 self.downloaded_count += 1
-                self.downloaded_bytes += downloaded
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 

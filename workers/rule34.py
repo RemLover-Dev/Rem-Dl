@@ -1,7 +1,9 @@
-import os, random
 import asyncio
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
+import os
+import random
+
 from core.shared import pace_requests
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 # Safeguard importlib.metadata in frozen bundles (e.g. PyInstaller standalone / portable builds)
 try:
@@ -103,10 +105,10 @@ class Rule34Worker(BaseWorker):
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             client.session.proxies = {"http": p, "https": p}
-            client.session.verify = self.net_config.get("verify_tls", False)
+            client.session.verify = self.net_config.get("verify_tls", True)
         else:
             client.session.proxies = {"http": "", "https": "", "no_proxy": "*"}
-            client.session.verify = False
+            client.session.verify = self.net_config.get("verify_tls", True)
 
         self.client = client
         return session

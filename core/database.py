@@ -1,17 +1,12 @@
-import os
+import atexit
 import json
-import sys
+import os
 import threading
 import time
-import atexit
 
 
-def _app_base_dir():
-    # Frozen (PyInstaller) builds: keep all user data next to the exe,
-    # not inside the read-only _MEIPASS bundle.
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from core.runtime_paths import app_base_dir as _app_base_dir
+from core.atomic_io import write_json, write_lines
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 
@@ -60,23 +55,32 @@ class DatabaseManager:
         with _DB_LOCK:
             _learned_cache = data
             # write-through: saves only happen on a genuinely new tag
-            with open(LEARNED_TAGS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+            DatabaseManager.save_json(LEARNED_TAGS_FILE, data)
 
     @staticmethod
     def add_learned_tag(site, tag):
+        DatabaseManager.add_learned_tags(site, [tag])
+
+    @staticmethod
+    def add_learned_tags(site, new_tags):
+        """Persist one batch per download instead of rewriting once per tag."""
         site = str(site).lower().strip()
-        tag = str(tag).strip()
-        if not tag or len(tag) < 2:
-            return
         with _DB_LOCK:
-            tags = DatabaseManager.load_learned_tags()
-            site_list = tags.setdefault(site, [])
-            if tag not in site_list:
-                site_list.insert(0, tag)
-                # Bound per-site learned tags to top 500 to keep memory negligible (< 100 KB)
-                tags[site] = site_list[:500]
-                DatabaseManager.save_learned_tags(tags)
+            data = DatabaseManager.load_learned_tags()
+            site_list = data.setdefault(site, [])
+            known = set(site_list)
+            changed = False
+            for tag in new_tags:
+                if not isinstance(tag, str):
+                    continue
+                tag = tag.strip()
+                if len(tag) >= 2 and tag not in known:
+                    site_list.insert(0, tag)
+                    known.add(tag)
+                    changed = True
+            if changed:
+                data[site] = site_list[:500]
+                DatabaseManager.save_learned_tags(data)
 
     @staticmethod
     def get_learned_suggestions(site, query, limit=20):
@@ -103,10 +107,7 @@ class DatabaseManager:
     @staticmethod
     def save_json(filepath, data):
         with _DB_LOCK:
-            tmp = filepath + ".tmp"
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(data, f)
-            os.replace(tmp, filepath)
+            write_json(filepath, data)
 
     # --- Tag History ---
     @staticmethod
@@ -130,6 +131,7 @@ class DatabaseManager:
                             "searched_at": time.time(),
                             "exclude_ai": bool(exclude_ai),
                             "filters": dict(filters) if filters else {}})
+            del hist[500:]  # same per-search rewrite as add_learned_tags — cap it
             DatabaseManager.save_tag_history(hist)
 
     @staticmethod
@@ -166,7 +168,6 @@ class DatabaseManager:
     @staticmethod
     def flush_image_history():
         """No-op: the store commits per write. Kept for the exit hooks."""
-        pass
 
     @staticmethod
     def add_image_history(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
@@ -272,9 +273,19 @@ class DatabaseManager:
         DatabaseManager.save_json(UI_CONFIG_FILE, data)
 
     @staticmethod
+    def update_ui_config(changes):
+        # Keep settings not included by a caller, across sessions and writers.
+        with _DB_LOCK:
+            config = DatabaseManager.load_ui_config()
+            config.update(changes)
+            DatabaseManager.save_ui_config(config)
+            return config
+
+    @staticmethod
     def _default_ui_config():
         return {
             "theme_mode": "dark",
+            "performance_mode": "lite",
             "mute_auth_warnings": False,
             "pixiv_watch_minutes": 90,
             "wallpapers": {
@@ -339,7 +350,7 @@ class SettingsManager:
         self.config = {
             "use_proxy": os.getenv("USE_PROXY", "false").lower() == "true",
             "proxy_url": os.getenv("PROXY_URL", "http://127.0.0.1:10808"),
-            "verify_tls": os.getenv("VERIFY_TLS", "false").lower() == "true",
+            "verify_tls": os.getenv("VERIFY_TLS", "true").lower() == "true",
             "api_timeout": int(os.getenv("API_TIMEOUT", "10")),
             "retry_wait": int(os.getenv("RETRY_WAIT", "5")),
             "anti_ban_pause": float(os.getenv("ANTI_BAN_PAUSE", "3.0")),
@@ -371,28 +382,23 @@ class SettingsManager:
         return lines
 
     def _write_env_lines(self, lines):
-        with open(self._env_path(), "w", encoding="utf-8") as f:
-            f.writelines(lines)
+        write_lines(self._env_path(), lines)
 
     def _upsert_env_keys(self, env_keys):
-        lines = self._read_env_lines()
-        new_lines = []
-        found = {k: False for k in env_keys}
-        for line in lines:
-            stripped = line.strip()
-            matched = False
-            for key, val in env_keys.items():
-                if stripped.startswith(f"{key}="):
-                    new_lines.append(f"{key}={val}\n")
-                    found[key] = True
-                    matched = True
-                    break
-            if not matched:
-                new_lines.append(line)
-        for key, val in env_keys.items():
-            if not found[key]:
-                new_lines.append(f"{key}={val}\n")
-        self._write_env_lines(new_lines)
+        # Quote values for python-dotenv; embedded newlines must never become keys.
+        env_keys = {k: str(v) for k, v in env_keys.items()}
+        if any("\0" in value for value in env_keys.values()):
+            raise ValueError("Settings cannot contain NUL characters")
+        def env_line(key, value):
+            value = value.replace("\\", "\\\\").replace("'", "\\'")
+            return f"{key}='{value}'\n"
+        with _DB_LOCK:
+            from dotenv import dotenv_values
+            existing = dotenv_values(self._env_path(), interpolate=False)
+            existing.update(env_keys)
+            new_lines = [env_line(k, v or "") for k, v in existing.items()]
+            self._write_env_lines(new_lines)
+
 
     def save_config(self):
         env_keys = {
@@ -408,6 +414,7 @@ class SettingsManager:
         }
         self._upsert_env_keys(env_keys)
         os.environ["DEDUP_ENABLED"] = env_keys["DEDUP_ENABLED"]
+        os.environ["VERIFY_TLS"] = env_keys["VERIFY_TLS"]
         # the rate gate reads the env live — apply changes without a restart
         os.environ["REQ_RATE_LIMIT"] = env_keys["REQ_RATE_LIMIT"]
 
@@ -440,14 +447,8 @@ class SettingsManager:
             os.environ[k] = v
 
     def load_api_settings(self):
-        config = {}
-        env_path = self._env_path()
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if "=" in line and not line.startswith("#"):
-                        k, v = line.split("=", 1)
-                        config[k.strip()] = v.strip()
+        from dotenv import dotenv_values
+        config = dotenv_values(self._env_path(), interpolate=False)
         # runtime env (set by save_api_settings / load_dotenv) wins over file
         resolved = dict(config)
         resolved.update(os.environ)

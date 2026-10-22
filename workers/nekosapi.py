@@ -1,6 +1,12 @@
-import os
 import asyncio
-from core.shared import BaseDownloader, folder_component, sanitize_filename, safe_ensure_dir
+import os
+
+from core.shared import (
+    BaseDownloader,
+    folder_component,
+    safe_ensure_dir,
+    sanitize_filename,
+)
 
 # API rating codes -> canonical gallery ratings (API words differ from the
 # gallery's safe/sensitive/questionable/explicit: suggestive, borderline)

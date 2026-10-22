@@ -24,7 +24,7 @@ import uuid
 import requests
 
 from core import notifications
-from core.database import DatabaseManager, DATABASE_DIR
+from core.database import DATABASE_DIR, DatabaseManager
 from workers.gelbooru import build_query
 
 WATCHERS_FILE = os.path.join(DATABASE_DIR, "watchers.json")
@@ -67,12 +67,23 @@ def list_watchers(source=None):
         return [dict(w) for w in ws if source is None or w.get("source") == source]
 
 
-def _set_runtime(wid, fields):
-    """Persist checkpoint/scan/status fields without racing CRUD."""
+def _set_runtime(wid, fields, snapshot=None):
+    """Persist checkpoint/scan/status fields without racing CRUD.
+
+    snapshot: the watcher copy check_watcher ran with. When a CRUD update
+    re-baselined the watcher mid-check (tags/ratings changed -> stored
+    initialized dumped back to False), the snapshot's checkpoint/cursor
+    verdicts belong to the OLD query — writing them would resurrect the old
+    cursor and re-flood old posts under the new tags. The write is skipped
+    instead; the next cycle runs on the fresh baseline."""
     with _lock:
         raw = _load()
         for w in raw["watchers"]:
             if w["watcher_id"] == wid:
+                if (snapshot is not None
+                        and snapshot.get("initialized")
+                        and not w.get("initialized")):
+                    return None
                 w.update(fields)
                 _save(raw)
                 return dict(w)
@@ -185,7 +196,8 @@ def _fetch_posts(api_tag, pid):
     if api_key and user_id:
         params["api_key"] = api_key
         params["user_id"] = user_id
-    resp = requests.get(GELBOORU_API, params=params, timeout=30)
+    from core.database import get_settings
+    resp = requests.get(GELBOORU_API, params=params, timeout=30, verify=get_settings().get("verify_tls", True))
     if resp.status_code in (401, 403, 429):
         raise RuntimeError(f"gelbooru HTTP {resp.status_code}")
     resp.raise_for_status()
@@ -238,6 +250,7 @@ def _entries(w, posts):
 def check_watcher(w):
     """One watcher check. Never raises; returns {new, error}."""
     wid = w["watcher_id"]
+    baseline = w.get("baseline_at")
     try:
         api_tag = build_query(" ".join(w.get("tags") or []),
                               " ".join(w.get("ratings") or []))[0]
@@ -270,7 +283,8 @@ def check_watcher(w):
                                if fresh else [])
                 _set_runtime(wid, {"initialized": True,
                                    "last_seen_post_id": str(posts[0]["id"]),
-                                   "last_checked_at": time.time(), "error": ""})
+                                   "last_checked_at": time.time(), "error": ""},
+                             snapshot=w)
                 return {"new": len(new_entries), "error": ""}
             cycle_newest = str(posts[0]["id"])
             fresh, reached = _collect(posts, checkpoint, fresh)
@@ -292,7 +306,8 @@ def check_watcher(w):
             _set_runtime(wid, {"last_seen_post_id": cycle_newest or checkpoint,
                                "initialized": True, "scan_pid": 0,
                                "scan_newest_id": None,
-                               "last_checked_at": time.time(), "error": ""})
+                               "last_checked_at": time.time(), "error": ""},
+                         snapshot=w)
             return {"new": len(new_entries), "error": ""}
 
         # cap hit: collected posts are notified (dedup makes re-notify
@@ -304,13 +319,15 @@ def check_watcher(w):
             _set_runtime(wid, {"last_seen_post_id": cycle_newest or checkpoint,
                                "initialized": True, "scan_pid": 0,
                                "scan_newest_id": None,
-                               "last_checked_at": time.time(), "error": err})
+                               "last_checked_at": time.time(), "error": err},
+                         snapshot=w)
             return {"new": len(new_entries), "error": err}
         err = "Too many new posts; watcher capped at 1000 results"
         # one write per check: scan_newest_id rides along so a resumed
         # cycle still knows the top of the feed it is paging toward
         _set_runtime(wid, {"scan_pid": pid, "scan_newest_id": cycle_newest,
-                           "last_checked_at": time.time(), "error": err})
+                           "last_checked_at": time.time(), "error": err},
+                     snapshot=w)
         return {"new": len(new_entries), "error": err}
     except Exception as e:  # watcher failures must never take anything down
         err = str(e)[:300]

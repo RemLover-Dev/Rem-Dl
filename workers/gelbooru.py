@@ -1,8 +1,10 @@
-import html, os
 import asyncio
-from workers import BaseWorker, folder_component, sanitize_filename, safe_ensure_dir
+import html
+import os
+
+from core.database import DATABASE_DIR, DatabaseManager
 from core.shared import TAG_TYPE_MAP, media_subdir
-from core.database import DatabaseManager, DATABASE_DIR
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gelbooru_tag_types.json")
 

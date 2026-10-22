@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 
+# Worker entry must precede GUI imports, migrations, workers and server startup.
+# The same branch supports source installs and rebuilt frozen applications.
+import sys
+if len(sys.argv) == 4 and sys.argv[1] == '--rems-jxl-worker':
+    from core.jxl_worker import run as _run_jxl_worker
+    _run_jxl_worker(sys.argv[2], sys.argv[3])
+    raise SystemExit(0)
+
 try:
     # ponytail: must run before GTK initializes (i.e. before import webview)
     import gi
@@ -9,7 +17,6 @@ try:
 except Exception:
     pass
 
-import sys
 if sys.platform == "win32":
     try:
         import ctypes
@@ -18,41 +25,37 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-import os
-import sys
-import time
+import hashlib
 import html
+import io
+import os
 import signal
 import threading
-import requests
-import urllib3
+import time
 import urllib.parse
-import random
-import hashlib
-import io
-from concurrent.futures import ThreadPoolExecutor
 import webbrowser
-from PIL import Image
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from flask import Flask, send_from_directory, send_file, jsonify, request, Response
+import requests
+from dotenv import load_dotenv
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from flask_socketio import SocketIO
+from PIL import Image, ImageOps
+try:
+    import pillow_jxl  # Registers optional JXL decoding for gallery thumbnails.
+except (ImportError, OSError):
+    pillow_jxl = None
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from dotenv import load_dotenv
-from core.database import DatabaseManager, SettingsManager
-from core import notifications, pixiv_notify, watchers
-from core.preview_cache import (preview_path, ready_for as preview_ready_for,
-                                evict as evict_preview)
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
-    STATIC_FOLDER = os.path.join(sys._MEIPASS, "web")
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    STATIC_FOLDER = "web"
+from core.runtime_paths import app_base_dir, initial_window_size, resource_root, web_directory, webview_gui
+from core.jobs import submit_shared
+
+BASE_DIR = app_base_dir()
+os.makedirs(BASE_DIR, exist_ok=True)
+STATIC_FOLDER = web_directory()
 
 APP_NAME = "Rems Dl"
 DOWNLOAD_DIR_NAME = "Rems Dl"
@@ -66,24 +69,23 @@ if os.path.isdir(os.path.join(BASE_DIR, LEGACY_DOWNLOAD_DIR_NAME)) and not os.pa
     except Exception as e:
         print(f"Folder migration warning: {e}")
 
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+load_dotenv(os.path.join(BASE_DIR, ".env"), interpolate=False)
 
-# Limit Edge WebView2 memory consumption to keep total app RAM strictly under 250MB - 350MB
-os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
-    "--disable-background-networking "
-    "--disable-component-update "
-    "--disable-domain-reliability "
-    "--disable-sync "
-    "--disable-features=TranslateUI "
-    "--disable-renderer-backgrounding "
-    "--disable-ipc-flooding-protection "
-    "--metrics-recording-only "
-    "--no-first-run "
-    "--no-default-browser-check "
-    "--js-flags=--max-old-space-size=256 "
-    "--renderer-process-limit=2 "
-)
+from core import notifications, pixiv_notify, watchers
+from core.database import DatabaseManager, SettingsManager
+from core.preview_cache import evict as evict_preview
+from core.preview_cache import preview_path
+from core.preview_cache import ready_for as preview_ready_for
 
+
+# Respect administrator/user WebView2 flags. Heap/process limits and disabled
+# throttling were not a memory guarantee and could break large-image views.
+if sys.platform == "win32":
+    os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", (
+        "--disable-background-networking --disable-component-update "
+        "--disable-sync --disable-features=TranslateUI --metrics-recording-only "
+        "--no-first-run --no-default-browser-check"
+    ))
 
 # ponytail: a dead system proxy must never blackhole the local UI server
 for _k in ("no_proxy", "NO_PROXY"):
@@ -127,22 +129,22 @@ try:
 except Exception:
     pass
 
-import core.shared as shared
-from workers.rule34 import worker_rule34
-from workers.safebooru import worker_safebooru
-from workers.zerochan import worker_zerochan
-from workers.waifu_im import worker_waifu
-from workers.nekos_best import worker_nekos_best
+from core import shared
+from workers.anime_dl import worker_anime_dl
+from workers.danbooru import worker_danbooru
 from workers.gelbooru import worker_gelbooru
 from workers.gsbooru import worker_gsbooru
-from workers.nekos_life import worker_nekos_life
-from workers.yande import worker_yande
 from workers.konachan import worker_konachan
-from workers.danbooru import worker_danbooru
-from workers.sankaku import worker_sankaku
-from workers.anime_dl import worker_anime_dl
+from workers.nekos_best import worker_nekos_best
+from workers.nekos_life import worker_nekos_life
 from workers.pinterest_worker import worker_pinterest
 from workers.pixiv import worker_pixiv
+from workers.rule34 import worker_rule34
+from workers.safebooru import worker_safebooru
+from workers.sankaku import worker_sankaku
+from workers.waifu_im import worker_waifu
+from workers.yande import worker_yande
+from workers.zerochan import worker_zerochan
 
 # One-time: retitle any pre-update download tree (and the paths stored for it)
 # to the current folder naming policy. Idempotent, and it never deletes data.
@@ -156,9 +158,9 @@ DATABASE_DIR = os.path.join(BASE_DIR, "database")
 
 settings = SettingsManager(BASE_DIR)
 import core.database
+
 core.database._settings_instance = settings
 
-WAIFU_TAGS_DB = []
 WAIFU_TAG_MAP = {}
 
 if settings.get("use_proxy"):
@@ -175,9 +177,14 @@ else:
 
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 # ponytail: pin threading mode — gevent (installed) buffers emits from our native worker threads
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(app, async_mode="threading")
+from core.web_security import AccessGuard
+access_guard = AccessGuard(app.wsgi_app)
+app.wsgi_app = access_guard
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 from core.extensions import get_extension_manager
+
 extension_mgr = get_extension_manager(app, socketio)
 try:
     extension_mgr.load_all_enabled()
@@ -195,18 +202,24 @@ class _KeepAliveHandler(WSGIRequestHandler):
     # 6 connections across all of them.
     protocol_version = "HTTP/1.1"
 
-@app.before_request
-def restrict_browser_access():
-    # Only allow requests from our native pywebview desktop app
-    user_agent = request.headers.get("User-Agent", "")
-    if "RemsDlDesktopApp" not in user_agent:
-        return "Web browser access is permanently disabled. Please use the desktop application.", 403
+# headless/server mode: no pywebview window, the UI is served over HTTP to
+# real browsers — the desktop-only gates below (UA check, tab-close shutdown)
+# must not apply
+_HEADLESS = (
+    os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")
+    or any(arg in sys.argv for arg in ("--headless", "--server", "--no-window"))
+)
 
+
+
+_BROWSER_FALLBACK = False
 
 shutdown_timer = None
 
 
 def log_msg(worker_name, msg):
+    from core.privacy import redact
+    msg = redact(msg)
     print(f"[{worker_name.upper()}] {msg}", flush=True)
     try: socketio.emit("python_log", {"worker": worker_name, "msg": msg})
     except Exception: pass
@@ -217,9 +230,7 @@ def socketio_tag_handler(worker_name, filename, tags_list, artist_list, filepath
     try:
         DatabaseManager.add_image_history(worker_name, filename, tags_list, artist_list, filepath, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
         # Learn top tags from successfully downloaded images into local smart cache
-        for t in (tags_list or [])[:10]:
-            if isinstance(t, str) and len(t.strip()) >= 2:
-                DatabaseManager.add_learned_tag(worker_name, t.strip())
+        DatabaseManager.add_learned_tags(worker_name, (tags_list or [])[:10])
         socketio.emit("update_history")
     except Exception as e:
         print("Image Tag Save Error:", e)
@@ -299,22 +310,33 @@ def _live_tag_suggest(session, url, timeout=5):
     except Exception:
         return []
 
+_SESSIONS = {}
+_SESSIONS_LOCK = threading.Lock()
+
 def get_session(site, net_config):
+    """One Session per (site, proxy) — a fresh Session per autosuggest
+    keystroke paid a new TCP + TLS handshake every time; pooling reuses
+    the connection instead."""
+    use_proxy = bool(net_config.get("use_proxy"))
+    p = net_config.get("proxy_url") if use_proxy else ""
+    key = (site, use_proxy, p, bool(net_config.get("verify_tls", True)))
+    with _SESSIONS_LOCK:
+        cached = _SESSIONS.get(key)
+    if cached is not None:
+        return cached
     session = requests.Session()
-    if net_config.get("use_proxy"):
-        p = net_config.get("proxy_url")
+    if use_proxy:
         session.proxies = {"http": p, "https": p}
     else:
         session.proxies = {"http": "", "https": "", "no_proxy": "*"}
-    session.verify = net_config.get("verify_tls", False)
+    session.verify = net_config.get("verify_tls", True)
 
     if site == "safe": session.headers.update({"User-Agent": "Rems_Dl/5.0", "Accept": "application/json"})
     elif site == "zero":
         session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/json,*/*"})
         adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=2.0, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"]))
         session.mount("https://", adapter); session.mount("http://", adapter)
-    elif site in ["waifu", "neko"]: session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-    elif site == "yande": session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+    elif site in ["waifu", "neko"] or site == "yande": session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
     elif site == "kona":
         # same UA as the konachan worker itself — Mozilla gets 403 on tag.json
         session.headers.update({"User-Agent": "Rems_Dl/5.0 (by RemLover on GitHub)", "Accept": "application/json"})
@@ -327,6 +349,10 @@ def get_session(site, net_config):
     else:
         # Generic JSON-friendly UA for all booru/autocomplete fallbacks
         session.headers.update({"User-Agent": "Mozilla/5.0 (RemGodCatcher/5.1)", "Accept": "application/json"})
+    with _SESSIONS_LOCK:
+        if len(_SESSIONS) > 64:
+            _SESSIONS.clear()  # a settings change rekeys; never let it grow
+        _SESSIONS[key] = session
     return session
 
 
@@ -336,8 +362,19 @@ def index():
     # assets after an edit (this bit us once: fixed CSS invisible until purge)
     with open(os.path.join(STATIC_FOLDER, "index.html"), encoding="utf-8") as f:
         html = f.read()
-    for name in ("style.css", "script.js"):
-        v = int(os.path.getmtime(os.path.join(STATIC_FOLDER, name)))
+    # Render the durable effects choice before JavaScript or unrelated startup work.
+    mode = DatabaseManager.load_ui_config().get("performance_mode", "lite")
+    mode = "full" if mode == "full" else "lite"
+    html = html.replace('<head>', '<head>\n    <meta name="rems-performance-mode" content="' + mode + '">', 1)
+    html = html.replace('<html lang="en">', '<html lang="en" data-effects="' + mode + '">', 1)
+    label = "Full effects" if mode == "full" else "Lightweight (recommended)"
+    option = '<option value="' + mode + '">'
+    html = html.replace(option + label, option[:-1] + ' selected>' + label, 1)
+    for name in ("style.css", "script.js", "ux.js", "jxl.js", "jxl.css"):
+        if not os.path.isfile(os.path.join(STATIC_FOLDER, name)):
+            continue
+        st = os.stat(os.path.join(STATIC_FOLDER, name))
+        v = f"{st.st_mtime_ns}-{st.st_size}"
         html = html.replace(name + '"', f"{name}?v={v}\"")
     return Response(html, mimetype="text/html")
 
@@ -353,38 +390,32 @@ def custom_wallpaper(filename):
 
 @app.route("/api/upload_wallpaper", methods=["POST"])
 def upload_wallpaper():
+    import secrets
     custom_dir = os.path.join(BASE_DIR, "user_wallpapers")
     os.makedirs(custom_dir, exist_ok=True)
-
-    # native picker (KDE kdialog) returns a server-side path — the webview
-    # can't read arbitrary paths itself, so copy it in like an uploaded file
+    source = request.files.get("file")
     src_path = (request.form.get("path") or "").strip()
-    if src_path and "file" not in request.files:
-        import shutil
-        src = os.path.realpath(src_path)
-        if not os.path.isfile(src) or \
-                os.path.splitext(src)[1].lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-            return jsonify({"success": False, "error": "not an image file"}), 400
-        filename = "".join([c for c in os.path.basename(src) if c.isalpha() or c.isdigit() or c in " ._-"]).rstrip()
-        if not filename: filename = f"wallpaper_{random.randint(1000, 9999)}.png"
-        target = os.path.realpath(os.path.join(custom_dir, filename))
-        if not target.startswith(os.path.realpath(custom_dir) + os.sep):
-            return jsonify({"success": False, "error": "invalid filename"}), 400
-        shutil.copyfile(src, target)
+    try:
+        if source is not None:
+            content = source.stream.read(32 * 1024 * 1024 + 1)
+        elif src_path:
+            with open(src_path, "rb") as stream:
+                content = stream.read(32 * 1024 * 1024 + 1)
+        else:
+            return jsonify({"success": False, "error": "No image selected"}), 400
+        if len(content) > 32 * 1024 * 1024:
+            return jsonify({"success": False, "error": "Wallpaper exceeds 32 MiB"}), 413
+        with Image.open(io.BytesIO(content)) as image:
+            suffix = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}.get(image.format)
+            if not suffix:
+                raise ValueError("Unsupported image format")
+            image.verify()
+        filename = secrets.token_hex(16) + suffix
+        with open(os.path.join(custom_dir, filename), "xb") as stream:
+            stream.write(content)
         return jsonify({"success": True, "filename": filename})
-
-    if "file" not in request.files: return jsonify({"success": False, "error": "No file uploaded"}), 400
-    file = request.files["file"]
-    if file.filename == "": return jsonify({"success": False, "error": "No selected file"}), 400
-
-    filename = "".join([c for c in file.filename if c.isalpha() or c.isdigit() or c in " ._-"]).rstrip()
-    if not filename: filename = f"wallpaper_{random.randint(1000, 9999)}.png"
-
-    target = os.path.realpath(os.path.join(custom_dir, filename))
-    if not target.startswith(os.path.realpath(custom_dir) + os.sep):
-        return jsonify({"success": False, "error": "invalid filename"}), 400
-    file.save(target)
-    return jsonify({"success": True, "filename": filename})
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return jsonify({"success": False, "error": "Invalid wallpaper image"}), 400
 
 @app.route("/<path:path>")
 def static_files(path): return send_from_directory(STATIC_FOLDER, path)
@@ -631,6 +662,93 @@ def browse_file():
     return jsonify({"path": picked})
 
 
+def _pick_jxl_image():
+    try:
+        import webview
+        if webview.windows:
+            result = webview.windows[0].create_file_dialog(webview.FileDialog.OPEN,
+                file_types=('Images (*.png;*.jpg;*.jpeg;*.webp;*.jxl)',))
+            return result[0] if result else None
+    except Exception:
+        pass
+    if sys.platform.startswith('linux'):
+        import subprocess
+        for command in (['kdialog', '--getopenfilename', os.path.expanduser('~'), 'Images|*.png *.jpg *.jpeg *.webp *.jxl'],
+                        ['zenity', '--file-selection', '--file-filter=Images | *.png *.jpg *.jpeg *.webp *.jxl']):
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+                return result.stdout.strip() or None
+            except FileNotFoundError:
+                continue
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            return filedialog.askopenfilename(title='Choose image for JPEG XL conversion',
+                filetypes=[('Images', '*.png *.jpg *.jpeg *.webp *.jxl')]) or None
+        finally:
+            root.destroy()
+    except Exception:
+        return False
+
+
+def _jxl_outputs_changed():
+    _invalidate_fp_cache()
+    _TS_CACHE.clear()
+
+
+def _jxl_replace_index(source, target):
+    from core.gallery_store import get_store
+    from core.dedup_store import get_store as get_dedup_store
+    root = os.path.realpath(shared.MASTER_FOLDER)
+    old, new = str(source), str(target)
+    indexed = old.startswith(root + os.sep)
+    old_rel, new_rel = os.path.relpath(old, root), os.path.relpath(new, root)
+    store, dedup = get_store(), get_dedup_store()
+
+    def move(before, after, before_rel, after_rel):
+        with shared._GALLERY_LOCK:
+            if indexed:
+                store.relocate_filepath(before_rel, after_rel, before, after)
+            try:
+                dedup.relocate_filepath(before, after)
+            except Exception:
+                if indexed:
+                    store.relocate_filepath(after_rel, before_rel, after, before)
+                raise
+            if indexed and shared._gallery_cache['data'] is not None:
+                cache = shared._gallery_cache
+                before_name, after_name = os.path.basename(before), os.path.basename(after)
+                entry = cache['by_fn'].get(before_name)
+                expected = (before_rel.replace('\\', '/'), before.replace('\\', '/'))
+                if entry is None or str(entry.get('filepath') or '').replace('\\', '/') not in expected:
+                    # Rare stale lookup after an external rescan; normal batches
+                    # use the maintained filename lookup without a library walk.
+                    entry = next((item for item in cache['data'].get('images', [])
+                        if str(item.get('filepath') or '').replace('\\', '/') in expected), None)
+                if entry is not None:
+                    if not entry.get('downloaded_at'):
+                        entry['downloaded_at'] = datetime.fromtimestamp(os.path.getmtime(before)).isoformat()
+                    entry['filepath'], entry['filename'] = after_rel, after_name
+                    cache['by_fn'].pop(before_name, None)
+                    cache['by_fn'][after_name] = entry
+                    cache['filenames'].discard(before_name)
+                    cache['filenames'].add(after_name)
+        _jxl_outputs_changed()
+
+    move(old, new, old_rel, new_rel)
+    _preserve_converted_thumb(old, new)
+    return lambda: move(new, old, new_rel, old_rel)
+
+
+from core.jxl_routes import register as register_jxl_routes
+jxl_service = register_jxl_routes(app, lambda: shared.MASTER_FOLDER,
+    _pick_folder_desktop, _pick_jxl_image, _jxl_outputs_changed,
+    os.path.join(DATABASE_DIR, 'jxl_display_cache'), replaced=_jxl_replace_index)
+
+
 @app.route("/api/clipboard", methods=["POST"])
 def set_clipboard():
     """Copy file URIs or data to system clipboard across Windows, macOS, and Linux.
@@ -755,9 +873,9 @@ _PIXIV_OAUTH = {"verifier": ""}  # pending PKCE verifier, set by /api/pixiv/oaut
 def pixiv_oauth_start():
     """Start gallery-dl's `oauth:pixiv` flow: mint a PKCE challenge and hand
     the user the login URL to open in their browser."""
-    import secrets as _secrets
-    import hashlib as _hashlib
     import base64 as _base64
+    import hashlib as _hashlib
+    import secrets as _secrets
 
     verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(64)).rstrip(b"=").decode()
     challenge = _base64.urlsafe_b64encode(
@@ -773,7 +891,7 @@ def _pixiv_session(cookie=None):
     if settings.get("use_proxy"):
         p = settings.get("proxy_url") or "http://127.0.0.1:10808"
         session.proxies = {"http": p, "https": p}
-    session.verify = False
+    session.verify = settings.get("verify_tls", True)
     if cookie:
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -813,10 +931,10 @@ def pixiv_exchange_cookie():
     Cookie path: the login step runs server-side with a PHPSESSID cookie.
     Proxy is used only when use_proxy is on.
     """
+    import base64 as _base64
+    import hashlib as _hashlib
     import re as _re
     import secrets as _secrets
-    import hashlib as _hashlib
-    import base64 as _base64
 
     body = request.json or {}
     raw = (body.get("code") or body.get("cookie") or "").strip()
@@ -883,21 +1001,36 @@ def pixiv_exchange_cookie():
 WAIFU_TAGS_TTL = 7 * 86400  # ponytail: tags change slowly — live pull at most weekly
 
 
+_waifu_tag_memo = {"mtime": None, "tags": []}
+
+
 def _waifu_tag_cache():
     """(tags, fresh) from database/waifu.im_tags.json. Fresh = within TTL and
-    live-shaped — the bundled seed file has no imageCount and must refresh once."""
+    live-shaped — the bundled seed file has no imageCount and must refresh once.
+
+    Memoized per mtime: this runs on every autosuggest keystroke and re-opening
+    + re-parsing the file each time re-paid the parse for nothing.
+    """
     import json as _json
     path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            tags = _json.load(f)
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return [], False
+    if _waifu_tag_memo["mtime"] == mtime:
+        tags = _waifu_tag_memo["tags"]
+    else:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                tags = _json.load(f)
+        except Exception:
+            return [], False
         if not isinstance(tags, list) or not tags:
             return [], False
-        fresh = ((time.time() - os.path.getmtime(path)) < WAIFU_TAGS_TTL
-                 and any(isinstance(t, dict) and "imageCount" in t for t in tags))
-        return tags, fresh
-    except Exception:
-        return [], False
+        _waifu_tag_memo.update(mtime=mtime, tags=tags)
+    fresh = ((time.time() - mtime) < WAIFU_TAGS_TTL
+             and any(isinstance(t, dict) and "imageCount" in t for t in tags))
+    return tags, fresh
 
 
 def _save_waifu_tag_cache(tags):
@@ -916,7 +1049,7 @@ _waifu_refreshing = False  # single-flight: one background refresh at a time
 
 
 def _refresh_waifu_tags(net_config):
-    global WAIFU_TAGS_DB, WAIFU_TAG_MAP, _waifu_refreshing
+    global WAIFU_TAG_MAP, _waifu_refreshing
     _waifu_refreshing = True
     try:
         session = get_session("waifu", net_config)
@@ -930,7 +1063,6 @@ def _refresh_waifu_tags(net_config):
                 by_slug[t["slug"]] = t
             merged = list(by_slug.values())
             _save_waifu_tag_cache(merged)
-            WAIFU_TAGS_DB = merged
             WAIFU_TAG_MAP = {t["name"].lower(): t["slug"] for t in merged if t.get("name")}
             shared.WAIFU_TAG_MAP = WAIFU_TAG_MAP
     except Exception:
@@ -1329,6 +1461,32 @@ def get_nekosapi_suggestions():
     return jsonify(out[:50])
 
 _nekosapi_live_cache = {"tags": [], "at": 0.0}
+_nekosapi_refreshing = False
+
+def _harvest_nekosapi_tags(now, disk):
+    session = get_session("nekosapi", {})
+    seen = list(disk)
+    for offset in (0, 100, 200, 300, 400):
+        resp = session.get("https://api.nekosapi.com/v4/images",
+                           params={"limit": 100, "offset": offset}, timeout=10)
+        if resp.status_code != 200:
+            break
+        items = resp.json().get("items", [])
+        if not items:
+            break
+        for im in items:
+            for t in im.get("tags", []) or []:
+                if t and t not in seen:
+                    seen.append(t)
+    if seen:
+        try:
+            import json as _json
+            with open(os.path.join(DATABASE_DIR, "nekosapi_live_tags.json"),
+                      "w", encoding="utf-8") as f:
+                _json.dump({"tags": seen, "at": now}, f)
+        except Exception:
+            pass
+        _nekosapi_live_cache.update(tags=seen, at=now)
 
 def _refresh_nekosapi_live_tags(net_config):
     # ponytail: no tag catalogue endpoint exists, so harvest the
@@ -1337,44 +1495,31 @@ def _refresh_nekosapi_live_tags(net_config):
     now = _time.time()
     if _nekosapi_live_cache["tags"] and now - _nekosapi_live_cache["at"] < 86400:
         return _nekosapi_live_cache["tags"]
-    live_file = os.path.join(DATABASE_DIR, "nekosapi_live_tags.json")
-    disk = []
     try:
         import json as _json
-        with open(live_file, "r", encoding="utf-8") as f:
+        with open(os.path.join(DATABASE_DIR, "nekosapi_live_tags.json"),
+                  "r", encoding="utf-8") as f:
             saved = _json.load(f)
         disk = saved.get("tags", []) or []
         if disk and now - float(saved.get("at", 0)) < 86400:
             _nekosapi_live_cache.update(tags=disk, at=now)
             return disk
     except Exception:
-        pass
-    try:
-        session = get_session("nekosapi", net_config or {})
-        seen = list(disk)
-        for offset in (0, 100, 200, 300, 400):
-            resp = session.get("https://api.nekosapi.com/v4/images",
-                               params={"limit": 100, "offset": offset}, timeout=10)
-            if resp.status_code != 200:
-                break
-            items = resp.json().get("items", [])
-            if not items:
-                break
-            for im in items:
-                for t in im.get("tags", []) or []:
-                    if t and t not in seen:
-                        seen.append(t)
-        if seen:
+        disk = []
+    # the harvest is 5 blocking HTTP pages — never hold the request thread
+    # for that; serve yesterday's vocabulary and refresh in the background
+    global _nekosapi_refreshing
+    if not _nekosapi_refreshing:
+        _nekosapi_refreshing = True
+
+        def _bg():
+            global _nekosapi_refreshing
             try:
-                import json as _json
-                with open(live_file, "w", encoding="utf-8") as f:
-                    _json.dump({"tags": seen, "at": now}, f)
-            except Exception:
-                pass
-            _nekosapi_live_cache.update(tags=seen, at=now)
-            return seen
-    except Exception:
-        pass
+                _harvest_nekosapi_tags(now, disk)
+            finally:
+                _nekosapi_refreshing = False
+
+        threading.Thread(target=_bg, daemon=True).start()
     return disk
 
 @app.route("/api/tags/nekosbest", methods=["POST"])
@@ -1531,13 +1676,10 @@ def manage_favorites():
     return jsonify(DatabaseManager.load_favorites())
 
 
-EXTENSIONS_IMAGE = {'.jpg','.jpeg','.png','.webp','.gif','.bmp','.tiff','.tif'}
+EXTENSIONS_IMAGE = {'.jxl','.jpg','.jpeg','.png','.webp','.gif','.bmp','.tiff','.tif'}
 EXTENSIONS_VIDEO = {'.mp4','.webm','.mov','.avi','.mkv'}
 
-def _build_filepath_cache(force=False):
-    now = time.time()
-    if not force and _fp_cache["data"] is not None and now - _fp_cache["at"] < _FP_CACHE_TTL:
-        return _fp_cache["data"]
+def _walk_filepaths():
     cache = {}
     for root, _, files in os.walk(MASTER_FOLDER):
         for fn in files:
@@ -1545,8 +1687,28 @@ def _build_filepath_cache(force=False):
             if ext in EXTENSIONS_IMAGE or ext in EXTENSIONS_VIDEO:
                 cache[fn] = os.path.relpath(os.path.join(root, fn), MASTER_FOLDER)
     _fp_cache["data"] = cache
-    _fp_cache["at"] = now
+    _fp_cache["at"] = time.time()
     return cache
+
+_fp_refreshing = False
+
+def _build_filepath_cache(force=False):
+    global _fp_refreshing
+    data = _fp_cache["data"]
+    if force or data is None:
+        return _walk_filepaths()          # cold start: must walk once
+    # TTL expired: serve the stale copy right here — re-walking a 21k-file
+    # library inside the request blocks /api/gallery behind it every 30s
+    if time.time() - _fp_cache["at"] >= _FP_CACHE_TTL and not _fp_refreshing:
+        _fp_refreshing = True
+        def _bg():
+            global _fp_refreshing
+            try:
+                _walk_filepaths()
+            finally:
+                _fp_refreshing = False
+        threading.Thread(target=_bg, daemon=True).start()
+    return data                           # fresh or stale: never block the request
 
 # ponytail: precomputed sort keys — stale if a file's mtime changes (or the
 # master folder switches), only ever used for ordering, never for display
@@ -1727,11 +1889,14 @@ def _search_id_set(search):
     """
     terms = _parse_search_terms(search)
     keep = None
+    # Empty positive intersections cannot be revived by later terms.
     for q, neg, exact in terms:
         if neg:
             continue
         found = shared.search_tag_ids(q, exact)
         keep = found if keep is None else (keep & found)
+        if not keep:
+            return set()
     if keep is None:
         # every term was a negation: start from the whole library
         keep = shared.all_gallery_ids()
@@ -1775,7 +1940,12 @@ def get_gallery():
 
     gallery = shared.load_gallery()
     images = gallery.get("images", [])
-    fp_cache = _build_filepath_cache()
+    # Known paths need no recursive disk walk before answering a search.
+    # Startup/background refresh handles the normal repair case. Missing paths
+    # still use the existing synchronous recovery behavior.
+    fp_cache = _fp_cache['data']
+    if fp_cache is None:
+        fp_cache = _build_filepath_cache() if any(not i.get('filepath') for i in images) else {}
     # in-memory fix-up only: a GET must not rewrite gallery.json (2.5MB per
     # page view), and deleting filepath on a cache miss drops live entries —
     # the cache is keyed by bare filename, so a walk miss/collision is wrong
@@ -1865,7 +2035,10 @@ def get_extensions_catalog():
 @app.route("/api/extensions/install", methods=["POST"])
 def install_extension():
     try:
-        from core.extension_downloader import install_from_github, install_from_local_path
+        from core.extension_downloader import (
+            install_from_github,
+            install_from_local_path,
+        )
         data = request.json or {}
         repo = (data.get("repo") or "").strip()
         ext_id = (data.get("id") or "").strip()
@@ -1951,7 +2124,9 @@ def delete_gallery_image_by_name():
         gallery = shared.load_gallery()
         for i, img in enumerate(gallery["images"]):
             if img.get("filename") == fn:
-                full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
+                full_path = os.path.realpath(os.path.join(shared.MASTER_FOLDER, img.get("filepath", "")))
+                if not full_path.startswith(os.path.realpath(shared.MASTER_FOLDER) + os.sep):
+                    return jsonify({"success": False, "error": "Invalid gallery path"}), 403
                 gallery["images"].pop(i)
                 # delete one row (and its tags) — a full save would rewrite
                 # every other row just to drop this one
@@ -1989,7 +2164,17 @@ def gallery_file(filepath):
     if os.path.isfile(full):
         # no-cache: stored but revalidated — a deleted file must 404 instead of
         # serving the day-old cached copy, and revalidation is a cheap 304
-        resp = send_file(full, conditional=True)
+        if full.lower().endswith('.jxl') and request.args.get('download') != '1':
+            try:
+                from core.jxl_routes import browser_png
+                compatible = browser_png(full, os.path.join(DATABASE_DIR, 'jxl_display_cache'))
+                resp = send_file(compatible, mimetype='image/png', conditional=True)
+            except Exception:
+                return 'Unable to decode JXL. Install requirements-jxl.txt and restart.', 415
+        else:
+            resp = send_file(full, conditional=True,
+                             as_attachment=request.args.get('download') == '1',
+                             mimetype='image/jxl' if full.lower().endswith('.jxl') else None)
         resp.headers["Cache-Control"] = "private, no-cache"
         return resp
     return "Image was deleted", 404
@@ -2011,24 +2196,131 @@ def gallery_preview(filepath):
     except Exception:
         dst = full  # src vanished mid-check rather than stall, serve original
     if dst is None:
-        _preview_warm_pool.submit(_warm_preview, full)
+        _queue_preview_warm(full)
         return "", 204
     resp = send_file(dst, mimetype="video/mp4", conditional=True)
     resp.headers["Cache-Control"] = "private, no-cache"
     return resp
+
+@app.route("/api/gallery/display/<path:filepath>")
+def gallery_display(filepath):
+    # Fit-to-screen copy (long edge <= 2560) for the viewer: a 64MB PNG costs
+    # 70ms to ship over loopback but _seconds_ for WebKitGTK to decode, so the
+    # viewer shows this small JPEG first while the original decodes in the
+    # background. Generated inline per request — neighbor prefetches land on
+    # separate request threads, so several originals decode across cores in
+    # parallel. Cached on disk under display_cache (evicted with the file).
+    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
+    if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
+        return "Forbidden", 403
+    if not os.path.isfile(full):
+        return "Image was deleted", 404
+    cache_path = _display_cache_path(full)
+    if os.path.exists(cache_path):
+        resp = send_file(cache_path, conditional=True)
+        resp.headers["Cache-Control"] = "private, no-cache"
+        return resp
+    copy = _generate_display_full(full)
+    if not copy and full.lower().endswith('.jxl'):
+        try:
+            from core.jxl_routes import browser_png
+            copy = browser_png(full, os.path.join(DATABASE_DIR, 'jxl_display_cache'))
+        except Exception:
+            return 'Unable to decode JXL. Install requirements-jxl.txt and restart.', 415
+    prefer = copy or full  # unresizable (gif/apng/animated/small) → serve original
+    resp = send_file(prefer, conditional=True)
+    resp.headers["Cache-Control"] = "private, no-cache"
+    return resp
+
+
+# one small pool for the PIL fit-to-screen generation, plus one future per
+# file: a rapid arrow-hold in the viewer used to queue a full decode per
+# flip on every request thread and pinned the CPU — the gallery froze and
+# paging starved. 2 workers keep UI work responsive; duplicate requests for
+# the same file share a single job.
+_display_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="displaygen")
+_display_inflight = {}
+_display_inflight_lock = threading.RLock()
+
+
+def _generate_display_full(full):
+    """(dst) — the fit-to-screen copy path for `full`, deduped concurrent
+    requests; None when unresizable or generation failed (route serves the
+    original instead)."""
+    fut = submit_shared(_display_pool, _display_inflight,
+                        _display_inflight_lock, full, _make_display_copy)
+    try:
+        return fut.result()  # registry lock is released before waiting
+    except Exception:
+        return None
+
+
+def _make_display_copy(full):
+    cache_path = _display_cache_path(full)
+    if os.path.exists(cache_path):
+        return cache_path
+    ext = os.path.splitext(full)[1].lower()
+    if ext in EXTENSIONS_VIDEO:
+        return None
+    try:
+        with Image.open(full) as src:
+            if getattr(src, "is_animated", False) or getattr(src, "n_frames", 1) > 1:
+                return None
+            w, h = src.size
+            scale = VIEWER_DISPLAY_LONG_EDGE / max(w, h)
+            if scale >= 1:
+                return None  # already small enough for the raw fit-to-screen
+            # EXIF rotate: browsers honor rotation on the original but PIL
+            # saves the unrotated pixels, so portrait shots would display
+            # sideways in the viewer until the original swaps in
+            try:
+                src = ImageOps.exif_transpose(src)
+            except Exception:
+                pass
+            alpha = "A" in src.getbands() or "transparency" in src.info
+            if alpha and src.mode != "RGBA":
+                src = src.convert("RGBA")
+            w, h = src.size
+            scale = VIEWER_DISPLAY_LONG_EDGE / max(w, h)
+            im = src.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                            Image.Resampling.BILINEAR)
+    except Exception:
+        return None
+    if not alpha and im.mode != "RGB":
+        im = im.convert("RGB")
+    # per-thread tmp + atomic replace: concurrent request threads never read
+    # a torn file (same pattern as _cached_thumb)
+    tmp = f"{cache_path}.{threading.get_ident()}.tmp"
+    try:
+        if alpha:
+            im.save(tmp, format="PNG", compress_level=3)
+        else:
+            im.save(tmp, format="JPEG", quality=88)
+        os.replace(tmp, cache_path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return None
+    return cache_path
+
 
 @app.route("/api/thumb_by_name/<filename>")
 def thumb_by_name(filename):
     full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
-    # disk cache before any walk/isfile — a cached name answers instantly
-    cache_path = _thumb_cache_path(full)
-    if os.path.exists(cache_path):
-        return _send_thumb(cache_path)
+    png_cache = _thumb_cache_path(full, ".png")
+    if not os.path.isfile(full) and os.path.isfile(png_cache):
+        return _send_thumb(png_cache, "image/png")
+    if os.path.isfile(full):
+        cached, mime = _thumb_want(full)
+        if os.path.isfile(cached):
+            return _send_thumb(cached, mime)
     if not os.path.isfile(full):
         # look it up in the cached walk (same 30s TTL as the gallery) — no os.walk per miss
-        rel = _build_filepath_cache().get(filename)
+        rel = _build_filepath_cache().get(os.path.basename(filename))
         if rel:
             full = os.path.realpath(os.path.join(MASTER_FOLDER, rel))
         if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep) or not os.path.isfile(full):
@@ -2042,10 +2334,25 @@ os.makedirs(THUMB_CACHE, exist_ok=True)
 # seconds when a muted <video> with an audio track is stopped (see preview_cache)
 PREVIEW_CACHE_DIR = os.path.join(DATABASE_DIR, "preview_cache")
 os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
+# fit-to-screen JPEGs for the viewer's instant open (see gallery_display route)
+DISPLAY_CACHE_DIR = os.path.join(DATABASE_DIR, "display_cache")
+os.makedirs(DISPLAY_CACHE_DIR, exist_ok=True)
+VIEWER_DISPLAY_LONG_EDGE = 2560
 
 
-def _thumb_cache_path(full):
-    return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + ".jpg")
+def _display_cache_path(full):
+    st = os.stat(full)
+    # Version the derived format and source bytes, not only the pathname.
+    identity = f"display-v2:{os.path.realpath(full)}:{st.st_size}:{st.st_mtime_ns}"
+    suffix = ".png" if _thumb_alpha_hint(full) else ".jpg"
+    return os.path.join(DISPLAY_CACHE_DIR, hashlib.sha256(identity.encode()).hexdigest()[:24] + suffix)
+
+
+def _thumb_cache_path(full, thumb_ext=".jpg"):
+    # .png and .jpg are separate cache files for the same key: an old
+    # flattened JPEG of a transparent source must never be mistaken for a
+    # transparency-preserving thumbnail
+    return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + thumb_ext)
 
 
 def _evict_caches(full):
@@ -2056,40 +2363,150 @@ def _evict_caches(full):
         evict_preview(full, PREVIEW_CACHE_DIR)
     except Exception:
         pass
+    for thumb_ext in (".png", ".jpg", ".json"):
+        try:
+            os.remove(_thumb_cache_path(full, thumb_ext))
+        except OSError:
+            pass
     try:
-        os.remove(_thumb_cache_path(full))
+        os.remove(_display_cache_path(full))
     except OSError:
         pass
 
 
-def _cached_thumb(full):
-    """300px JPEG on disk under thumb_cache — survives restarts, nothing in RAM.
-    Keyed by full path only (as the original cache was): an edited file keeps
-    its old thumb until the cache file is deleted. Exceptions aren't cached,
-    so a mid-download read retries next request."""
-    cache_path = _thumb_cache_path(full)
-    if os.path.exists(cache_path):
-        return cache_path
+def _thumb_alpha_hint(full):
+    """Cheap header-only alpha probe: 'A' band or palette transparency.
+    False on unreadable files — a broken header also defeats generation
+    and falls through to the error path."""
+    try:
+        with Image.open(full) as im:
+            return "A" in im.getbands() or "transparency" in im.info
+    except Exception:
+        return False
+
+
+def _thumb_source_version(full):
+    st = os.stat(full)
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+
+
+def _remember_thumb_kind(full, suffix):
+    from core.atomic_io import write_json
+    try:
+        write_json(_thumb_cache_path(full, ".json"), {
+            "version": _thumb_source_version(full), "suffix": suffix})
+    except OSError:
+        pass  # A missing hint may cost a header probe, never a thumbnail.
+
+
+def _thumb_want(full):
+    """Restore the cached format without opening the source on every launch.
+
+    Old JPEG thumbnails still get a one-time alpha check, so legacy flattened
+    transparent sources regenerate as PNG. Hints expire if the source changes.
+    """
+    import json
+    try:
+        with open(_thumb_cache_path(full, ".json"), encoding="utf-8") as stream:
+            hint = json.load(stream)
+        suffix = hint.get("suffix")
+        if suffix in (".png", ".jpg") and hint.get("version") == _thumb_source_version(full):
+            return _thumb_cache_path(full, suffix), "image/png" if suffix == ".png" else "image/jpeg"
+    except (OSError, ValueError, AttributeError):
+        pass
+    if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
+        suffix = ".jpg"
+    elif os.path.isfile(_thumb_cache_path(full, ".png")):
+        suffix = ".png"  # Only alpha-preserving thumbnails use this suffix.
+    else:
+        suffix = ".png" if _thumb_alpha_hint(full) else ".jpg"
+    _remember_thumb_kind(full, suffix)
+    return _thumb_cache_path(full, suffix), "image/png" if suffix == ".png" else "image/jpeg"
+
+
+def _preserve_converted_thumb(before, after):
+    """Carry a ready thumbnail to the converted path without decoding pixels."""
+    import shutil
+    temporary = None
+    try:
+        # Do not open an uncached source just to decide that there is no cache.
+        if not any(os.path.isfile(_thumb_cache_path(before, ext)) for ext in (".png", ".jpg")):
+            return
+        cached, _mime = _thumb_want(before)
+        if not os.path.isfile(cached):
+            return
+        suffix = os.path.splitext(cached)[1]
+        target = _thumb_cache_path(after, suffix)
+        temporary = target + "." + str(threading.get_ident()) + ".tmp"
+        shutil.copyfile(cached, temporary)
+        os.replace(temporary, target)
+        _remember_thumb_kind(after, suffix)
+    except OSError:
+        pass  # Cache failure must not break a verified image conversion.
+    finally:
+        if temporary and os.path.exists(temporary):
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+
+
+def _generate_thumb_bytes(full):
+    """(bytes, cache_ext, mime): 300px thumb. PNG (alpha kept) for transparent
+    sources — the RGB-conversion path exposed palette/RGBA hidden background
+    colors (the green thumbnails); JPEG otherwise, exact old pipeline."""
     ext = os.path.splitext(full)[1].lower()
     if ext in EXTENSIONS_VIDEO:
         import subprocess
-        proc = subprocess.run(["ffmpeg", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+        proc = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-filter_threads", "1", "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
                               capture_output=True, timeout=10, check=False)
         if proc.returncode == 0 and proc.stdout:
-            data = proc.stdout
-        else:
-            raise RuntimeError("ffmpeg frame extraction failed")
-    else:
-        img = Image.open(full)
+            return proc.stdout, ".jpg", "image/jpeg"
+        raise RuntimeError("ffmpeg frame extraction failed")
+    with Image.open(full) as source:
+        img = source
+        # EXIF rotate before framing; orientation check is a lazy header read so
+        # JPEG's draft() fast path below survives for unrotated files
+        try:
+            orientation = img.getexif().get(0x0112)
+        except Exception:
+            orientation = None
+        if orientation:
+            try:
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+        alpha = "A" in img.getbands() or "transparency" in img.info
+        if alpha:
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            # thumbnail() keeps the source aspect ratio
+            img.thumbnail((300, 300), Image.Resampling.BILINEAR)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue(), ".png", "image/png"
         # ponytail: cap memory usage for very large images; decompress bomb protection
         img.draft('RGB', (300, 300))
-        if img.mode in ('RGBA', 'P', 'LA'):
+        if img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
         # BILINEAR: ~2x faster than LANCZOS at 300px, invisible at thumbnail size
         img.thumbnail((300, 300), Image.Resampling.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format='JPEG', quality=80)
-        data = buf.getvalue()
+        return buf.getvalue(), ".jpg", "image/jpeg"
+
+
+def _cached_thumb(full):
+    """300px thumb on disk under thumb_cache — survives restarts, nothing in
+    RAM. Keyed by full path only (as the original cache was): an edited file
+    keeps its old thumb until the cache file is deleted. Exceptions aren't
+    cached, so a mid-download read retries next request. Returns
+    (cache_path, mime); .png and .jpg caches never collide on one key."""
+    cache_path, mime = _thumb_want(full)
+    if os.path.isfile(cache_path):
+        return cache_path, mime
+    data, thumb_ext, mime = _generate_thumb_bytes(full)
+    cache_path = _thumb_cache_path(full, thumb_ext)
     # per-thread tmp + atomic replace: concurrent warmers never read a torn file
     tmp = f"{cache_path}.{threading.get_ident()}.tmp"
     try:
@@ -2102,17 +2519,24 @@ def _cached_thumb(full):
         except OSError:
             pass
         raise
-    return cache_path
+    _remember_thumb_kind(full, thumb_ext)
+    return cache_path, mime
 
 
 # gallery page returns, then the browser starts asking for its thumbs —
-# generate them onto disk here first (in the background, more workers than
-# the browser's 6 connections) so those requests hit the cache instead of
+# generate them onto disk here first with a bounded background pool, so
+# browser requests share existing work and hit the cache instead of
 # paying ~100-300ms of PNG decode each. Failures aren't cached, so the
 # browser request still retries.
-_thumb_warm_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="thumbwarm")
+_thumb_warm_pool = ThreadPoolExecutor(max_workers=max(1, min(2, os.cpu_count() or 2)), thread_name_prefix="thumbwarm")
 # own pool: a remux can run minutes (ffmpeg timeout), never block thumb workers
 _preview_warm_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="previewwarm")
+# in-flight thumb decodes: warm pool + the 6 browser connections hit the same
+# page seconds apart — without this, every PNG is decoded twice per fresh page
+_thumb_inflight = {}
+_thumb_inflight_lock = threading.RLock()
+_preview_inflight = {}
+_preview_inflight_lock = threading.RLock()
 
 def _warm_preview(full):
     try:
@@ -2121,18 +2545,25 @@ def _warm_preview(full):
         print("Preview remux failed:", full, e)
 
 
+def _queue_thumb_warm(full, background=False):
+    return submit_shared(_thumb_warm_pool, _thumb_inflight,
+                         _thumb_inflight_lock, full, _warm_thumb,
+                         max_pending=32 if background else None)
+
+
+def _queue_preview_warm(full):
+    return submit_shared(_preview_warm_pool, _preview_inflight,
+                         _preview_inflight_lock, full, _warm_preview,
+                         max_pending=8)
+
+
 def _warm_thumb(full):
     try:
         _cached_thumb(full)
     except Exception:
         pass
-    # pre-remux audio-free previews alongside thumbs so the first hover
-    # doesn't pay the ffmpeg stream-copy inline
-    if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
-        try:
-            preview_path(full, PREVIEW_CACHE_DIR)
-        except Exception:
-            pass
+    # Audio probes/remuxes belong to the separate preview pool. Thumbnail
+    # requests must never wait for minutes of preview work.
 
 
 def warm_page_thumbs(images):
@@ -2140,23 +2571,38 @@ def warm_page_thumbs(images):
         fp = img.get("filepath")
         if fp:
             afp = os.path.join(MASTER_FOLDER, fp)
-            _thumb_warm_pool.submit(_warm_thumb, afp)
-            # remux in the background now, so the first hover finds the cache
-            if os.path.splitext(fp)[1].lower() in EXTENSIONS_VIDEO:
-                _preview_warm_pool.submit(_warm_preview, afp)
+            _queue_thumb_warm(afp, background=True)
+            # Video conversion starts on hover, not for every search result.
 
 
-def _send_thumb(cache_path):
-    """Serve the disk-cached 300px JPEG. no-cache: the browser keeps the copy
+def _send_thumb(cache_path, mimetype="image/jpeg"):
+    """Serve the disk-cached 300px thumb. no-cache: the browser keeps the copy
     but revalidates, so a deleted source 404s instead of showing a ghost."""
-    resp = send_file(cache_path, mimetype="image/jpeg", conditional=True)
+    resp = send_file(cache_path, mimetype=mimetype, conditional=True)
     resp.headers["Cache-Control"] = "private, no-cache"
     return resp
 
 
+def _serve_stale_thumb(full):
+    """Deleted-source fallback: any existing thumb (old JPEG included) still
+    beats a broken icon."""
+    for path, mime in ((_thumb_cache_path(full, ".png"), "image/png"),
+                       (_thumb_cache_path(full, ".jpg"), "image/jpeg")):
+        if os.path.exists(path):
+            return _send_thumb(path, mime)
+    return "Image was deleted", 404
+
+
 def redirect_to_thumb(full_path):
     try:
-        return _send_thumb(_cached_thumb(full_path))
+        if os.path.isfile(full_path):
+            want, mime = _thumb_want(full_path)
+            if os.path.exists(want):
+                return _send_thumb(want, mime)
+            path, mime = _cached_thumb(full_path)
+        else:
+            return _serve_stale_thumb(full_path)
+        return _send_thumb(path, mime)
     except Exception:
         return "Thumbnail generation failed", 415
 
@@ -2166,15 +2612,23 @@ def gallery_thumb(filepath):
     if not full.startswith(os.path.realpath(MASTER_FOLDER) + os.sep):
         return "Forbidden", 403
     # ponytail: cached thumb still beats a broken icon when the source was
-    # deleted outside the app, so the cache is checked before isfile
-    cache_path = _thumb_cache_path(full)
-    if os.path.exists(cache_path):
-        return _send_thumb(cache_path)
+    # deleted outside the app, so the stale fallback runs before isfile
     if not os.path.isfile(full):
-        return "Image was deleted", 404
-
+        return _serve_stale_thumb(full)
+    want, mime = _thumb_want(full)
+    # the want-path check covers reruns; a stale flattened JPEG of an alpha
+    # source lives on .jpg and is bypassed here by construction
+    if os.path.exists(want):
+        return _send_thumb(want, mime)
     try:
-        return _send_thumb(_cached_thumb(full))
+        # decode is already queued by warm_page_thumbs for this page — wait on
+        # that single job instead of decoding the same PNG again on this
+        # request thread (a missing entry is impossible in practice, but the
+        # fallback submits so a stray request still generates)
+        _queue_thumb_warm(full).result()
+        if os.path.exists(want):
+            return _send_thumb(want, mime)
+        raise RuntimeError("thumb generation failed")
     except Exception as e:
         if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
             return "", 415
@@ -2232,7 +2686,9 @@ def delete_gallery_image():
         gallery = shared.load_gallery()
         for i, img in enumerate(gallery["images"]):
             if img.get("id") == img_id:
-                full_path = os.path.join(shared.MASTER_FOLDER, img.get("filepath", ""))
+                full_path = os.path.realpath(os.path.join(shared.MASTER_FOLDER, img.get("filepath", "")))
+                if not full_path.startswith(os.path.realpath(shared.MASTER_FOLDER) + os.sep):
+                    return jsonify({"success": False, "error": "Invalid gallery path"}), 403
                 fn = img.get("filename", "")
                 gallery["images"].pop(i)
                 # one row (and its tags) — a full save would rewrite every
@@ -2354,28 +2810,32 @@ def _scan_and_merge_gallery():
                 by_fn[fn] = entry
                 count_added += 1
     # drop duplicate filenames (a download landing mid-scan can double-add) —
-    # keep the twin carrying the tags, never the empty rebuild
-    seen = {}
-    unique = []
-    for img in gallery["images"]:
-        fn = img.get("filename")
-        prev = seen.get(fn)
-        if prev is None:
-            seen[fn] = img
-            unique.append(img)
-        else:
-            # compare STORED tags on both sides: a resident copy reads as 0,
-            # so comparing it against a twin's tags would swap real tags out
-            # for nothing (or for a poorer folder-name set)
-            t_img = _stored(img)
-            t_prev = _stored(prev)
-            if shared.count_tags(t_img) > shared.count_tags(t_prev):
-                prev["tags"] = t_img
-            if not prev.get("filepath") and img.get("filepath"):
-                prev["filepath"] = img["filepath"]
-            if img.get("favourite"):
-                prev["favourite"] = True
-    gallery["images"] = unique
+    # keep the twin carrying the tags, never the empty rebuild.
+    # Dedupe + rebind run under the gallery lock: add_to_gallery inserts into
+    # this same list, and an insert landing mid-iteration would be dropped by
+    # the rebind below and pruned by the caller's save.
+    with shared._GALLERY_LOCK:
+        seen = {}
+        unique = []
+        for img in gallery["images"]:
+            fn = img.get("filename")
+            prev = seen.get(fn)
+            if prev is None:
+                seen[fn] = img
+                unique.append(img)
+            else:
+                # compare STORED tags on both sides: a resident copy reads as 0,
+                # so comparing it against a twin's tags would swap real tags out
+                # for nothing (or for a poorer folder-name set)
+                t_img = _stored(img)
+                t_prev = _stored(prev)
+                if shared.count_tags(t_img) > shared.count_tags(t_prev):
+                    prev["tags"] = t_img
+                if not prev.get("filepath") and img.get("filepath"):
+                    prev["filepath"] = img["filepath"]
+                if img.get("favourite"):
+                    prev["favourite"] = True
+        gallery["images"] = unique
     return gallery, count_added, count_fixed, count_checked
 
 def _hash_missing_dedup(gallery):
@@ -2402,12 +2862,19 @@ def _hash_missing_dedup(gallery):
         print("Dedup backfill error:", e)
         return 0
 
+# one scan at a time: a manual rescan racing the deferred startup scan runs
+# two unlocked walkers over the same resident list
+_rescan_gate = threading.Lock()
+
 @app.route("/api/gallery/rescan", methods=["POST"])
 def rescan_gallery():
     # os.walk the whole library + dedup hashing takes seconds — a sync
     # request holds the connection the whole time; run it in a thread and
     # announce completion over the existing socket
     def _rescan():
+        if not _rescan_gate.acquire(blocking=False):
+            socketio.emit("gallery_rescan_done", {"success": True, "skipped": True})
+            return
         try:
             gallery, count_added, count_fixed, _checked = _scan_and_merge_gallery()
             _invalidate_fp_cache()
@@ -2428,6 +2895,8 @@ def rescan_gallery():
         except Exception as e:
             print("Rescan error:", e)
             socketio.emit("gallery_rescan_done", {"success": False})
+        finally:
+            _rescan_gate.release()
     threading.Thread(target=_rescan, daemon=True).start()
     return jsonify({"success": True, "started": True})
 
@@ -2435,10 +2904,12 @@ def rescan_gallery():
 def import_gallery_from_history():
     from core.shared import tags_dict_from_lists
     hist = DatabaseManager.load_image_history()
+    # the filepath walk can scan the whole library — keep it outside the
+    # gallery lock so downloads/favourites don't stall behind filesystem I/O
+    fp_cache = _build_filepath_cache()
     with shared._GALLERY_LOCK:
         gallery = shared.load_gallery()
         existing = {i["filename"] for i in gallery["images"]}
-        fp_cache = _build_filepath_cache()
         count = 0
         for entry in hist:
             fn = entry.get("filename", "")
@@ -2466,7 +2937,12 @@ def import_gallery_from_history():
 @app.route("/api/ui_config", methods=["GET", "POST"])
 def manage_ui_config():
     if request.method == "POST":
-        DatabaseManager.save_ui_config(request.json)
+        changes = request.get_json(silent=True)
+        if not isinstance(changes, dict):
+            return jsonify({"error": "UI settings must be an object"}), 400
+        if "performance_mode" in changes and changes["performance_mode"] not in ("lite", "full"):
+            return jsonify({"error": "Invalid visual effects mode"}), 400
+        DatabaseManager.update_ui_config(changes)
         return jsonify({"success": True})
     return jsonify(DatabaseManager.load_ui_config())
 
@@ -2474,6 +2950,8 @@ def manage_ui_config():
 # ==========================================
 # === PIXIV FOLLOWING NOTIFICATIONS ===
 # ==========================================
+# note: covered by test_pixiv_notifications even though the UI reads counts
+# via /api/notifications?source=pixiv — keep the dedicated surface
 @app.route("/api/pixiv/notifications", methods=["GET"])
 def pixiv_notifications_get():
     items = pixiv_notify.load_items()
@@ -2534,7 +3012,7 @@ def notifications_get():
         "items": items if source else [],
         "unread": unread,
         "unread_by_source": by,
-        "status": (NOTIF_STATUS.get(source) or (lambda: {}))(),
+        "status": (NOTIF_STATUS.get(source) or (dict))(),
     })
 
 
@@ -2605,26 +3083,39 @@ _NOTIF_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
 
 def _notif_thumb(url, referer, allow_host):
     """Fetch a hotlink-protected thumbnail server-side (shared by sources)."""
-    from urllib.parse import urlparse
-    host = urlparse(url).hostname or ""
-    if host != allow_host and not host.endswith("." + allow_host):
-        return jsonify({"error": "bad host"}), 400
+    from urllib.parse import urlsplit
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        if (parsed.scheme != "https" or parsed.username or parsed.password
+                or parsed.port not in (None, 443)
+                or (host != allow_host and not host.endswith("." + allow_host))):
+            return jsonify({"error": "bad thumbnail URL"}), 400
+    except ValueError:
+        return jsonify({"error": "bad thumbnail URL"}), 400
     cached = _NOTIF_THUMB_CACHE.get(url)
     if cached:
         return Response(cached[0], mimetype=cached[1])
     try:
-        r = requests.get(url, timeout=15, headers={
-            "Referer": referer,
-            "User-Agent": "Mozilla/5.0",
-        })
-        r.raise_for_status()
+        # Never follow a provider redirect to an arbitrary local/network service.
+        with requests.get(url, timeout=15, headers={"Referer": referer,
+                          "User-Agent": "Mozilla/5.0"}, stream=True, allow_redirects=False, verify=settings.get("verify_tls", True)) as r:
+            if r.status_code != 200:
+                raise ValueError("Unexpected thumbnail response")
+            ctype = (r.headers.get("Content-Type") or "").split(";")[0].lower()
+            if ctype not in ("image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"):
+                raise ValueError("Unexpected thumbnail type")
+            payload = bytearray()
+            for chunk in r.iter_content(65536):
+                payload.extend(chunk)
+                if len(payload) > 1024 * 1024:
+                    raise ValueError("Thumbnail too large")
     except Exception:
         return jsonify({"error": "thumbnail fetch failed"}), 502
-    if len(_NOTIF_THUMB_CACHE) >= 200:
+    if len(_NOTIF_THUMB_CACHE) >= 64:
         _NOTIF_THUMB_CACHE.pop(next(iter(_NOTIF_THUMB_CACHE)))
-    ctype = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0]
-    _NOTIF_THUMB_CACHE[url] = (r.content, ctype)
-    return Response(r.content, mimetype=ctype)
+    _NOTIF_THUMB_CACHE[url] = (bytes(payload), ctype)
+    return Response(bytes(payload), mimetype=ctype)
 
 
 @app.route("/api/pixiv/notif_thumb")
@@ -2658,16 +3149,13 @@ def handle_connect():
 @socketio.on("disconnect")
 def handle_disconnect():
     global shutdown_timer
+    if _HEADLESS:
+        return  # server mode serves real browsers — a tab closing is normal
     print("Browser Tab Closed! Shutting down in 3 seconds if not reconnected...")
 
     def shutdown_server():
         print(">>> No active tabs. Killing Rems Dl Server... <<<")
-        # os._exit skips atexit — flush the batched gallery writes or the
-        # last N downloads are lost
-        try:
-            shared.flush_gallery()
-        except Exception:
-            pass
+        jxl_service.close()
         try:
             DatabaseManager.flush_image_history()
         except Exception:
@@ -2682,12 +3170,9 @@ def handle_disconnect():
     shutdown_timer.start()
 
 def _flush_before_sigterm(signum, frame):
-    # SIGTERM (systemctl stop, kill) skips atexit: flush the batched writes
-    # or the next scan rebuilds those records from the folder name alone
-    try:
-        shared.flush_gallery()
-    except Exception:
-        pass
+    jxl_service.close()
+    # SIGTERM (systemctl stop, kill): flush the buffered image history or
+    # the next scan rebuilds those records from the folder name alone
     try:
         DatabaseManager.flush_image_history()
     except Exception:
@@ -2813,7 +3298,8 @@ def _dispatch_worker(data):
         worker_pixiv(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False))
     elif worker == "eshuushuu":
         from workers.eshuushuu import worker_eshuushuu
-        worker_eshuushuu(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), [], data.get("user_id", ""), net_config)
+        worker_eshuushuu(data.get("tag", ""), _safe_int(data.get("limit", 50), 50),
+                         data.get("exclusions", []), data.get("user_id", ""), net_config)
     elif worker == "nekosapi":
         from workers.nekosapi import worker_nekosapi
         worker_nekosapi(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), net_config)
@@ -2822,7 +3308,10 @@ def _dispatch_worker(data):
             from workers.nekosia import worker_nekosia
             worker_nekosia(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", "safe"), net_config)
         except ImportError:
-            pass # در صورتی که بعدا خواستی فایل nekosia.py رو بسازی ارور نده
+            # the job slot was already taken — dying silently here hands an
+            # occupied slot to the queue with zero user feedback
+            shared.log_msg("nekosia", "worker module missing — install it to use this source")
+            shared.socketio_emit("worker_finished", shared.finish_report("nekosia", 0, 0, 0, False, lambda *_: None))
 
 @socketio.on("get_queue")
 def handle_get_queue():
@@ -2992,23 +3481,31 @@ def _heal_bare_gallery_tags():
 
 
 def startup_rescan():
-    gallery, count, _fixed, checked = _scan_and_merge_gallery()
-    _invalidate_fp_cache()
-    if count:
-        print(f"Rescanned {count} new images into gallery")
+    if not _rescan_gate.acquire(blocking=False):
+        return  # a manual rescan is already running — it covers this pass
+    try:
+        gallery, count, _fixed, checked = _scan_and_merge_gallery()
+        _invalidate_fp_cache()
+        if count:
+            print(f"Rescanned {count} new images into gallery")
 
-    # prune entries whose file no longer exists (deleted manually or by cleanups)
-    kept = [i for i in gallery["images"]
-            if os.path.isfile(os.path.join(MASTER_FOLDER, i.get("filepath", "")))]
-    removed = len(gallery["images"]) - len(kept)
-    if removed:
-        gallery["images"] = kept
-        print(f"Pruned {removed} dead gallery entries")
+        # prune entries whose file no longer exists (deleted manually or by
+        # cleanups) — the rebind + save must not interleave with
+        # add_to_gallery's insert or the download's row gets pruned with it
+        with shared._GALLERY_LOCK:
+            kept = [i for i in gallery["images"]
+                    if os.path.isfile(os.path.join(MASTER_FOLDER, i.get("filepath", "")))]
+            removed = len(gallery["images"]) - len(kept)
+            if removed:
+                gallery["images"] = kept
+                print(f"Pruned {removed} dead gallery entries")
 
-    # _fixed/checked are entry mutations too — skipping the save would throw
-    # the restored tags (and every read marker) away until the next rescan
-    if count or removed or _fixed or checked:
-        shared.save_gallery(gallery)
+            # _fixed/checked are entry mutations too — skipping the save would throw
+            # the restored tags (and every read marker) away until the next rescan
+            if count or removed or _fixed or checked:
+                shared.save_gallery(gallery)
+    finally:
+        _rescan_gate.release()
 
     # sweep dedup records whose files are gone (background thread only)
     try:
@@ -3031,15 +3528,23 @@ if __name__ == "__main__":
 
     # Warm only lightweight waifu config (no giant tag databases loaded into memory)
     def _warm_tag_dbs():
-        global WAIFU_TAGS_DB, WAIFU_TAG_MAP
+        global WAIFU_TAG_MAP
         try:
-            WAIFU_TAGS_DB, WAIFU_TAG_MAP = DatabaseManager.load_waifu_tags()
+            WAIFU_TAG_MAP = DatabaseManager.load_waifu_tags()[1]
             shared.WAIFU_TAG_MAP = WAIFU_TAG_MAP
         except Exception:
             pass
 
     threading.Thread(target=_warm_tag_dbs, daemon=True).start()
-    _rescan_thread = threading.Thread(target=startup_rescan, daemon=True)
+
+    def _deferred_rescan():
+        # the scan + hash-missing sweep pin every core for seconds; starting
+        # them immediately made the user's FIRST gallery tab open/page switch
+        # eat ~1.5s of GIL contention (measured toasts). Let the UI settle.
+        time.sleep(6.0)
+        startup_rescan()
+
+    _rescan_thread = threading.Thread(target=_deferred_rescan, daemon=True)
     _rescan_thread.start()
 
     def _warm_caches(rescan_thread):
@@ -3077,6 +3582,17 @@ if __name__ == "__main__":
             get_store().warm_search_index()
         except Exception:
             pass
+        # The gallery tab loads per_page 24 (windowed) or ~45 (fullscreen) —
+        # warm those thumbs at boot so the first gallery open doesn't watch
+        # images decode one by one. First page, newest first = the default
+        # view. Sort a copy: warm_page_thumbs must not reorder the resident
+        # list (a sorted order could be persisted by a later save).
+        try:
+            newest = sorted(shared.load_gallery().get("images", []),
+                            key=_image_timestamp, reverse=True)
+            warm_page_thumbs(newest[:48])
+        except Exception:
+            pass
 
     threading.Thread(target=_warm_caches, args=(_rescan_thread,), daemon=True).start()
     pixiv_notify.start_watcher(
@@ -3095,16 +3611,19 @@ if __name__ == "__main__":
         log_fn=lambda msg: log_msg("watcher", msg),
     )
 
-    is_headless = (
-        os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")
-        or any(arg in sys.argv for arg in ("--headless", "--server", "--no-window"))
-    )
+    is_headless = _HEADLESS
 
     port = int(os.environ.get("PORT", 0)) or _pick_loopback_port()
-    host = "0.0.0.0" if is_headless else "127.0.0.1"
-    url = f"http://{'localhost' if host == '0.0.0.0' else '127.0.0.1'}:{port}"
+    host = os.environ.get("REMS_HOST", "127.0.0.1") if is_headless else "127.0.0.1"
+    if host not in ("localhost", "127.0.0.1", "::1") and (not os.environ.get("REMS_ACCESS_TOKEN") or not os.environ.get("REMS_ALLOWED_HOSTS")):
+        raise SystemExit("Network mode requires REMS_ACCESS_TOKEN (32+ characters) and REMS_ALLOWED_HOSTS.")
+    url_host = "localhost" if host == "0.0.0.0" else "[::1]" if host in ("::", "::1") else host
+    url = f"http://{url_host}:{port}"
+
+    launch_url = access_guard.launch_url(url)
 
     if is_headless:
+        print("Access token:", access_guard.token)
         print(f"Starting Rems Dl in headless/server mode on {url} ...")
         socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
@@ -3112,9 +3631,11 @@ if __name__ == "__main__":
     try:
         import webview as _pywebview
     except ImportError:
+        _BROWSER_FALLBACK = True
         print("NOTE: pywebview is not installed or GUI libraries are missing.")
         print(f"Starting Rems Dl in web browser mode on {url} ...")
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        print("Access token (if automatic sign-in is unavailable):", access_guard.token)
+        threading.Timer(1.0, lambda: webbrowser.open(launch_url)).start()
         socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
 
@@ -3140,6 +3661,7 @@ if __name__ == "__main__":
     _teardown_done = False
 
     def _teardown():
+        jxl_service.close()
         # stop workers + flush only — must stay safe to run inside the GTK
         # 'closed' callback (no os._exit there: WebKit still has to terminate
         # its WebProcess, and killing the UI process mid-teardown makes it
@@ -3164,10 +3686,6 @@ if __name__ == "__main__":
         except Exception:
             pass
         try:
-            shared.flush_gallery()
-        except Exception:
-            pass
-        try:
             DatabaseManager.flush_image_history()
         except Exception:
             pass
@@ -3177,7 +3695,7 @@ if __name__ == "__main__":
         os._exit(0)
 
     try:
-        bundle_dir = getattr(sys, '_MEIPASS', BASE_DIR)
+        bundle_dir = resource_root()
         if sys.platform == "win32":
             icon_candidates = [
                 os.path.join(bundle_dir, "icon", "icon.ico"),
@@ -3208,11 +3726,21 @@ if __name__ == "__main__":
                 for w in list(_pywebview.windows):
                     w.toggle_fullscreen()
 
+        # Screen dimensions are logical pixels, like create_window sizes.
+        # Apply explicit GUI choice before querying screens: that property can
+        # initialize the renderer on some pywebview versions.
+        if webview_gui():
+            os.environ['PYWEBVIEW_GUI'] = webview_gui()
+        try:
+            _screen = _pywebview.screens[0]
+            _window_size = initial_window_size(_screen.width, _screen.height)
+        except Exception:
+            _window_size = initial_window_size()
         _win = _pywebview.create_window(
             "Rems Dl",
-            url,
-            width=1400,
-            height=900,
+            launch_url,
+            width=_window_size[0],
+            height=_window_size[1],
             js_api=_DesktopApi()
         )
         try:
@@ -3223,14 +3751,14 @@ if __name__ == "__main__":
         try:
             _pywebview.start(
                 user_agent="RemsDlDesktopApp/1.0",
-                gui="gtk" if sys.platform == "linux" else "edgechromium",
+                gui=webview_gui(),
                 icon=icon_path
             )
         except Exception:
             # If the OS windowing system rejects the icon format, start cleanly without the custom icon
             _pywebview.start(
                 user_agent="RemsDlDesktopApp/1.0",
-                gui="gtk" if sys.platform == "linux" else "edgechromium"
+                gui=webview_gui()
             )
         # start() returns once the Gtk window is destroyed; WebKit terminates
         # its WebProcess asynchronously — exiting immediately (as before) kills
@@ -3242,7 +3770,8 @@ if __name__ == "__main__":
         os._exit(0)
     except Exception as e:
         print(f"Desktop window could not be opened ({e}). Falling back to browser...")
-        webbrowser.open(url)
+        _BROWSER_FALLBACK = True
+        webbrowser.open(launch_url)
         try:
             server_thread.join()
         except KeyboardInterrupt:
