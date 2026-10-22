@@ -1,8 +1,11 @@
 import os
-import pytest
-from core.database import SettingsManager
-import tempfile
 import shutil
+import tempfile
+
+import pytest
+
+from core.database import SettingsManager
+
 
 class TestSettingsManager:
     @pytest.fixture

@@ -1,8 +1,7 @@
 import pytest
 
-import core.shared as shared
+from core import shared
 from workers.waifu_im import WaifuImWorker, waifu_name_to_slug
-
 
 NET_CONFIG = {
     "anti_ban_pause": 0.0,

@@ -19,7 +19,7 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import Rems_Dl  # noqa: E402
+import Rems_Dl
 
 for _k, _v in _env_before.items():
     if _v is None:
@@ -27,7 +27,7 @@ for _k, _v in _env_before.items():
     else:
         os.environ[_k] = _v
 
-from core import gallery_store, shared  # noqa: E402
+from core import gallery_store, shared
 
 FOLDER = "someartist_(x)"
 
@@ -37,7 +37,7 @@ def lib(tmp_path, monkeypatch):
     (tmp_path / "gelbooru" / FOLDER).mkdir(parents=True)
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
     monkeypatch.setattr(shared, "_gallery_cache",
-                        {"data": {"images": []}, "filenames": set(), "dirty": 0})
+                        {"data": {"images": []}, "filenames": set(), "by_fn": {}})
     # per-test store: these tests insert real rows, and a shared one would
     # let one test's tags answer another test's lookup
     gallery_store.use_store_path(str(tmp_path / "gallery.db"))
@@ -159,8 +159,9 @@ def test_download_tags_beat_a_scan_placeholder(lib):
 
     images = [i for i in shared.load_gallery()["images"] if i["filename"] == fn]
     assert len(images) == 1
-    assert set(images[0]["tags"]["tag"]) == {"blue_hair", "1girl"}
-    assert images[0]["tags"]["character"] == ["rem"]
+    tags = shared.entry_tags(images[0])
+    assert set(tags["tag"]) == {"blue_hair", "1girl"}
+    assert tags["character"] == ["rem"]
 
 
 def test_a_download_of_an_already_tagged_file_changes_nothing(lib):
@@ -176,7 +177,7 @@ def test_a_download_of_an_already_tagged_file_changes_nothing(lib):
                           ["blue_hair"], [FOLDER])
 
     entry = next(i for i in shared.load_gallery()["images"] if i["filename"] == fn)
-    assert entry["tags"]["tag"] == ["1girl", "smile"]
+    assert shared.entry_tags(entry)["tag"] == ["1girl", "smile"]
     assert entry["favourite"] is True
 
 

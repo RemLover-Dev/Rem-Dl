@@ -2,7 +2,6 @@ import pytest
 
 from workers.danbooru import DanbooruWorker
 
-
 NET_CONFIG = {
     "anti_ban_pause": 0.0,
     "download_retries": 1,

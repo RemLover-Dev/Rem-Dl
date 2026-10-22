@@ -20,10 +20,10 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import pytest  # noqa: E402
+import pytest
 
-import Rems_Dl  # noqa: E402
-from core.gallery_store import get_store, use_store_path  # noqa: E402
+import Rems_Dl
+from core.gallery_store import get_store, use_store_path
 
 for _k, _v in _env_before.items():
     if _v is None:

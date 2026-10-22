@@ -43,7 +43,6 @@ def test_old_cache_is_stale(tmp_path, monkeypatch):
 
 def test_endpoint_serves_cache_without_hitting_api(tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "DATABASE_DIR", str(tmp_path))
-    monkeypatch.setattr(Rems_Dl, "WAIFU_TAGS_DB", [])
     monkeypatch.setattr(Rems_Dl, "WAIFU_TAG_MAP", {})
     _write_cache(tmp_path, [{"name": "Maid", "slug": "maid", "imageCount": 10},
                             {"name": "Waifu", "slug": "waifu", "imageCount": 5}])
@@ -59,7 +58,6 @@ def test_endpoint_serves_cache_without_hitting_api(tmp_path, monkeypatch):
 
 def test_stale_cache_merges_add_only(tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "DATABASE_DIR", str(tmp_path))
-    monkeypatch.setattr(Rems_Dl, "WAIFU_TAGS_DB", [])
     monkeypatch.setattr(Rems_Dl, "WAIFU_TAG_MAP", {})
     monkeypatch.setattr(Rems_Dl.shared, "WAIFU_TAG_MAP", {})
     _write_cache(tmp_path, [{"name": "Old", "slug": "old", "imageCount": 1}],
@@ -92,7 +90,6 @@ def test_stale_cache_merges_add_only(tmp_path, monkeypatch):
 
 def test_query_filter_hits_cached_slugs(tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "DATABASE_DIR", str(tmp_path))
-    monkeypatch.setattr(Rems_Dl, "WAIFU_TAGS_DB", [])
     monkeypatch.setattr(Rems_Dl, "WAIFU_TAG_MAP", {})
     _write_cache(tmp_path, [{"name": "Maid", "slug": "maid", "imageCount": 10},
                             {"name": "MILF", "slug": "milf", "imageCount": 5}])

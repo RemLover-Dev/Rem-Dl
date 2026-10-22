@@ -78,7 +78,7 @@ def test_pace_spaces_request_starts_under_isp_limit(monkeypatch):
     """Every worker shares one rate budget (Settings → req_rate_limit,
     default 4 req/s) — the old 32-way tag fan-out burst exceeded the ISP
     cap and the failures left tags uncategorized after 3 retries."""
-    import core.shared as shared
+    from core import shared
 
     monkeypatch.setenv("REQ_RATE_LIMIT", "4")
 
@@ -100,7 +100,7 @@ def test_pace_spaces_request_starts_under_isp_limit(monkeypatch):
 def test_pace_session_paces_request_funnel(monkeypatch):
     """Sync workers (rule34 lib, eshuushuu, pixiv, pinterest-dl) pace via
     session.request — every verb funnels through it, once."""
-    import core.shared as shared
+    from core import shared
 
     monkeypatch.setenv("REQ_RATE_LIMIT", "4")
     monkeypatch.setattr(shared.time, "sleep", lambda _s: None)

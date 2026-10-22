@@ -10,9 +10,9 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import Rems_Dl  # noqa: E402
-import core.notifications as notifications  # noqa: E402
-import core.pixiv_notify as pn  # noqa: E402
+import core.pixiv_notify as pn
+import Rems_Dl
+from core import notifications
 
 for _k, _v in _env_before.items():
     if _v is None:
@@ -55,7 +55,7 @@ def test_persistence_across_restart(store):
     items = pn.load_items()
     assert [i["work_id"] for i in items] == ["1", "2"]
     assert {i["work_id"]: i["read"] for i in items} == {"1": True, "2": False}
-    assert pn._load_raw()["last_check"] == 0  # no check stamped yet
+    assert pn.last_check_ts() == 0  # no check stamped yet
 
 
 def test_read_vs_unread(store):
@@ -138,7 +138,7 @@ def test_invalid_refresh_token_logs_steps(store, monkeypatch):
 
 
 def test_missing_token_reported_not_raised(store, monkeypatch):
-    monkeypatch.setattr(pn, "_get_config", lambda: {})
+    monkeypatch.setattr(pn, "_get_config", dict)
     res = pn.run_check()
     assert res["new"] == 0 and "refresh token" in res["error"].lower()
     assert pn.load_items() == []
@@ -148,7 +148,7 @@ def test_missing_token_reported_not_raised(store, monkeypatch):
 
 def test_missing_token_logs_steps_once(store, monkeypatch):
     lines = []
-    monkeypatch.setattr(pn, "_get_config", lambda: {})
+    monkeypatch.setattr(pn, "_get_config", dict)
     monkeypatch.setattr(pn, "_log_fn", lines.append)
     monkeypatch.setattr(pn, "_hint_logged", False)
     res = pn.run_check()

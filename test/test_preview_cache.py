@@ -54,7 +54,7 @@ def test_preview_strips_audio(tmp_path):
 
 
 def test_evict_removes_cached_preview(tmp_path):
-    from core.preview_cache import preview_path, evict
+    from core.preview_cache import evict, preview_path
     src = tmp_path / "with_audio.mp4"
     _make_mp4(src, audio=True)
     cache = tmp_path / "cache"

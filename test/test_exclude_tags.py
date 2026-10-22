@@ -8,7 +8,6 @@ from workers.gsbooru import GsbooruWorker
 from workers.pixiv import PixivWorker
 from workers.sankaku import SankakuWorker
 
-
 NET_CONFIG = {
     "anti_ban_pause": 0.0,
     "download_retries": 1,

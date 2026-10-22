@@ -8,13 +8,16 @@ import threading
 import pytest
 from PIL import Image
 
+from core.database import get_settings
 from core.dedup_store import (
-    DedupStore, hash_bytes, normalize_any_source_hash, normalize_generated_hashes,
-    normalize_source_hash, normalize_source_md5,
+    DedupStore,
+    hash_bytes,
+    normalize_any_source_hash,
+    normalize_generated_hashes,
+    normalize_source_hash,
+    normalize_source_md5,
 )
 from core.shared import BaseDownloader, check_duplicate
-from core.database import get_settings
-
 
 # --- helpers ---------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 """finish_report: queued runs must report batch totals once, not the last job's."""
-import core.shared as shared
+from core import shared
 
 
 def _reset():

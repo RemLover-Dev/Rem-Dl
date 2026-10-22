@@ -1,9 +1,14 @@
 import json
 import zipfile
+
 import pytest
 
+from core.extension_downloader import (
+    SecurityError,
+    _safe_extract_zip,
+    install_from_local_path,
+)
 from core.extensions import ExtensionManager
-from core.extension_downloader import _safe_extract_zip, SecurityError, install_from_local_path
 from Rems_Dl import app
 
 

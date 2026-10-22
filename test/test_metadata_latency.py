@@ -2,9 +2,9 @@ import asyncio
 import os
 
 from PIL import Image
+from test_download_resume import MockContent, MockResponse, MockSession
 
 from core.shared import BaseDownloader, write_image_metadata
-from test_download_resume import MockContent, MockResponse, MockSession
 
 
 def _png(tmp_path, name="img.png"):

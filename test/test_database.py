@@ -1,9 +1,12 @@
-import pytest
-from core.database import DatabaseManager
 import os
-import tempfile
 import shutil
-import unittest.mock as mock
+import tempfile
+from unittest import mock
+
+import pytest
+
+from core.database import DatabaseManager
+
 
 class TestDatabaseManager:
     @pytest.fixture

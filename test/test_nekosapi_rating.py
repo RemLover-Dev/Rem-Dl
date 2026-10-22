@@ -4,7 +4,6 @@ import pytest
 
 from workers.nekosapi import NekosApiWorker
 
-
 NET_CONFIG = {
     "anti_ban_pause": 0.0,
     "download_retries": 1,

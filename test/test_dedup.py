@@ -1,12 +1,14 @@
 import os
 import random
-import tempfile
 import shutil
+import tempfile
+
 import pytest
 from PIL import Image
+
+from core.database import get_settings
 from core.dedup_store import DedupStore, PureHash
 from core.shared import check_duplicate
-from core.database import get_settings
 
 
 class TestDedupStore:

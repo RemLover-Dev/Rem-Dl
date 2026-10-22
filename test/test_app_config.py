@@ -1,4 +1,5 @@
 import os
+
 from PIL import Image
 
 
@@ -74,7 +75,7 @@ def test_pyinstaller_spec_and_metadata_hooks():
 
 def test_rule34py_importlib_metadata_safeguard(monkeypatch):
     import importlib.metadata
-    from workers.rule34 import Rule34Worker
+
 
     # Test that importing or querying version with missing metadata handles PackageNotFoundError safely
     orig_version = importlib.metadata.version

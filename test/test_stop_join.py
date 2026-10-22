@@ -1,6 +1,6 @@
 import asyncio
 
-from core.shared import BaseDownloader, STOP_EVENTS
+from core.shared import STOP_EVENTS, BaseDownloader
 
 
 class _StopJoinWorker(BaseDownloader):
@@ -12,7 +12,6 @@ class _StopJoinWorker(BaseDownloader):
 
     async def _create_session(self):
         self.proxy = None
-        return None
 
     async def scraper_task(self):
         for i in range(8):

@@ -1,32 +1,33 @@
+import asyncio
 import os
 import shutil
 import tempfile
+
 import pytest
-import asyncio
 
 from core.shared import (
-    sanitize_path_component,
-    sanitize_filename,
+    BaseDownloader,
     safe_ensure_dir,
     safe_filepath,
-    BaseDownloader,
+    sanitize_filename,
+    sanitize_path_component,
 )
+from workers.anime_dl import AnimeDlWorker
 from workers.danbooru import DanbooruWorker
+from workers.eshuushuu import EShuushuuWorker
 from workers.gelbooru import GelbooruWorker
 from workers.konachan import KonachanWorker
-from workers.yande import YandeWorker
-from workers.safebooru import SafebooruWorker
-from workers.sankaku import SankakuWorker
-from workers.anime_dl import AnimeDlWorker
-from workers.eshuushuu import EShuushuuWorker
-from workers.rule34 import Rule34Worker
-from workers.pixiv import PixivWorker
 from workers.nekos_best import NekosBestWorker
 from workers.nekos_life import NekosLifeWorker
 from workers.nekosapi import NekosApiWorker
 from workers.nekosia import NekosiaWorker
-from workers.waifu_im import WaifuImWorker
 from workers.pinterest_worker import PinterestWorker
+from workers.pixiv import PixivWorker
+from workers.rule34 import Rule34Worker
+from workers.safebooru import SafebooruWorker
+from workers.sankaku import SankakuWorker
+from workers.waifu_im import WaifuImWorker
+from workers.yande import YandeWorker
 from workers.zerochan import ZerochanWorker
 
 

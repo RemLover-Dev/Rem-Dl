@@ -41,7 +41,7 @@ def _isolate_data_files():
                         and f"{os.sep}database{os.sep}" in value):
                     setattr(mod, name, os.path.join(tmp, os.path.basename(value)))
 
-    import core.database as database
+    from core import database
     database.SettingsManager._env_path = lambda self: os.path.join(tmp, ".env")
 
     # A store singleton built while collecting tests captured the REAL paths
