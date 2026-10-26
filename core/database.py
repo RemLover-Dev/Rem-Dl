@@ -100,9 +100,55 @@ class DatabaseManager:
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         return json.load(f)
+                except json.JSONDecodeError:
+                    # Trailing junk (one extra closing brace from an external
+                    # tool or a torn write) must not blank a whole store:
+                    # load_json returning [] is what lets the next save wipe
+                    # every watcher. Salvage the parseable prefix, self-heal
+                    # the file, and keep a copy of the corrupt bytes for
+                    # forensics (single deterministic name — this path re-runs
+                    # on every read until the file is healed).
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            obj, _end = json.JSONDecoder().raw_decode(f.read())
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                        restore = DatabaseManager._recover_bak(filepath)
+                        DatabaseManager._quarantine(filepath)
+                        if restore is not None:
+                            write_json(filepath, restore)
+                            return restore
+                        return []
+                    DatabaseManager._quarantine(filepath)
+                    write_json(filepath, obj)
+                    return obj
                 except Exception:
                     return []
             return []
+
+    @staticmethod
+    def _recover_bak(filepath):
+        """Last-known-good save (written by atomic_io) for stores wrecked
+        beyond trailing-junk salvage. prefers main-corrupt-but-bak-clean:
+        a deleted main file is treated as an intentional reset, not restored."""
+        bak = filepath + '.bak'
+        if not os.path.exists(bak):
+            return None
+        try:
+            with open(bak, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            return None
+
+    @staticmethod
+    def _quarantine(filepath):
+        backup = filepath + '.corrupt'
+        try:
+            with open(filepath, 'rb') as src:
+                payload = src.read()
+            with open(backup, 'wb') as dst:
+                dst.write(payload)
+        except OSError:
+            pass
 
     @staticmethod
     def save_json(filepath, data):
@@ -293,7 +339,6 @@ class DatabaseManager:
                 "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"},
                 "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"},
                 "Zero": {"dark": "Rem_zero_d.png", "light": "Rem_zero_l.png"},
-                "Waifu": {"dark": "Rem_waifu_d.png", "light": "Rem_waifu_l.png"},
                 "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"},
                 "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"},
                 "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"},
@@ -327,18 +372,6 @@ class DatabaseManager:
             }
         }
 
-    # --- Waifu tag map (name -> slug, bundled waifu.im_tags.json) ---
-    @staticmethod
-    def load_waifu_tags():
-        tags_path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
-        try:
-            with open(tags_path, "r", encoding="utf-8") as f:
-                tags_db = json.load(f)
-            tag_map = {t["name"].lower(): t["slug"] for t in tags_db}
-            return tags_db, tag_map
-        except Exception:
-            return [], {}
-
 
 class SettingsManager:
     """Manages application settings loaded from .env and runtime config."""
@@ -347,6 +380,7 @@ class SettingsManager:
         if base_dir is None:
             base_dir = _app_base_dir()
         self.base_dir = base_dir
+        _jxl_effort_env = os.getenv("JXL_EFFORT", "5").strip()
         self.config = {
             "use_proxy": os.getenv("USE_PROXY", "false").lower() == "true",
             "proxy_url": os.getenv("PROXY_URL", "http://127.0.0.1:10808"),
@@ -356,7 +390,9 @@ class SettingsManager:
             "anti_ban_pause": float(os.getenv("ANTI_BAN_PAUSE", "3.0")),
             "download_retries": int(os.getenv("DOWNLOAD_RETRIES", "3")),
             "req_rate_limit": float(os.getenv("REQ_RATE_LIMIT", "4")),
-            "dedup_enabled": os.getenv("DEDUP_ENABLED", "true").lower() == "true"
+            "dedup_enabled": os.getenv("DEDUP_ENABLED", "true").lower() == "true",
+            "auto_convert_jxl": os.getenv("AUTO_CONVERT_JXL", "false").lower() == "true",
+            "jxl_effort": max(1, min(9, int(_jxl_effort_env))) if _jxl_effort_env.isdigit() else 5
         }
 
     def get(self, key, default=None):
@@ -365,7 +401,13 @@ class SettingsManager:
     def update(self, data):
         for key in data:
             if key in self.config:
-                self.config[key] = data[key]
+                value = data[key]
+                if key == "jxl_effort":
+                    try:
+                        value = max(1, min(9, int(value)))
+                    except (TypeError, ValueError):
+                        value = self.config["jxl_effort"]
+                self.config[key] = value
 
     def _env_path(self):
         return os.path.join(self.base_dir, ".env")
@@ -410,6 +452,8 @@ class SettingsManager:
             "ANTI_BAN_PAUSE": str(self.config['anti_ban_pause']),
             "DOWNLOAD_RETRIES": str(self.config['download_retries']),
             "DEDUP_ENABLED": str(self.config.get('dedup_enabled', True)).lower(),
+            "AUTO_CONVERT_JXL": str(self.config.get('auto_convert_jxl', False)).lower(),
+            "JXL_EFFORT": str(self.config.get('jxl_effort', 5)),
             "REQ_RATE_LIMIT": str(self.config['req_rate_limit'])
         }
         self._upsert_env_keys(env_keys)

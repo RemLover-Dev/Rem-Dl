@@ -26,7 +26,6 @@ from workers.pixiv import PixivWorker
 from workers.rule34 import Rule34Worker
 from workers.safebooru import SafebooruWorker
 from workers.sankaku import SankakuWorker
-from workers.waifu_im import WaifuImWorker
 from workers.yande import YandeWorker
 from workers.zerochan import ZerochanWorker
 
@@ -217,13 +216,6 @@ class TestWorkerFolderBuildingWithProhibitedChars:
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         w = NekosiaWorker("re:zero", 10, "safe", self.NET_CONFIG)
         assert os.path.isdir(w.rating_dir)
-        rel = os.path.relpath(w.tag_dir, str(tmp_path))
-        assert ":" not in rel
-
-    def test_waifu_im_worker_folder(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
-        w = WaifuImWorker("re:zero", 10, "", [], self.NET_CONFIG)
-        assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel
 

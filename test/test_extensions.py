@@ -49,7 +49,7 @@ def test_zip_slip_security_prevention(tmp_path):
     with zipfile.ZipFile(str(evil_zip), "w") as zf:
         zf.writestr("../../evil.txt", "malicious payload")
 
-    with pytest.raises(SecurityError, match="Malicious archive member detected"):
+    with pytest.raises(SecurityError, match="Unsafe archive path"):
         _safe_extract_zip(str(evil_zip), str(extract_target))
 
 

@@ -29,6 +29,7 @@ import hashlib
 import html
 import io
 import os
+import queue
 import signal
 import threading
 import time
@@ -142,7 +143,6 @@ from workers.pixiv import worker_pixiv
 from workers.rule34 import worker_rule34
 from workers.safebooru import worker_safebooru
 from workers.sankaku import worker_sankaku
-from workers.waifu_im import worker_waifu
 from workers.yande import worker_yande
 from workers.zerochan import worker_zerochan
 
@@ -160,8 +160,6 @@ settings = SettingsManager(BASE_DIR)
 import core.database
 
 core.database._settings_instance = settings
-
-WAIFU_TAG_MAP = {}
 
 if settings.get("use_proxy"):
     os.environ["HTTP_PROXY"] = str(settings.get("proxy_url") or "")
@@ -336,7 +334,7 @@ def get_session(site, net_config):
         session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/json,*/*"})
         adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=2.0, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"]))
         session.mount("https://", adapter); session.mount("http://", adapter)
-    elif site in ["waifu", "neko"] or site == "yande": session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+    elif site in ["neko"] or site == "yande": session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
     elif site == "kona":
         # same UA as the konachan worker itself — Mozilla gets 403 on tag.json
         session.headers.update({"User-Agent": "Rems_Dl/5.0 (by RemLover on GitHub)", "Accept": "application/json"})
@@ -388,6 +386,22 @@ def custom_wallpaper(filename):
         return send_from_directory(custom_dir, filename)
     return send_from_directory(os.path.join(STATIC_FOLDER, "wallpaper"), filename)
 
+# Paths the user actually returned from the native picker (KDE kdialog/zenity),
+# with an expiry. upload_wallpaper's path mode accepts only these — without this
+# gate a same-origin script could POST any absolute path and have the server read
+# and re-serve an arbitrary local image.
+_WP_PICK_TTL = 300
+_wp_recent_picks: dict[str, float] = {}
+
+
+def _remember_wp_pick(path: str) -> None:
+    now = time.time()
+    for p, ts in list(_wp_recent_picks.items()):
+        if now - ts > _WP_PICK_TTL:
+            _wp_recent_picks.pop(p, None)
+    _wp_recent_picks[path] = now
+
+
 @app.route("/api/upload_wallpaper", methods=["POST"])
 def upload_wallpaper():
     import secrets
@@ -399,6 +413,10 @@ def upload_wallpaper():
         if source is not None:
             content = source.stream.read(32 * 1024 * 1024 + 1)
         elif src_path:
+            picked_ts = _wp_recent_picks.get(src_path, 0)
+            if not picked_ts or time.time() - picked_ts > _WP_PICK_TTL:
+                return jsonify({"success": False,
+                                "error": "Pick an image with the file dialog first"}), 403
             with open(src_path, "rb") as stream:
                 content = stream.read(32 * 1024 * 1024 + 1)
         else:
@@ -659,10 +677,26 @@ def browse_file():
         return jsonify({"cancelled": True})
     if picked is False:
         return jsonify({"error": "No file picker available"}), 500
+    _remember_wp_pick(picked)
     return jsonify({"path": picked})
 
 
 def _pick_jxl_image():
+    # ponytail: kdialog first — KDE expects Dolphin's own dialog here (same
+    # order as /api/file/browse); the pywebview chooser surfaces a generic
+    # toolkit file browser instead, which is what users reported seeing
+    if sys.platform.startswith('linux'):
+        import subprocess
+        for command in (['kdialog', '--getopenfilename', os.path.expanduser('~'), 'Images|*.png *.jpg *.jpeg *.webp *.jxl'],
+                        ['zenity', '--file-selection', '--file-filter=Images | *.png *.jpg *.jpeg *.webp *.jxl']):
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+                if result.returncode == 0:
+                    return result.stdout.strip() or None
+                if not (result.stdout or "").strip():
+                    return None  # user cancelled
+            except FileNotFoundError:
+                continue
     try:
         import webview
         if webview.windows:
@@ -671,15 +705,6 @@ def _pick_jxl_image():
             return result[0] if result else None
     except Exception:
         pass
-    if sys.platform.startswith('linux'):
-        import subprocess
-        for command in (['kdialog', '--getopenfilename', os.path.expanduser('~'), 'Images|*.png *.jpg *.jpeg *.webp *.jxl'],
-                        ['zenity', '--file-selection', '--file-filter=Images | *.png *.jpg *.jpeg *.webp *.jxl']):
-            try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
-                return result.stdout.strip() or None
-            except FileNotFoundError:
-                continue
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -747,6 +772,93 @@ from core.jxl_routes import register as register_jxl_routes
 jxl_service = register_jxl_routes(app, lambda: shared.MASTER_FOLDER,
     _pick_folder_desktop, _pick_jxl_image, _jxl_outputs_changed,
     os.path.join(DATABASE_DIR, 'jxl_display_cache'), replaced=_jxl_replace_index)
+
+
+# --- Automatic download conversion (settings tab) --------------------------
+# Completed downloads ride the exact pipeline the JPEG XL Lab tool uses:
+# the --rems-jxl-worker subprocess encodes (auto mode: reversible JPEG
+# repack for .jpg, lossless for PNG/WebP) and re-embeds Rems tag categories,
+# then commit_replacement verifies hash + tags and preserves file dates
+# before swapping, and _jxl_replace_index keeps the gallery index + dedup
+# store in step. Failures keep the original file, never lose it.
+_auto_jxl_queue = queue.Queue()
+
+
+def _auto_jxl_hook(filepath):
+    if not settings.get("auto_convert_jxl"):
+        return
+    try:
+        effort = int(settings.get("jxl_effort") or 5)
+    except (TypeError, ValueError):
+        effort = 5
+    _auto_jxl_queue.put((os.path.abspath(filepath), max(1, min(9, effort))))
+
+
+def _auto_jxl_spawn_worker(request_path, response_path):
+    import subprocess
+    return subprocess.Popen(jxl_service.command(request_path, response_path),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=os.name != 'nt',
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+
+def _auto_jxl_convert_one(path, effort):
+    from pathlib import Path
+    from core.jxl_service import commit_replacement, ENCODE_EXTENSIONS
+    from core.jxl_cpu import conversion_threads
+    import json
+    import tempfile
+    source = Path(path)
+    if source.suffix.lower() not in ENCODE_EXTENSIONS or not source.is_file() or source.is_symlink():
+        return
+    if not jxl_service.available():
+        log_msg("jxl-auto", "JPEG XL codec missing (install requirements-jxl.txt); keeping original")
+        return
+    work = tempfile.TemporaryDirectory(prefix='rems-auto-jxl-')
+    try:
+        request_path = Path(work.name) / 'request.json'
+        response_path = Path(work.name) / 'response.json'
+        request_path.write_text(json.dumps({'source': str(source), 'mode': 'auto',
+            'quality': 90, 'effort': effort, 'threads': conversion_threads()}), encoding='utf-8')
+        process = _auto_jxl_spawn_worker(str(request_path), str(response_path))
+        try:
+            process.wait(timeout=600)
+        finally:
+            if process.poll() is None:  # hung encoder — kill it, original kept
+                process.terminate()
+                process.wait(timeout=5)
+        if process.returncode != 0 or not response_path.is_file():
+            raise ValueError('Codec worker stopped or timed out; original kept')
+        data = json.loads(response_path.read_text(encoding='utf-8'))
+        if not data.get('ok'):
+            raise ValueError(str(data.get('error') or 'Codec worker failed; original kept'))
+        value = data['value']
+        staged = Path(value['output']).resolve(strict=True)
+        # Subprocess output is never trusted blindly — same staging-area check
+        # the lab tool's finish() applies.
+        if not staged.is_file() or staged.parent.resolve() != Path(work.name).resolve():
+            raise ValueError('Invalid staged conversion output; original kept')
+        commit_replacement(source, staged,
+            value.get('output_name') or source.with_suffix('.jxl').name,
+            value['source_sha256'], str(work.name), relocate=_jxl_replace_index)
+        log_msg("jxl-auto", f"{source.name} → {source.with_suffix('.jxl').name} (tags, dates kept)")
+    finally:
+        work.cleanup()
+
+
+def _auto_jxl_loop():
+    while True:
+        path, effort = _auto_jxl_queue.get()
+        try:
+            _auto_jxl_convert_one(path, effort)
+        except Exception as exc:
+            log_msg("jxl-auto", f"{os.path.basename(path)} not converted: {exc}")
+        finally:
+            _auto_jxl_queue.task_done()
+
+
+threading.Thread(target=_auto_jxl_loop, name='rems-auto-jxl', daemon=True).start()
+shared.post_download_callback = _auto_jxl_hook
 
 
 @app.route("/api/clipboard", methods=["POST"])
@@ -997,98 +1109,6 @@ def pixiv_exchange_cookie():
     except Exception as e:
         print("Pixiv auth error:", e)
         return jsonify({"success": False, "error": f"pixiv auth failed: {e}"}), 500
-
-WAIFU_TAGS_TTL = 7 * 86400  # ponytail: tags change slowly — live pull at most weekly
-
-
-_waifu_tag_memo = {"mtime": None, "tags": []}
-
-
-def _waifu_tag_cache():
-    """(tags, fresh) from database/waifu.im_tags.json. Fresh = within TTL and
-    live-shaped — the bundled seed file has no imageCount and must refresh once.
-
-    Memoized per mtime: this runs on every autosuggest keystroke and re-opening
-    + re-parsing the file each time re-paid the parse for nothing.
-    """
-    import json as _json
-    path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        return [], False
-    if _waifu_tag_memo["mtime"] == mtime:
-        tags = _waifu_tag_memo["tags"]
-    else:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                tags = _json.load(f)
-        except Exception:
-            return [], False
-        if not isinstance(tags, list) or not tags:
-            return [], False
-        _waifu_tag_memo.update(mtime=mtime, tags=tags)
-    fresh = ((time.time() - mtime) < WAIFU_TAGS_TTL
-             and any(isinstance(t, dict) and "imageCount" in t for t in tags))
-    return tags, fresh
-
-
-def _save_waifu_tag_cache(tags):
-    import json as _json
-    path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
-    try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(tags, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception:
-        pass
-
-
-_waifu_refreshing = False  # single-flight: one background refresh at a time
-
-
-def _refresh_waifu_tags(net_config):
-    global WAIFU_TAG_MAP, _waifu_refreshing
-    _waifu_refreshing = True
-    try:
-        session = get_session("waifu", net_config)
-        resp = session.get("https://api.waifu.im/tags", timeout=10)
-        items = resp.json().get("items", [])
-        live = [t for t in items if t.get("slug") and t.get("imageCount", 0) > 0]
-        if live:
-            cached, _ = _waifu_tag_cache()
-            by_slug = {t.get("slug"): t for t in cached if isinstance(t, dict)}
-            for t in live:
-                by_slug[t["slug"]] = t
-            merged = list(by_slug.values())
-            _save_waifu_tag_cache(merged)
-            WAIFU_TAG_MAP = {t["name"].lower(): t["slug"] for t in merged if t.get("name")}
-            shared.WAIFU_TAG_MAP = WAIFU_TAG_MAP
-    except Exception:
-        pass
-    finally:
-        _waifu_refreshing = False
-
-
-@app.route("/api/tags/waifu", methods=["POST"])
-def get_waifu_tags():
-    # startup body was the net_config itself; autosuggest sends {query, net_config}
-    data = request.json or {}
-    net_config = data.get("net_config", data)
-    query = (data.get("query", "") or "").strip().lower()
-
-    cached, fresh = _waifu_tag_cache()
-    if not fresh and not _waifu_refreshing:
-        # stale/missing: answer from disk NOW and refresh in the background —
-        # a blocking live pull here held the tag dropdown empty for ~10s
-        # (timeout) on every app start. cached entries are never dropped,
-        # only slugs the API newly reports get appended
-        threading.Thread(target=_refresh_waifu_tags, args=(net_config,), daemon=True).start()
-    slugs = [t.get("slug") for t in cached if isinstance(t, dict) and t.get("slug")]
-    if not slugs:
-        slugs = ['ass', 'ecchi', 'ero', 'genshin-impact', 'hentai', 'kamisato-ayaka', 'maid', 'marin-kitagawa', 'milf', 'mori-calliope', 'nami', 'one-piece', 'oppai', 'oral', 'paizuri', 'raiden-shogun', 'rem', 'selfies', 'uniform', 'waifu']
-    return jsonify([s for s in slugs if not query or query in s])
 
 @app.route("/api/tags/zerochan", methods=["POST"])
 def get_zerochan_suggestions():
@@ -1777,7 +1797,6 @@ def _apply_gallery_filters(images, keep_ids, site_filters, fav_only, type_filter
             "rule34": {"explicit"},
             "nekosapi": {"safe", "sensitive", "questionable", "explicit"},
             "nekosia": {"safe", "sensitive"},
-            "waifu.im": {"safe", "explicit"},
             "pixiv": {"safe", "questionable", "explicit"},
             "zerochan": {"safe"},
             "nekos.best": {"safe"},
@@ -3276,7 +3295,6 @@ def _dispatch_worker(data):
         net_config["zerochan_login"] = os.getenv("ZEROCHAN_LOGIN") or os.getenv("ZEROCHAN_USERNAME", "")
         net_config["zerochan_password"] = os.getenv("ZEROCHAN_PASSWORD", "")
         worker_zerochan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
-    elif worker == "waifu": worker_waifu(data.get("tag", ""), _safe_int(data.get("limit", 30), 30), data.get("rating", ""), data.get("exclusions", []), net_config)
     elif worker == "neko": worker_nekos_best(data.get("category", ""), _safe_int(data.get("limit", 20), 20), net_config)
     elif worker == "safe": worker_safebooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("exclusions", []), net_config)
     elif worker == "rule34": worker_rule34(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("method", "and"), data.get("sort_type", "id"), data.get("sort_order", "desc"), data.get("exclusions", []), net_config, data.get("exclude_ai", False))
@@ -3525,17 +3543,6 @@ if __name__ == "__main__":
         with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             return int(s.getsockname()[1])
-
-    # Warm only lightweight waifu config (no giant tag databases loaded into memory)
-    def _warm_tag_dbs():
-        global WAIFU_TAG_MAP
-        try:
-            WAIFU_TAG_MAP = DatabaseManager.load_waifu_tags()[1]
-            shared.WAIFU_TAG_MAP = WAIFU_TAG_MAP
-        except Exception:
-            pass
-
-    threading.Thread(target=_warm_tag_dbs, daemon=True).start()
 
     def _deferred_rescan():
         # the scan + hash-missing sweep pin every core for seconds; starting

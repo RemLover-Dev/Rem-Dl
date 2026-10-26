@@ -590,7 +590,7 @@ async function saveWallpapersUI() {
 async function resetWallpapersUI() {
     if (!await customConfirm("Are you sure you want to reset all WALLPAPERS to default? Colors will not be changed.", "Reset")) return;
     uiConfig.wallpapers = {
-        "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"}, "Gallery": {"dark": "Rem_Gallery_d.jpg", "light": "Rem_Gallery_l.jpg"}, "History": {"dark": "Rem_history_d.png", "light": "Rem_history_l.png"}, "AnimeDL": {"dark": "Rem_AnimeDl_d.jpg", "light": "Rem_AnimeDl_l.jpg"}, "Danbooru": {"dark": "Rem_danbooru_d.jpg", "light": "Rem_danbooru_l.jpg"}, "EShuushuu": {"dark": "Rem_EShuushuu_d.jpg", "light": "Rem_EShuushuu_l.jpg"}, "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"}, "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"}, "Kona": {"dark": "Rem_Kona_d.jpg", "light": "Rem_Kona_l.jpg"}, "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"}, "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"}, "NekosAPI": {"dark": "Rem_NekosAPI_d.jpg", "light": "Rem_NekosAPI_l.jpg"}, "Nekosia": {"dark": "Rem_Nekosia_d.jpg", "light": "Rem_Nekosia_l.jpg"}, "Pinterest": {"dark": "Rem_pinterest_d.jpg", "light": "Rem_pinterest_l.jpg"}, "Pixiv": {"dark": "Rem_Pixiv_d.jpg", "light": "Rem_Pixiv_l.jpg"}, "Rule34": {"dark": "Rem_rule34_d.png", "light": "Rem_rule34_l.png"}, "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"}, "Sankaku": {"dark": "Rem_Sankaku_d.jpg", "light": "Rem_Sankaku_l.jpg"}, "Waifu": {"dark": "Rem_waifu_d.png", "light": "Rem_waifu_l.png"}, "Yande": {"dark": "Rem_yande_d.png", "light": "Rem_yande_l.png"}, "Zero": {"dark": "Rem_zero_d.jpg", "light": "Rem_zero_l.jpg"}, "Options": {"dark": "Rem_option_d.png", "light": "Rem_option_l.png"}, "Customize": {"dark": "Rem_custom_d.png", "light": "Rem_custom_l.png"}
+        "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"}, "Gallery": {"dark": "Rem_Gallery_d.jpg", "light": "Rem_Gallery_l.jpg"}, "History": {"dark": "Rem_history_d.png", "light": "Rem_history_l.png"}, "AnimeDL": {"dark": "Rem_AnimeDl_d.jpg", "light": "Rem_AnimeDl_l.jpg"}, "Danbooru": {"dark": "Rem_danbooru_d.jpg", "light": "Rem_danbooru_l.jpg"}, "EShuushuu": {"dark": "Rem_EShuushuu_d.jpg", "light": "Rem_EShuushuu_l.jpg"}, "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"}, "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"}, "Kona": {"dark": "Rem_Kona_d.jpg", "light": "Rem_Kona_l.jpg"}, "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"}, "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"}, "NekosAPI": {"dark": "Rem_NekosAPI_d.jpg", "light": "Rem_NekosAPI_l.jpg"}, "Nekosia": {"dark": "Rem_Nekosia_d.jpg", "light": "Rem_Nekosia_l.jpg"}, "Pinterest": {"dark": "Rem_pinterest_d.jpg", "light": "Rem_pinterest_l.jpg"}, "Pixiv": {"dark": "Rem_Pixiv_d.jpg", "light": "Rem_Pixiv_l.jpg"}, "Rule34": {"dark": "Rem_rule34_d.png", "light": "Rem_rule34_l.png"}, "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"}, "Sankaku": {"dark": "Rem_Sankaku_d.jpg", "light": "Rem_Sankaku_l.jpg"}, "Yande": {"dark": "Rem_yande_d.png", "light": "Rem_yande_l.png"}, "Zero": {"dark": "Rem_zero_d.jpg", "light": "Rem_zero_l.jpg"}, "Options": {"dark": "Rem_option_d.png", "light": "Rem_option_l.png"}, "Customize": {"dark": "Rem_custom_d.png", "light": "Rem_custom_l.png"}
     };
     renderWallpaperGrid();
     await saveWallpapersUI();
@@ -603,14 +603,14 @@ async function resetWallpapersUI() {
 const socket = io({ transports: ["polling"] });
 
 const WORKER_TO_TAB = {
-    "neko": "neko", "nekos_life": "nekos_life", "zero": "zero", "waifu": "waifu",
+    "neko": "neko", "nekos_life": "nekos_life", "zero": "zero",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
     "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
 };
 
 // worker name -> sidebar tab target + primary tag input (history jumps, nav icons)
-const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
+const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
@@ -691,7 +691,7 @@ function capConsole(cb, max) {
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -955,43 +955,6 @@ function renderGelbooruTags() {
         return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
-let currentWaifuTags = []; // tokens: 'tag' = include, '-tag' = exclude
-let waifuTagList = [];
-
-function renderWaifuTagDropdown() {
-    let menu = document.getElementById("waifuTagDropdown");
-    if (!menu) return;
-    menu.innerHTML = waifuTagList.map(function(t) {
-        let exc = currentWaifuTags.includes('-' + t);
-        let inc = currentWaifuTags.includes(t);
-        return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="waifuTagToggle(this, 0)" oncontextmenu="return waifuTagToggle(this, 1)"><span>' + escapeHtml(cleanTagDisplay(t)) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
-    }).join('');
-}
-
-// left: neutral→include, include→clear, exclude→include; right: the exclude side.
-// mutates the row in place — an innerHTML rebuild would detach the click target
-// and the document's outside-click closer would fold the open menu
-function waifuTagToggle(el, isRight) {
-    let tag = el.dataset.tag;
-    let next = isRight
-        ? (currentWaifuTags.includes('-' + tag) ? null : '-' + tag)
-        : (currentWaifuTags.includes(tag) ? null : tag);
-    currentWaifuTags = currentWaifuTags.filter(function(t) { return t !== tag && t !== '-' + tag; });
-    if (next) currentWaifuTags.push(next);
-    const exc = !!next && next[0] === '-';
-    el.classList.toggle('dd-excl', exc);
-    el.querySelector('input').checked = !!next && !exc;
-    let hidden = document.getElementById("waifuTag");
-    if (hidden) hidden.value = currentWaifuTags.join(" ");
-    return false;
-}
-
-function syncWaifuTags() {
-    let hidden = document.getElementById("waifuTag");
-    if (hidden) hidden.value = currentWaifuTags.join(" ");
-    renderWaifuTagDropdown();
-}
-
 // --- NekosAPI tag dropdown (flat ~50-tag vocabulary, laid out in columns) ---
 let currentNekosapiTags = []; // tokens: 'tag' = include, '-tag' = exclude
 let nekosapiTagList = [];
@@ -1006,7 +969,7 @@ function renderNekosapiTagDropdown() {
     }).join('');
 }
 
-// same cycle as waifuTagToggle; mutates the row in place — an innerHTML
+// same cycle as the tag toggles above; mutates the row in place — an innerHTML
 // rebuild would detach the click target and the outside-click closer
 // would fold the open menu
 function nekosapiTagToggle(el, isRight) {
@@ -2795,6 +2758,10 @@ window.onload = async function () {
             document.getElementById("downloadRetries").value = config.download_retries || 3;
             document.getElementById("reqRateLimit").value = config.req_rate_limit || 4;
             if (document.getElementById("dedupEnabled")) document.getElementById("dedupEnabled").checked = config.dedup_enabled !== false;
+            if (document.getElementById("autoJxlEnabled")) {
+                document.getElementById("autoJxlEnabled").checked = config.auto_convert_jxl === true;
+                document.getElementById("autoJxlEffort").value = config.jxl_effort || 5;
+            }
         }
     } catch (e) { console.error("Config error:", e); }
 
@@ -2812,17 +2779,8 @@ window.onload = async function () {
     updatePixivMode();
     await uiConfigReady;
 
-    // ponytail: history/settings/import are mutually independent — run them
-    // alongside the external waifu call instead of gated behind it
+    // ponytail: history/settings/import are mutually independent
     const _startupTail = Promise.allSettled([loadTagsData(), loadApiSettings(), importGallery()]);
-
-    try {
-        let resp = await fetch("/api/tags/waifu", {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig)
-        });
-        waifuTagList = await resp.json();
-        renderWaifuTagDropdown();
-    } catch (e) { console.error("waifu tags load failed:", e); }
 
     try {
         let resp = await fetch("/api/tags/nekosapi", {
@@ -3132,6 +3090,7 @@ function notifCardShell(n, idx, body, flashTitle) {
 function pixivNotifCard(n, idx) {
     const title = escapeHtml(n.title || "Untitled");
     const artist = escapeHtml(n.artist_name || "Unknown artist");
+    const artistId = String(n.artist_id || "").replace(/[^0-9]/g, "");
     const date = String(n.create_date || "").replace("T", " ").slice(0, 16);
     const thumb = n.thumb ? `/api/pixiv/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
     return notifCardShell(n, idx, `
@@ -3140,13 +3099,31 @@ function pixivNotifCard(n, idx) {
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
                 <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
-                <div style="font-size: 12px; opacity: 0.75;">${artist}${date ? " · " + date : ""}</div>
+                <div>${artistId ? `<span onclick="pixivGotoArtist('${escJs(artistId)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${artist}</span>` : artist}</div>
+                <div style="font-size: 12px; opacity: 0.75;">${date ? " · " + date : ""}</div>
             </div>`, "Open this artist in the Pixiv downloader");
+}
+
+// gelbooru notif titles are the watcher's raw tags bullet-joined
+// (core/watchers.py _entries) — clean each part, then show the SAME tags as
+// clickable gallery pills, but only the ones the title didn't already cover
+function notifTagRow(m, titleClean) {
+    const titleBits = new Set(titleClean.split(/\s*•\s*/).filter(Boolean).map(s => s.toLowerCase()));
+    const tags = (m.tags || [])
+        .map(t => String(t).trim())
+        .filter(Boolean)
+        .filter(t => !titleBits.has(cleanTagDisplay(t).toLowerCase()));
+    if (!tags.length) return "";
+    const pills = tags.map(t =>
+        `<span class="g-tag-pill ${getTagCategoryClass(categorizeTag(t))}" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`
+    ).join(' ');
+    return `<div style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 60px; overflow: hidden;">${pills}</div>`;
 }
 
 function gelbooruNotifCard(n, idx) {
     const m = n.metadata || {};
-    const title = escapeHtml(n.title || "New matching Gelbooru post");
+    const titleClean = String(n.title || "").split("•").map(p => cleanTagDisplay(p.trim())).filter(Boolean).join(" • ");
+    const title = escapeHtml(titleClean || "New matching Gelbooru post");
     const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
     const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
     const thumb = n.thumb ? `/api/gelbooru/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
@@ -3156,6 +3133,7 @@ function gelbooruNotifCard(n, idx) {
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
                 <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
+                ${notifTagRow(m, titleClean)}
                 <div style="font-size: 12px; opacity: 0.75;">New matching Gelbooru post · ${rating}${date ? " · " + date : ""}</div>
             </div>`, "Populate the Gelbooru downloader with this watcher's tags");
 }
@@ -3328,7 +3306,6 @@ function buildWorkerPayload(workerName) {
     payload.net_config.anti_ban_pause = document.getElementById("antiBanPause").value;
 
     if (workerName === 'zero') { payload.tag = currentZerochanTags.join(','); payload.limit = document.getElementById('zeroLimit').value; }
-    else if (workerName === 'waifu') { payload.tag = currentWaifuTags.join(' '); payload.limit = document.getElementById('waifuLimit').value; payload.rating = document.getElementById('waifuRating').value; payload.net_config.exclude_gifs = document.getElementById('waifuExGif').checked; }
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
     else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; payload.format = document.getElementById('nekosLifeFormat').value; }
     else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
@@ -3398,7 +3375,6 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
     if (workerName === 'gelbooru') { currentGelbooruTags = []; gelbooruSubTags.clear(); renderGelbooruTags(); document.getElementById('gelbooruTag').value = ''; }
-    if (workerName === 'waifu') { currentWaifuTags = []; syncWaifuTags(); }
     if (workerName === 'nekosapi') { currentNekosapiTags = []; syncNekosapiTags(); }
     if (workerName === 'eshuushuu') { currentEshuushuuTags = []; eshuushuuSubTags.clear(); renderEshuushuuTags(); document.getElementById('eshuushuuTag').value = ''; }
     if (workerName === 'gsbooru') { currentGsbooruTags = []; gsbooruSubTags.clear(); renderGsbooruTags(); document.getElementById('gsbooruTag').value = ''; }
@@ -3407,6 +3383,9 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'safe') { currentSafeTags = []; safeSubTags.clear(); renderSafeTags(); document.getElementById('safeTag').value = ''; }
     if (workerName === 'sankaku') { currentSankakuTags = []; sankakuSubTags.clear(); renderSankakuTags(); document.getElementById('sankakuTag').value = ''; }
     if (workerName === 'yande') { currentYandeTags = []; yandeSubTags.clear(); renderYandeTags(); document.getElementById('yandeTag').value = ''; }
+    // plain-text boxes (no tag-chip state): empty the field that was queued
+    if (workerName === 'pixiv') document.getElementById('pixivTag').value = '';
+    if (workerName === 'pinterest') document.getElementById('pinterestTag').value = '';
 }
 
 function startWorker(workerName) {
@@ -3555,6 +3534,10 @@ async function saveDownloadSettings() {
     globalNetConfig.download_retries = document.getElementById("downloadRetries").value;
     globalNetConfig.req_rate_limit = document.getElementById("reqRateLimit").value;
     if (document.getElementById("dedupEnabled")) globalNetConfig.dedup_enabled = document.getElementById("dedupEnabled").checked;
+    if (document.getElementById("autoJxlEnabled")) {
+        globalNetConfig.auto_convert_jxl = document.getElementById("autoJxlEnabled").checked;
+        globalNetConfig.jxl_effort = Number(document.getElementById("autoJxlEffort").value) || 5;
+    }
     const response = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
     if (!response.ok) throw new Error(response.status === 401 ? "Session ended. Sign in again to save." : "Could not save download settings.");
     return "Saved!";
@@ -4060,9 +4043,6 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
         }
         const pixExAI = document.getElementById('pixiv-exclude-ai');
         if (pixExAI) pixExAI.checked = excludeAI === true;
-    } else if (site === "waifu") {
-        currentWaifuTags = String(tag || "").split(/\s+/).filter(Boolean);
-        syncWaifuTags();
     } else if (site === "nekosapi") {
         // legacy history entries were free text ("catgirl yuri" / "catgirl, yuri")
         currentNekosapiTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
@@ -4089,17 +4069,6 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
     if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
-    if (site === "waifu") {
-        // new history stores rating (""/safe/nsfw); old entries carry the nsfw bool
-        const wr = document.getElementById("waifuRating");
-        if (wr) {
-            if ("rating" in f) wr.value = f.rating || "";
-            else if ("nsfw" in f) wr.value = f.nsfw ? "" : "safe";
-            else if (rating) wr.value = rating;
-            // the pair listener redraws the dropdown checkboxes + button label
-            wr.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }
     if ("hide_pools" in f) { const el = document.getElementById("sankakuHideBooks"); if (el) el.checked = !!f.hide_pools; }
     if (f.method) setSelectValue(document.getElementById("rule34Method"), f.method);
     if (f.sort_type) setSelectValue(document.getElementById("rule34SortType"), f.sort_type);
@@ -4410,8 +4379,7 @@ const SOURCE_RATINGS = {
     rule34: ['explicit'],
     nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'],
     nekosia: ['safe', 'sensitive'],
-    'waifu.im': ['safe', 'explicit'],
-    pinterest: ['safe'],
+        pinterest: ['safe'],
     pixiv: ['safe', 'questionable', 'explicit'],
     zerochan: ['safe'],
     'nekos.best': ['safe'],
@@ -4498,7 +4466,6 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
     else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
     else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
-    else if (menu.id === 'waifuRatingDropdown') onWaifuRatingChange();
     else if (menu.id === 'nekoCatDropdown') onNekoCatChange();
 }
 
@@ -4527,12 +4494,11 @@ function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaR
 function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
 function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
 function onSankakuRatingChange() { onMultiRatingChange('sankakuRatingDropdown', 'sankakuRating'); }
-function onWaifuRatingChange() { onMultiRatingChange('waifuRatingDropdown', 'waifuRating'); }
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown'], ['waifuRating', 'waifuRatingDropdown']].forEach(function (pair) {
+    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown']].forEach(function (pair) {
         const hidden = document.getElementById(pair[0]);
         if (!hidden) return;
         hidden.addEventListener('change', function () {
@@ -7180,7 +7146,7 @@ function toggleViewerFav() {
         // ponytail: Enter in any tag box starts its worker (rule34 input keeps
         // its own add-tag-on-Enter handler, so it's excluded here)
         const ENTER_TO_WORKER = {
-            zeroTag: 'zero', waifuTag: 'waifu', safeTag: 'safe',
+            zeroTag: 'zero', safeTag: 'safe',
             gelbooruTag: 'gelbooru', gsbooruTag: 'gsbooru', yandeTag: 'yande',
             danTag: 'dan', konaTag: 'kona', sankakuTag: 'sankaku',
             animeDlTag: 'anime_dl', pinterestTag: 'pinterest', pixivTag: 'pixiv',

@@ -41,7 +41,7 @@ class TestDatabaseManager:
         with open(path) as f:
             data = json.load(f)
         wp = data["wallpapers"]
-        wp["waifu"] = dict(wp["Waifu"])   # legacy lowercase clone
+        wp["waifu"] = dict(wp["Neko"])   # legacy lowercase clone (Waifu site removed)
         wp["zero"] = dict(wp["Zero"])
         wp["myupload"] = {"dark": "user_a.png", "light": "user_a_l.png"}  # real orphan upload
         with open(path, "w") as f:
@@ -49,7 +49,7 @@ class TestDatabaseManager:
 
         out = DatabaseManager.load_ui_config()["wallpapers"]
         assert "waifu" not in out and "zero" not in out
-        assert "Waifu" in out and "Zero" in out
+        assert "Zero" in out
         assert out["myupload"] == {"dark": "user_a.png", "light": "user_a_l.png"}
 
     def test_tag_history_operations(self, db_env):

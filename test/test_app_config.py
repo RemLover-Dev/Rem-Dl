@@ -118,8 +118,9 @@ def test_index_version_stamps_assets():
         assert r.status_code == 200
         html = r.get_data(as_text=True)
         for name in ("style.css", "script.js"):
-            v = int(os.path.getmtime(os.path.join("web", name)))
-            assert f'{name}?v={v}"' in html, f"{name} link not version-stamped"
+            st = os.stat(os.path.join("web", name))
+            assert f'{name}?v={st.st_mtime_ns}-{st.st_size}"' in html, \
+                f"{name} link not version-stamped"
 
 
 def test_folder_api_and_browse(tmp_path, monkeypatch):

@@ -26,8 +26,6 @@ if os.path.isdir(os.path.join(BASE_DIR, LEGACY_DOWNLOAD_DIR_NAME)) and not os.pa
 HISTORY_LOCK = threading.Lock()
 STOP_EVENTS = {}
 
-WAIFU_TAG_MAP = {}
-
 # queue batch reporting — the app registers a callback telling us whether more
 # jobs are waiting for a site, so a queued run reports its totals once
 queue_has_more = None  # (site) -> bool, set by Rems_Dl (avoids circular import)
@@ -73,6 +71,8 @@ def log_msg(worker_name, msg):
     log_callback(worker_name, redact(msg))
 
 def default_tag_handler(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None): pass
+post_download_callback = None  # Rems_Dl assigns the JXL auto-convert hook
+
 tag_callback = default_tag_handler
 TAG_CATEGORIES = ["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "tag"]
 
@@ -86,7 +86,6 @@ SITE_CANONICAL = {
     "zero": "zerochan", "zerochan": "zerochan",
     "neko": "nekos.life", "nekos.life": "nekos.life", "nekos_life": "nekos.life",
     "nekos.best": "nekos.best", "nekos_best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
-    "waifu": "waifu.im", "waifu.im": "waifu.im",
     "anime_dl": "anime_dl", "animepictures": "anime_dl",
 }
 
@@ -1591,6 +1590,9 @@ class BaseDownloader:
                 await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                if post_download_callback is not None:
+                    try: post_download_callback(filepath)
+                    except Exception: pass
                 return True
 
             except Exception as e:
