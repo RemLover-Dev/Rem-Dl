@@ -44,6 +44,13 @@ hidden_imports = [
     'core.database',
     'core.shared',
     'core.dedup_store',
+    'core.notifications',
+    'core.watchers',
+    'core.preview_cache',
+    'core.md5_refetch',
+    'core.pixiv_notify',
+    'core.extensions',
+    'core.extension_downloader',
     'workers',
 ]
 

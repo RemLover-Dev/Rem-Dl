@@ -54,7 +54,7 @@ class DatabaseManager:
         global _learned_cache
         with _DB_LOCK:
             _learned_cache = data
-            # write-through: saves only happen on a genuinely new tag
+            # write atomically via save_json (.tmp + replace)
             DatabaseManager.save_json(LEARNED_TAGS_FILE, data)
 
     @staticmethod
@@ -371,6 +371,7 @@ class DatabaseManager:
                 }
             }
         }
+
 
 
 class SettingsManager:

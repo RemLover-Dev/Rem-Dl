@@ -923,8 +923,8 @@ def set_clipboard():
     if sys.platform == "win32":
         if resolved_paths:
             try:
-                paths_arg = ", ".join(f'"{p}"' for p in resolved_paths)
-                ps_cmd = f"Set-Clipboard -Path {paths_arg}"
+                escaped = [p.replace("'", "''") for p in resolved_paths]
+                ps_cmd = "$paths = @(" + ", ".join(f"'{p}'" for p in escaped) + "); Set-Clipboard -LiteralPath $paths"
                 r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
                                    capture_output=True, text=True, timeout=5, check=False)
                 if r.returncode == 0:
@@ -938,7 +938,8 @@ def set_clipboard():
     if sys.platform == "darwin":
         if resolved_paths:
             try:
-                osa_items = ", ".join(f'(POSIX file "{p}")' for p in resolved_paths)
+                escaped = [p.replace('\\', '\\\\').replace('"', '\\"') for p in resolved_paths]
+                osa_items = ", ".join(f'(POSIX file "{p}")' for p in escaped)
                 osa_cmd = f"set the clipboard to {{{osa_items}}}"
                 r = subprocess.run(["osascript", "-e", osa_cmd], capture_output=True, text=True, timeout=5, check=False)
                 if r.returncode == 0:
@@ -3098,6 +3099,7 @@ def watchers_check_now():
 
 
 _NOTIF_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
+_NOTIF_THUMB_LOCK = threading.Lock()
 
 
 def _notif_thumb(url, referer, allow_host):
@@ -3112,7 +3114,8 @@ def _notif_thumb(url, referer, allow_host):
             return jsonify({"error": "bad thumbnail URL"}), 400
     except ValueError:
         return jsonify({"error": "bad thumbnail URL"}), 400
-    cached = _NOTIF_THUMB_CACHE.get(url)
+    with _NOTIF_THUMB_LOCK:
+        cached = _NOTIF_THUMB_CACHE.get(url)
     if cached:
         return Response(cached[0], mimetype=cached[1])
     try:
@@ -3131,9 +3134,10 @@ def _notif_thumb(url, referer, allow_host):
                     raise ValueError("Thumbnail too large")
     except Exception:
         return jsonify({"error": "thumbnail fetch failed"}), 502
-    if len(_NOTIF_THUMB_CACHE) >= 64:
-        _NOTIF_THUMB_CACHE.pop(next(iter(_NOTIF_THUMB_CACHE)))
-    _NOTIF_THUMB_CACHE[url] = (bytes(payload), ctype)
+    with _NOTIF_THUMB_LOCK:
+        if len(_NOTIF_THUMB_CACHE) >= 64:
+            _NOTIF_THUMB_CACHE.pop(next(iter(_NOTIF_THUMB_CACHE)), None)
+        _NOTIF_THUMB_CACHE[url] = (bytes(payload), ctype)
     return Response(bytes(payload), mimetype=ctype)
 
 
@@ -3156,6 +3160,15 @@ def gelbooru_notif_thumb():
 # ==========================================
 # === AUTO-SHUTDOWN SYSTEM ===
 # ==========================================
+def is_headless_mode():
+    """Detect whether Rems Dl is running in headless, server, or Docker container mode."""
+    return (
+        os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")
+        or os.environ.get("DOCKER", "").lower() in ("1", "true", "yes")
+        or os.path.exists("/.dockerenv")
+        or any(arg in sys.argv for arg in ("--headless", "--server", "--no-window"))
+    )
+
 @socketio.on("connect")
 def handle_connect():
     global shutdown_timer
@@ -3168,8 +3181,9 @@ def handle_connect():
 @socketio.on("disconnect")
 def handle_disconnect():
     global shutdown_timer
-    if _HEADLESS:
-        return  # server mode serves real browsers — a tab closing is normal
+    if is_headless_mode():
+        # Headless, server, or Docker instances must stay running across tab disconnects
+        return
     print("Browser Tab Closed! Shutting down in 3 seconds if not reconnected...")
 
     def shutdown_server():
@@ -3618,7 +3632,7 @@ if __name__ == "__main__":
         log_fn=lambda msg: log_msg("watcher", msg),
     )
 
-    is_headless = _HEADLESS
+    is_headless = is_headless_mode()
 
     port = int(os.environ.get("PORT", 0)) or _pick_loopback_port()
     host = os.environ.get("REMS_HOST", "127.0.0.1") if is_headless else "127.0.0.1"

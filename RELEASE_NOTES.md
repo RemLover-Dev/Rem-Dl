@@ -1,35 +1,31 @@
-# Rem 5.3 - Rems Dl Release Notes
+# Rem 5.6 - Rems Dl Release Notes
 
-We are thrilled to present **Rem 5.3 (Rems Dl v5.3.0)**! This release resolves the critical PyInstaller runtime metadata issue on Windows portable and installer builds, introduces interactive gallery multi-selection with bulk operations, cross-platform native clipboard file/image copying, desktop folder picker integration, deduplication synchronization, and comprehensive layout refinements.
+We are thrilled to present **Rem 5.6 (Rems Dl v5.6.0)**! This major release introduces the revolutionary **JPEG XL (JXL)** conversion pipeline and JXL Lab, enhanced headless/server and Docker operation, advanced rate-limiting safeguards, desktop integration automation on Linux, Windows installer enhancements, folder rename safety, and full cross-platform stability.
 
 ---
 
-## 🚀 What's New in Rem 5.3
+## 🚀 What's New in Rem 5.6
 
-### 🛠️ PyInstaller Metadata Fix (`rule34Py` & Frozen Bundles)
-- **Resolved Startup Crash:** Fixed `importlib.metadata.PackageNotFoundError: No package metadata was found for rule34Py` which previously prevented frozen executable builds (installer and portable) from launching.
-- **Automated Metadata Bundling:** Configured `copy_metadata` in `Rems_Dl.spec` to automatically package required package distribution metadata into standalone releases.
-- **Custom Hooks & Runtime Safeguards:** Added dedicated hook `hooks/hook-rule34Py.py` and runtime hook `hooks/rthook-metadata.py` with multi-layered runtime fallbacks in Python code to guarantee reliable startup across all environments.
+### 🖼️ Next-Gen Image Format: JPEG XL (JXL) Pipeline
+- **Automatic JXL Conversion:** Optionally auto-convert downloaded images directly to modern JPEG XL format, drastically slashing file sizes while preserving visual quality.
+- **JXL Lab:** Convert existing folders, galleries, or individual images to JXL with configurable compression effort and lossless/lossy parameters.
+- **JXL Wallpaper & Preview Support:** Native JXL display and picker support in gallery and desktop wallpaper selection.
 
-### 🎨 Gallery Multi-Select & Bulk Actions
-- **Interactive Multi-Select Mode:** Easily select images across the current page using click, drag-paint, or `Ctrl+A`.
-- **Bulk Clipboard Copy:** Copy multiple selected image files or single full-resolution images directly to the system clipboard.
-- **Bulk Disk Deletion:** Delete selected gallery items from disk with immediate deduplication store synchronization.
+### 🌐 Hardened Headless, Server & Docker Operation
+- **Persistent Headless Daemon:** In headless, server (`--headless`, `--server`), or Docker environments, closing browser tabs will **not** terminate the process.
+- **Docker Image Updates:** Official container builds on GHCR with full dependency packaging (including `PySocks` and `pinterest-dl`).
+- **Secure Thumbnail Proxy:** Thread-safe notification and thumbnail caching with strict SSRF filtering and allowed host verification.
 
-### 📋 Cross-Platform Native Clipboard Integration
-- System-level clipboard support for image bitmaps and file paths across Windows, macOS, and Linux without external CLI dependencies.
+### 🛡️ Scraper Resilience & Rate Limiting
+- **Automated 429 Protection:** Rate limiters and backoff logic to prevent IP bans and throttling across Anime-DL, Zerochan, and boorus.
+- **Tag Cache & Recategorization:** Gelbooru tag category caching and normalization for fast, accurate search and filtering.
+- **Retired Inactive Scrapers:** Removed deprecated Waifu.im scraper.
 
-### 📁 Desktop Folder Picker
-- Integrated native directory selection dialog via `/api/folder` and quick-access button to open download directories directly in the OS file explorer.
-
-### ⚡ Deduplication & Startup Performance
-- Dedup database cleanup is automatically triggered when images are removed from the gallery, preventing orphaned hash entries.
-- Streamlined startup rescan routines for faster boot times.
-
-### 🖼️ Gallery & Layout Polish
-- Refined multi-column card spacing and reduced bottom gap between gallery grid and pagination controls.
-- Decoded entity-encoded tags for booru sites (Gelbooru & Safebooru).
-- Visual enhancements for toasts, tag scrollbars, and media icons.
+### 💻 Platform & Packaging Improvements
+- **Windows Installer & Portable:** Inno Setup installer automation in CI with bundled Visual C++ Redistributable (`vc_redist.x64.exe`) inside the Portable Zip.
+- **Linux Desktop Integration:** Added `install-desktop.sh` to automatically install application launcher shortcuts and high-resolution icons to the desktop environment.
+- **Robust Path & Clipboard Handling:** Enhanced PowerShell and macOS clipboard handling with literal path escaping, avoiding issues with special characters.
+- **Safe Folder Rename Policy:** Two-step rename handling for case-only changes on case-insensitive filesystems (Windows/macOS) to prevent accidental data loss.
 
 ---
 
@@ -38,5 +34,6 @@ We are thrilled to present **Rem 5.3 (Rems Dl v5.3.0)**! This release resolves t
 | File | Platform | Type | Description |
 |------|----------|------|-------------|
 | **`Rems-Dl-Windows-x64-Setup.exe`** | Windows (x64) | Installer | **Recommended for Windows.** Full setup with automatic Visual C++ runtime detection & installation. |
-| **`Rems-Dl-Windows-x64-Portable.zip`** | Windows (x64) | Portable Archive | Standalone portable folder. Extract and double-click `Rems_Dl.exe`. |
-| **`Rems-Dl-Linux-x86_64.tar.gz`** | Linux (x86_64) | Standalone Archive | Standalone Linux application with desktop integration files. |
+| **`Rems-Dl-Windows-x64-Portable.zip`** | Windows (x64) | Portable Archive | Standalone portable folder with bundled `vc_redist.x64.exe`. Extract and launch `Rems_Dl.exe`. |
+| **`Rems-Dl-Linux-x86_64.tar.gz`** | Linux (x86_64) | Standalone Archive | Standalone Linux application with `install-desktop.sh` integration script. |
+| **`ghcr.io/remlover-dev/rems-dl:latest`** | Linux (Docker) | Container Image | Official container image for zero-host-dependency headless server deployment. |

@@ -4,6 +4,23 @@ All notable changes to Rems Dl will be documented in this file.
 
 ---
 
+## [5.6.0] - Rem 5.6: JPEG XL Engine, Headless Persistence, Scraper Resilience & Release Automation - 2026-10-27
+
+### Added
+- **JPEG XL (JXL) Pipeline & JXL Lab:** Automatic post-download conversion to JPEG XL, JXL Lab for mass image conversion with lossless/effort controls, and native JXL gallery/wallpaper display.
+- **Headless Server & Docker Persistence:** Seamless long-running execution for headless server and containerized deployments across browser tab closures.
+- **Automated Desktop Integration:** Added `install-desktop.sh` for one-click shortcut and icon installation on Linux desktop environments.
+- **Portable VC++ Bundling:** Integrated `vc_redist.x64.exe` directly into the Windows portable zip package.
+- **Inno Setup Automated Availability Check:** Automated download and verification of Inno Setup in GitHub Actions workflow.
+
+### Fixed
+- **Safe Folder Rename Protection:** Implemented two-step directory rename on case-insensitive filesystems (Windows/macOS) to prevent data loss.
+- **Scraper Rate Limiting & 429 Protection:** Paced requests and backoff retry logic across Anime-DL, Zerochan, and boorus.
+- **SSRF Hardening & Thumbnail Proxy:** Thread-safe bounded in-memory caching and strict host/port checks for notification thumbnails.
+- **Cross-Platform Test Suite:** Full test suite execution across Windows and POSIX without cross-drive or platform lockups.
+
+---
+
 ## [5.3.0] - Rem 5.3: PyInstaller Metadata Fix, Multi-Select & Productivity Overhaul - 2026-09-27
 
 ### Fixed

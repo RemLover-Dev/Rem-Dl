@@ -1,14 +1,14 @@
 <div align="center">
 
-# Rems Dl 5.3
+# Rems Dl 5.6
 
 **ابزار عظیم و چندنخی (Multi-threaded) برای دانلود تصاویر و مدیا با رابط کاربری شیشه‌ای وب**
 
-پشتیبانی کامل از Rule34، Safebooru، Gelbooru، Gsbooru، Zerochan، Waifu.im، Nekos.best، Nekos.life، Yande.re، Konachan، Danbooru، Sankaku، e-shuushuu، NekosAPI، Nekosia، AnimePictures، Pixiv و Pinterest.
+پشتیبانی کامل از Rule34، Safebooru، Gelbooru، Gsbooru، Zerochan، Nekos.best، Nekos.life، Yande.re، Konachan، Danbooru، Sankaku، e-shuushuu، NekosAPI، Nekosia، AnimePictures، Pixiv و Pinterest.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-5.3.0-ff9ff3.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-5.6.0-ff9ff3.svg)](CHANGELOG.md)
 
 [English](README.md) | [فارسی](README_fa.md) | [لینوکس و داکر](#linux-docker)
 
@@ -17,6 +17,15 @@
 ---
 
 <div dir="rtl">
+
+## ✨ قابلیت‌های جدید در نسخه 5.6 (Rem 5.6)
+- **پشتیبانی کامل از فرمت نسل جدید JPEG XL (JXL):** امکان تبدیل خودکار دانلودها به فرمت فشرده و باکیفیت JXL، آزمایشگاه تبدیل دسته‌جمعی (JXL Lab)، کنترل سطح فشرده‌سازی Lossless/Lossy و پشتیبانی از JXL در والپیپر و گالری.
+- **اجرای پایدار در حالت سرور و داکر (Headless):** در حالت بدون پنجره یا داکر، با بستن تب‌های مرورگر برنامه قطع نخواهد شد و به کار خود ادامه می‌دهد.
+- **محافظت در برابر محدودیت ریت‌لیمیت (429):** جلوگیری هوشمندانه از بن شدن آی‌پی و مدیریت صف با تاخیرهای ایمن در تمام ورکرها.
+- **کش و دسته‌بندی تگ‌ها:** کش خودکار دسته‌بندی تگ‌های Gelbooru و تفکیک سریع تگ‌ها در سرچ و دانلود.
+- **نصب آسان و یکپارچه‌سازی:** فایل نصاب خودکار ویندوز، قرارگیری `vc_redist.x64.exe` در بسته پرتابل و اسکریپت `install-desktop.sh` برای افزودن خودکار آیکون و لانچر در لینوکس.
+- **امنیت تغییر نام پوشه‌ها:** محافظت از پاک شدن اطلاعات در تغییر نام‌های فقط-حروف‌بزرگ/کوچک در ویندوز و مک.
+- **امنیت و کلیپ‌بورد بومی:** کدگذاری ایمن مسیرها در کلیپ‌بورد سیستم و پراکسی امن تامبنیل‌ها در برابر حملات SSRF.
 
 ## ✨ قابلیت‌های جدید در نسخه 5.3 (Rem 5.3)
 - **رفع خطای متادیتای PyInstaller (`rule34Py`):** رفع قطعی خطای باز نشدن بیلد پورتابل و نصبی با باندل متادیتا و لایه‌های ایمنی در اجرا.
@@ -230,6 +239,8 @@ Rems Dl/
 ### گزینه ۲: نسخه پرتابل (Zip)
 ۱. فایل `Rems-Dl-Windows-x64-Portable.zip` را دانلود کنید.
 ۲. آن را در هر پوشه‌ای استخراج کرده و `Rems_Dl.exe` را اجرا کنید.
+۳. در صورت بروز هرگونه خطای C++ Runtime (مانند `VCRUNTIME140.dll missing`)، فایل نصاب همراه **`vc_redist.x64.exe`** را اجرا کنید.
+۴. ران‌تایم Microsoft Edge WebView2 (که در ویندوز ۱۰ و ۱۱ به طور پیش‌فرض نصب است) برای رابط گرافیکی استفاده می‌شود. در صورت نبود، برنامه در مرورگر وب سیستم باز خواهد شد.
 
 ---
 
@@ -238,24 +249,27 @@ Rems Dl/
 برنامه Rems Dl در لینوکس به ۳ روش قابل اجرا است: **پنجره نیتیو دسکتاپ** (WebKitGTK)، **حالت سرور/مرورگر وب**، یا از طریق **داکر**.
 
 ### ۱. پیش‌نیازهای پنجره دسکتاپ در توزیع‌های مختلف لینوکس
-اگر می‌خواهید برنامه به صورت پنجره مستقل دسکتاپ باز شود، پکیج‌های WebKitGTK و PyGObject را نصب کنید:
+اگر می‌خواهید برنامه به صورت پنجره مستقل دسکتاپ باز شود، پکیج‌های WebKitGTK و ابزارهای کلیپ‌بورد/پیکر را نصب کنید:
 
 - **اوبونتو / دبیان / مینت / پاپ او‌اس (Debian / Ubuntu / Mint):**
   ```bash
   sudo apt update
-  sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
+  sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 xclip zenity
   ```
-  *(در نسخه‌های قدیمی‌تر مانند Ubuntu 20.04 از `gir1.2-webkit2-4.0` استفاده کنید).*
+  *(در نسخه‌های قدیمی‌تر مانند Ubuntu 20.04 از `gir1.2-webkit2-4.0` استفاده کنید. در محیط Wayland می‌توانید به جای xclip از `wl-clipboard` استفاده کنید).*
 
 - **آرچ لینوکس / مانجارو (Arch Linux / Manjaro):**
   ```bash
-  sudo pacman -S python-gobject webkit2gtk-4.1 gtk3
+  sudo pacman -S python-gobject webkit2gtk-4.1 gtk3 xclip zenity
   ```
 
 - **فدورا / ردهت (Fedora / RHEL):**
   ```bash
-  sudo dnf install -y python3-gobject webkit2gtk4.1 gtk3
+  sudo dnf install -y python3-gobject webkit2gtk4.1 gtk3 xclip zenity
   ```
+
+- **پیش‌نمایش ویدیوها (اختیاری):**
+  نصب `ffmpeg` (`sudo apt install ffmpeg` یا معادل آن) امکان پیش‌نمایش شناور ویدیوها بدون صدا و استخراج تامبنیل را فراهم می‌کند.
 
 ### ۲. اجرای بسته آماده لینوکس (بدون نیاز به پایتون سیستم)
 ```bash
@@ -265,7 +279,12 @@ cd Rems_Dl
 ```
 
 ### ۳. افزودن لانچر دسکتاپ به منوی لینوکس
-فایل `Rems_Dl.desktop` برنامه را با آیکون `icon/icon.png` در منوی اپلیکیشن‌های لینوکس ثبت می‌کند:
+برای افزودن خودکار Rems Dl به منوی برنامه‌ها همراه با آیکون:
+```bash
+# اجرای اسکریپت نصاب همراه بسته
+./install-desktop.sh
+```
+یا به صورت دستی:
 ```bash
 cp Rems_Dl.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
@@ -279,7 +298,7 @@ update-desktop-database ~/.local/share/applications/
   # یا
   python Rems_Dl.py --headless
   ```
-  در این حالت برنامه روی `0.0.0.0:5000` اجرا شده و از طریق هر دستگاهی در شبکه در دسترس است.
+  در این حالت برنامه روی `0.0.0.0:5000` اجرا شده و با بستن تب مرورگر سرور متوقف **نمی‌شود**.
 
 ### ۵. اجرا با داکر (Docker)
 ```bash

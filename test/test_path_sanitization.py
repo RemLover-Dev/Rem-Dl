@@ -171,6 +171,7 @@ class TestWorkerFolderBuildingWithProhibitedChars:
 
     def test_eshuushuu_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
+        monkeypatch.setattr(EShuushuuWorker, "_resolve_many", lambda self, tags: (["123"], []))
         w = EShuushuuWorker("re:zero", 10, [], "", self.NET_CONFIG)
         assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))

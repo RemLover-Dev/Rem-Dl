@@ -1,5 +1,5 @@
 import os
-
+import sys
 from PIL import Image
 
 
@@ -53,7 +53,7 @@ def test_inno_setup_script():
     assert "Rems-Dl-Windows-x64-Setup" in content
     assert "VCRedistNeedsInstall" in content
     assert "RemLoverDev.RemsDl.App.1.0" in content
-    assert '#define MyAppVersion "5.3.0"' in content
+    assert '#define MyAppVersion "5.6.0"' in content
 
 
 def test_pyinstaller_spec_and_metadata_hooks():
@@ -199,3 +199,39 @@ def test_gallery_file_revalidates_instead_of_serving_stale(tmp_path, monkeypatch
         rmiss = client.get("/api/gallery/file/sub/gone.jpg", headers=H)
         assert rmiss.status_code == 404
         assert "max-age" not in rmiss.headers.get("Cache-Control", "")
+
+
+def test_is_headless_mode_detection(monkeypatch):
+    import Rems_Dl
+    monkeypatch.delenv("REMS_HEADLESS", raising=False)
+    monkeypatch.delenv("DOCKER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["Rems_Dl.py"])
+    assert Rems_Dl.is_headless_mode() is False
+
+    monkeypatch.setenv("REMS_HEADLESS", "1")
+    assert Rems_Dl.is_headless_mode() is True
+
+    monkeypatch.delenv("REMS_HEADLESS", raising=False)
+    monkeypatch.setenv("DOCKER", "true")
+    assert Rems_Dl.is_headless_mode() is True
+
+    monkeypatch.delenv("DOCKER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["Rems_Dl.py", "--headless"])
+    assert Rems_Dl.is_headless_mode() is True
+
+
+def test_handle_disconnect_headless_ignores_timer(monkeypatch):
+    import Rems_Dl
+    monkeypatch.setenv("REMS_HEADLESS", "1")
+    Rems_Dl.shutdown_timer = None
+    Rems_Dl.handle_disconnect()
+    assert Rems_Dl.shutdown_timer is None
+
+
+def test_install_desktop_script():
+    sh_file = "install-desktop.sh"
+    assert os.path.isfile(sh_file)
+    with open(sh_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "Rems_Dl.desktop" in content
+    assert "applications" in content
