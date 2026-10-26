@@ -86,8 +86,14 @@ def _rename_tree(root, folder_component):
             # the parent's own turn comes round)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.exists(dst):
-                kept += _merge_dir(src, dst)[1]
-                merged += 1
+                if os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst)):
+                    tmp_dst = f"{src}__rems_tmp_{os.getpid()}"
+                    os.rename(src, tmp_dst)
+                    os.rename(tmp_dst, dst)
+                    renamed += 1
+                else:
+                    kept += _merge_dir(src, dst)[1]
+                    merged += 1
             else:
                 os.rename(src, dst)
                 renamed += 1

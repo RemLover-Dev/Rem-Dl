@@ -35,7 +35,10 @@ def _isolate_data_files():
     tmp = tempfile.mkdtemp(prefix="rems_dl_test_")
     for pkg in (core, workers):
         for info in pkgutil.iter_modules(pkg.__path__):
-            mod = importlib.import_module(f"{pkg.__name__}.{info.name}")
+            try:
+                mod = importlib.import_module(f"{pkg.__name__}.{info.name}")
+            except (ImportError, ModuleNotFoundError):
+                continue
             for name, value in list(vars(mod).items()):
                 if (name.endswith("_FILE") and isinstance(value, str)
                         and f"{os.sep}database{os.sep}" in value):

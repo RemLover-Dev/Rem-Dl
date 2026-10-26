@@ -186,6 +186,10 @@ def test_gallery_file_revalidates_instead_of_serving_stale(tmp_path, monkeypatch
         r304 = client.get("/api/gallery/file/sub/a.jpg", headers={**H, "If-None-Match": etag})
         assert r304.status_code == 304
 
+        # close open file handles before unlinking (required on Windows)
+        r.close()
+        r304.close()
+
         # deleted file answers 404 even with a conditional revalidation
         os.remove(img_path)
         r404 = client.get("/api/gallery/file/sub/a.jpg", headers={**H, "If-None-Match": etag})

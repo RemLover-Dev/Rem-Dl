@@ -1,6 +1,7 @@
 """Wallpaper picker: native-path upload branch + /api/file/browse wiring."""
 import io
 import os
+import sys
 
 import pytest
 
@@ -81,6 +82,7 @@ def test_browse_non_kde_gets_error(client, monkeypatch):
 
 
 def test_browse_kde_cancelled(client, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
     monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda: None)
     r = client.post("/api/file/browse")
@@ -88,6 +90,7 @@ def test_browse_kde_cancelled(client, monkeypatch):
 
 
 def test_browse_kde_no_picker(client, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
     monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda: False)
     r = client.post("/api/file/browse")
@@ -95,6 +98,7 @@ def test_browse_kde_no_picker(client, monkeypatch):
 
 
 def test_browse_kde_returns_path(client, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
     monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda: "/tmp/x.png")
     r = client.post("/api/file/browse")
@@ -102,6 +106,7 @@ def test_browse_kde_returns_path(client, monkeypatch):
 
 
 def test_jxl_picker_prefers_kdialog(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
     import subprocess
 
     calls = []
@@ -121,6 +126,7 @@ def test_jxl_picker_prefers_kdialog(monkeypatch):
 
 
 def test_jxl_picker_cancelled_kdialog(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
     import subprocess
 
     class R:

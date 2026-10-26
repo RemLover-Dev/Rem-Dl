@@ -5,9 +5,9 @@ import time
 
 from curl_cffi import requests as curl_requests
 
+from core import shared
 from core.dedup_store import hash_bytes
 from core.shared import (
-    MASTER_FOLDER,
     BaseDownloader,
     absorb_duplicate,
     add_to_gallery,
@@ -177,7 +177,10 @@ class AnimeDlWorker(BaseDownloader):
 
                 pct = int((self.downloaded_count / target_total) * 100) if target_total > 0 else 0
 
-                rel_path = os.path.relpath(filepath, MASTER_FOLDER)
+                try:
+                    rel_path = os.path.relpath(filepath, shared.MASTER_FOLDER)
+                except ValueError:
+                    rel_path = filepath
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 

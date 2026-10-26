@@ -34,7 +34,13 @@ def test_recategorize_demotes_and_is_site_scoped():
     assert not recategorize_tags(None, "gelbooru", CACHES)
 
 
-def test_load_tag_caches_returns_normalized_strings():
+def test_load_tag_caches_returns_normalized_strings(tmp_path, monkeypatch):
+    from core import shared
+
+    db = tmp_path / "database"
+    db.mkdir()
+    (db / "gelbooru_tag_types.json").write_text('{"rem": "character", "blue_hair": 0}')
+    monkeypatch.setattr(shared, "BASE_DIR", str(tmp_path))
     caches = load_tag_caches()
     assert "gelbooru" in caches
     assert all(isinstance(c, str) for c in caches["gelbooru"].values())
