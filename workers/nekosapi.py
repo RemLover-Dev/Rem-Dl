@@ -1,6 +1,12 @@
-import os
 import asyncio
-from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir
+import os
+
+from core.shared import (
+    BaseDownloader,
+    folder_component,
+    safe_ensure_dir,
+    sanitize_filename,
+)
 
 # API rating codes -> canonical gallery ratings (API words differ from the
 # gallery's safe/sensitive/questionable/explicit: suggestive, borderline)
@@ -33,12 +39,12 @@ class NekosApiWorker(BaseDownloader):
         self.rating_display = ", ".join(self.rating_map[c] for c in codes)
 
         self.api_base = "https://api.nekosapi.com/v4"
-        safe_tag_folder = sanitize_path_component("_".join(self.tags), fallback="kemonomimi")
+        safe_tag_folder = folder_component("_".join(self.tags), fallback="kemonomimi")
         self.tag_dir = os.path.join(self.site_root, safe_tag_folder)
         # per-image rating dirs: every file lands under its OWN API rating —
         # an All Ratings (or multi-rating) run never piles mixed ratings into
         # one folder, so the path itself always states the rating
-        self.rating_dirs = {c: sanitize_path_component(lbl, fallback="All Ratings")
+        self.rating_dirs = {c: folder_component(lbl, fallback="All Ratings")
                             for c, lbl in self.rating_map.items()}
         # images the API gives no rating to (only an All Ratings run lets them
         # past the safety net) have nothing better to go by

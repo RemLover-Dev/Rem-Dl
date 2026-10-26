@@ -44,7 +44,7 @@
     margin: 0;
     padding: 0;
     box-sizing: border-box;
-    font-family: 'Inter', 'AppSymbols', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Inter', 'AppSymbols', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans JP', 'Noto Sans CJK JP', 'Yu Gothic UI', 'Meiryo', 'Hiragino Sans', 'Noto Sans KR', 'Noto Sans CJK KR', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif;
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-optical-sizing: auto;
@@ -58,10 +58,6 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    background-size: 100% 100%;
-    background-position: center;
-    background-repeat: no-repeat;
-    transition: background-image 0.4s ease-in-out, color 0.3s ease;
     color: var(--text-color);
 }
 
@@ -279,7 +275,7 @@ input[type="text"], input[type="email"], input[type="number"], input[type="passw
     background: var(--input-bg);
     color: var(--text-color);
     outline: none;
-    font-family: 'Inter', 'AppSymbols', sans-serif;
+    font-family: 'Inter', 'AppSymbols', 'Noto Sans JP', 'Noto Sans CJK JP', 'Yu Gothic UI', 'Meiryo', 'Hiragino Sans', 'Noto Sans KR', 'Noto Sans CJK KR', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif;
     font-size: 13px;
     transition: all 0.2s ease;
 }
@@ -313,7 +309,6 @@ input:focus, select:focus {
     font-size: 13px; font-weight: 600;
     cursor: pointer;
     transition: all 0.2s ease;
-    backdrop-filter: blur(8px);
 }
 .theme-mode-group label:hover { box-shadow: 0 0 0 1px var(--accent-color); transform: translateY(-1px); }
 .theme-mode-group input {
@@ -455,7 +450,14 @@ input:focus, select:focus {
     border: 1px solid transparent;
     box-shadow: 0 4px 15px rgba(0,0,0,0.15), 0 0 0 1px var(--border-color);
     gap: 15px;
-    animation: slideIn 0.3s ease-out;
+    /* transform-only entrance, backwards-fill: animating opacity on a card whose
+       children carry filter:blur() forces group re-compositing on WebKitGTK,
+       which is the blink on new log/history entries */
+    animation: slideIn 0.25s ease-out backwards;
+    isolation: isolate;
+    transform: translateZ(0);
+    backface-visibility: hidden;
+    contain: layout paint;
     position: relative;
     /* clip filter/hover repaints to the card — blur(22px) paints ~22px past the
        thumb, and WebKitGTK leaves that stale paint outside the card until the
@@ -531,7 +533,9 @@ input:focus, select:focus {
     margin-top: 8px;
     width: fit-content;
 }
-@keyframes slideIn { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
+/* rows that already played their entrance (history re-renders) stay still */
+.image-card-log.no-anim { animation: none; }
+@keyframes slideIn { from { transform: translateX(-20px) translateZ(0); } to { transform: translateX(0) translateZ(0); } }
 
 .log-item.system {
     background: rgba(52, 152, 219, 0.1);
@@ -618,6 +622,12 @@ input[type="checkbox"] {
     position: relative;
     transition: all 0.2s ease;
 }
+/* keep label text vertically centred on its checkbox: an empty inline-block
+   sits its baseline on the bottom edge (box rides high vs. the text), and the
+   label's font line-box is taller than the 16px box */
+input[type="checkbox"] { vertical-align: middle; }
+input[type="checkbox"] + label { line-height: 16px; vertical-align: middle; }
+label:has(> input[type="checkbox"]) { line-height: 16px; }
 input[type="checkbox"]:hover { box-shadow: 0 0 6px rgba(0, 210, 211, 0.3), 0 0 0 2px var(--title-color); }
 input[type="checkbox"]:checked {
     background: var(--title-color);
@@ -672,7 +682,7 @@ select option:hover, select option:checked { background: var(--title-color); col
     color: var(--text-color);
     padding: 8px 12px;
     font-size: 13px;
-    font-family: 'Inter', 'AppSymbols', sans-serif;
+    font-family: 'Inter', 'AppSymbols', 'Noto Sans JP', 'Noto Sans CJK JP', 'Yu Gothic UI', 'Meiryo', 'Hiragino Sans', 'Noto Sans KR', 'Noto Sans CJK KR', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif;
     cursor: pointer;
     transition: all 0.2s ease;
 }
@@ -739,8 +749,8 @@ select option:hover, select option:checked { background: var(--title-color); col
 }
 .toast-item {
     pointer-events: auto;
-    background: rgba(20, 22, 35, 0.95);
-    backdrop-filter: blur(12px);
+    background: rgba(20, 22, 35, 0.98);
+    /* no backdrop-filter: it blinks while the toast animates opacity/transform */
     border: 1px solid transparent;
     border-radius: 12px;
     padding: 12px 16px;
@@ -843,6 +853,10 @@ select option:hover, select option:checked { background: var(--title-color); col
     position: relative;
     border-radius: 8px;
     overflow: hidden;
+    /* contain: paint pairs with overflow:hidden — hover repaints stay in the
+       card's own layer instead of invalidating the grid around it */
+    isolation: isolate;
+    contain: layout paint;
     cursor: pointer;
     background: #0a0e17;
     border: 1px solid rgba(45, 212, 191, 0.16);
@@ -860,13 +874,10 @@ select option:hover, select option:checked { background: var(--title-color); col
     border-color: rgba(45, 212, 191, 0.95);
 }
 .gallery-card:hover {
-    transform: translateY(-2px);
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(45, 212, 191, 0.5);
     border-color: rgba(45, 212, 191, 0.5);
     z-index: 2;
 }
-.gallery-card.broken { opacity: 0.3; }
-
 /* real checkbox — mirrors the heart, other side of the card
    (.gallery-card prefix needed: global input[type=checkbox] = 0,1,1 beats 0,1,0) */
 .gallery-card .gallery-card-select {
@@ -878,15 +889,24 @@ select option:hover, select option:checked { background: var(--title-color); col
     height: 18px;
     margin: 0;
     cursor: pointer;
-    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85));
+    box-shadow: 0 0 0 2px var(--border-color), 0 1px 4px rgba(0, 0, 0, 0.7);
+    will-change: opacity;
+    transform: translateZ(0);
+    backface-visibility: hidden;
+    /* declare it here or the global input rule's `transition: all 0.2s`
+       supplies the transition and the fade-out blinks on unhover */
+    transition: none;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.15s ease;
+    /* no fade-out: WebKitGTK blinks a filtered element while it animates to
+       opacity 0 — hide instantly on leave, fade in on hover */
 }
 .gallery-card:hover .gallery-card-select,
 #galleryGrid.select-mode .gallery-card-select {
     opacity: 1;
     pointer-events: auto;
+    /* fade raced with the pointer-events flip and blinked; plain show/hide */
+    transition: none;
 }
 #galleryGrid.select-mode .gallery-card-heart {
     opacity: 1;
@@ -929,7 +949,15 @@ select option:hover, select option:checked { background: var(--title-color); col
     height: 100%;
     object-fit: cover;
     object-position: 50% 20%;
-    transition: filter 0.25s ease, transform 0.25s ease;
+}
+/* base: filter only — geometry changes never happen on plain cards, and a
+   transition on inset/width/height makes the browser watch them on every
+   frame under the hover overlays. The NSFW blur rules below carry their own
+   full transition (box size and blur on the same timing, so the shrinking
+   box never outruns the blur fade) */
+.gallery-card img,
+.gallery-hover-media {
+    transition: filter 0.25s ease;
 }
 /* hover-to-play media sits exactly where the thumb does */
 .gallery-hover-media {
@@ -964,19 +992,45 @@ select option:hover, select option:checked { background: var(--title-color); col
 }
 
 /* NSFW Blur Filter — one switch (blur-nsfw on <body>), same is-nsfw marker everywhere */
+/* blur() is a gaussian std-dev: the edge fade reaches ~3σ (3x the radius).
+   Overscan in *pixels* (not a scale, which is only a few px on a small tile)
+   pushes that fade outside the overflow:hidden clip — cover a full 3σ or a
+   faint dark rim survives at ~2σ. */
 body.blur-nsfw .gallery-card.is-nsfw img,
 body.blur-nsfw .gallery-card.is-nsfw .gallery-hover-media {
-    filter: blur(22px);
-    transform: scale(1.08);
+    filter: blur(14px);
+    inset: -44px;
+    width: calc(100% + 88px);
+    height: calc(100% + 88px);
+    /* leave / blurred state: geometry grows immediately, blur starts 0.12s late */
+    transition: inset 0.25s ease, width 0.25s ease, height 0.25s ease,
+                filter 0.25s ease 0.12s;
 }
+
+/* hover state: no delay, unblur right away */
 body.blur-nsfw .gallery-card.is-nsfw:hover img,
 body.blur-nsfw .gallery-card.is-nsfw:hover .gallery-hover-media {
     filter: blur(0);
-    transform: scale(1);
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transition: inset 0.25s ease, width 0.25s ease, height 0.25s ease,
+                filter 0.25s ease;
 }
+/* instant switch: WebKitGTK blinks a filtered element while filter animates
+   (same lesson as the select-checkbox fade above) */
 body.blur-nsfw .image-card-log.is-nsfw img,
 body.blur-nsfw .image-card-log.is-nsfw .gallery-hover-media {
-    filter: blur(22px);
+    /* 12px fully obscures a 100px thumb; 22px cost ~4x the gaussian work
+       and the first History show rasterized thirty of them at once */
+    filter: blur(12px);
+    backface-visibility: hidden;
+}
+/* only animating cards need the blur pre-promoted */
+body.blur-nsfw .image-card-log.is-nsfw:not(.no-anim) img,
+body.blur-nsfw .image-card-log.is-nsfw:not(.no-anim) .gallery-hover-media {
+    will-change: filter;
+    transform: translateZ(0);
 }
 body.blur-nsfw .image-card-log.is-nsfw:hover img,
 body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
@@ -988,8 +1042,7 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
     position: absolute;
     top: 5px;
     right: 5px;
-    background: rgba(10, 14, 23, 0.65);
-    backdrop-filter: blur(4px);
+    background: rgba(10, 14, 23, 0.8);
     border: 1px solid rgba(255, 255, 255, 0.12);
     font-size: 18px;
     cursor: pointer;
@@ -999,20 +1052,26 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
     height: 32px;
     border-radius: 8px;
     line-height: 1;
-    transition: all 0.15s ease;
+    /* opacity transitions only on hover (fade in); see .gallery-card-select */
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
     z-index: 3;
     display: flex;
     align-items: center;
     justify-content: center;
+    will-change: opacity, transform;
+    transform: translateZ(0);
+    backface-visibility: hidden;
     opacity: 0;
     pointer-events: none;
 }
 .gallery-card:hover .gallery-card-heart {
     opacity: 1;
     pointer-events: auto;
+    /* fade raced with the pointer-events flip and blinked; plain show/hide */
+    transition: none;
 }
 .gallery-card:hover .gallery-card-heart:hover {
-    transform: scale(1.12);
+    transform: translateZ(0) scale(1.12);
     opacity: 1;
     background: rgba(10, 14, 23, 0.9);
     border-color: #ff4080;
@@ -1027,7 +1086,11 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 .img-card-left:has(.gallery-hover-media) .gallery-card-play,
 .gallery-card:has(.gallery-hover-media) .gallery-card-play { opacity: 0; }
 .gallery-pagination { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 2px 0 0; margin-top: 14px; margin-bottom: 2px; flex-shrink: 0; flex-wrap: wrap; }
-.gallery-pagination:empty { display: none; margin-top: 0; }
+/* reserve pagination space permanently: the empty bar collapses with
+   display:none and the grid measures ~50px taller than it will be once
+   page numbers render — a stable grid height = one stable per_page */
+.gallery-pagination { min-height: 30px; }
+.gallery-pagination:empty { display: flex; margin-top: 14px; }
 .gallery-pagination button { background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25); color: #c0d0e0; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: 0.1s; }
 .gallery-pagination button.active { background: #2dd4bf; color: #0a0e17; font-weight: 600; }
 .gallery-pagination input.gallery-page-jump { width: 52px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px #2dd4bf; color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 13px; text-align: center; outline: none; }
@@ -1050,19 +1113,33 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 
 .gallery-viewer img,
 .gallery-viewer video {
-    max-width: 100vw;
-    max-height: 100vh;
+    /* Leave room around the image, as native viewers do. The raster path
+       paints into the viewer canvas; this sizes the video and the (hidden)
+       <img> fallback element. */
+    max-width: 95vw;
+    max-height: 90vh;
     min-width: 0;
     min-height: 0;
     flex-shrink: 1;
     object-fit: contain;
     user-select: none;
     -webkit-user-drag: none;
-    will-change: transform;
+    /* Do not pre-promote the fitted image to a fixed-size GPU layer; that can
+       make high-resolution artwork look soft when zoom transforms are applied. */
+    will-change: auto;
 }
 
 
-.gallery-viewer img.zoomed {
+/* raster path: one viewport-sized canvas painted by script.js (Gwenview
+   multiresolution renderer). Covers the whole viewer; overlays sit above it. */
+.gallery-viewer canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: none;
+}
+
+.gallery-viewer canvas.zoomed {
     cursor: grab;
 }
 
@@ -1087,9 +1164,8 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
     gap: 10px;
     width: min(620px, calc(100vw - 48px));
     padding: 8px 14px;
-    background: rgba(15, 18, 25, 0.78);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    background: rgba(15, 18, 25, 0.94);
+    /* no backdrop-filter: the bar fades via opacity, which blinks a blur surface */
     border: 1px solid transparent;
     border-radius: 999px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.15);
@@ -1181,11 +1257,12 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 }
 .gv-snapshot.gv-hold { opacity: 1; }
 
-.gallery-viewer img.zoomed.dragging {
+.gallery-viewer canvas.zoomed.dragging {
     cursor: grabbing;
 }
 
-.gallery-viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(15, 15, 20, 0.6); backdrop-filter: blur(5px); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); color: white; font-size: 24px; cursor: pointer; z-index: 10010; width: 50px; height: 50px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; line-height: 1; padding-bottom: 2px; }
+.gallery-viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(15, 15, 20, 0.8); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); color: white; font-size: 24px; cursor: pointer; z-index: 10010; width: 50px; height: 50px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease, color 0.2s ease; /* not `all`: same per-frame repaint blink as the top buttons on focus toggle */ line-height: 1; }
+.gallery-viewer-nav svg { width: 1em; height: 1em; display: block; }
 .gallery-viewer-nav:hover { background: var(--title-color); color: #000; transform: translateY(-50%) scale(1.1); }
 .gallery-viewer-nav.prev { left: 40px; }
 .gallery-viewer-nav.next { right: 40px; }
@@ -1232,13 +1309,19 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 }
 
 /* چیدمان دکمه‌های بالا راست */
-.gallery-viewer-top-btn { position: absolute; top: 30px; background: rgba(15, 15, 20, 0.6); backdrop-filter: blur(5px); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); color: white; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; cursor: pointer; z-index: 10010; transition: all 0.2s ease; text-decoration: none; line-height: 1; }
+.gallery-viewer-top-btn { position: absolute; top: 30px; background: rgba(15, 15, 20, 0.8); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); color: white; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; cursor: pointer; z-index: 10010; transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease, color 0.2s ease; /* not `all`: WebKitGTK repaints shadow/background every frame under `all`, and the focus-mode opacity fade blinks */ text-decoration: none; line-height: 1; }
 .gallery-viewer-top-btn:hover { transform: scale(1.1); }
 .gallery-viewer-top-btn svg { width: 1em; height: 1em; display: block; shape-rendering: geometricPrecision; }
 .toast-icon svg { width: 1em; height: 1em; vertical-align: -0.125em; shape-rendering: geometricPrecision; }
-#wpFade { position: fixed; inset: 0; z-index: -1; background-size: cover; background-position: center; background-repeat: no-repeat; opacity: 0; pointer-events: none; }
+/* wallpaper is a single fixed layer; swaps are decode-gated and instant —
+   WebKitGTK blinks on every fade/crossfade of background-image textures */
+.wp-bg { position: fixed; inset: 0; z-index: -1; background-size: cover; background-position: center; background-repeat: no-repeat; pointer-events: none; }
+
+/* dead: nothing ever set body's background-image (wallpaper lives on the
+   .wp-bg layer); a background-image "transition" can only snap, i.e. blink */
+body { transition: color 0.3s ease; }
 .log-item svg { shape-rendering: geometricPrecision; }
-.gallery-viewer-top-btn.close { right: 40px; font-size: 24px; color: #ff6b6b; padding-bottom: 2px; }
+.gallery-viewer-top-btn.close { right: 40px; font-size: 24px; color: #ff6b6b; }
 .gallery-viewer-top-btn.close:hover { background: #ff6b6b; color: #fff; box-shadow: 0 0 0 1px #ff6b6b; }
 .gallery-viewer-top-btn.fav { right: 100px; color: #ff9ff3; font-size: 22px; }
 .gallery-viewer-top-btn.fav:hover { background: #ff9ff3; color: #000; box-shadow: 0 0 0 1px #ff9ff3; }
@@ -1246,19 +1329,19 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 .gallery-viewer-top-btn.copy:hover { background: #a29bfe; color: #000; box-shadow: 0 0 0 1px #a29bfe; }
 .gallery-viewer-top-btn.trash { right: 220px; font-size: 20px; color: #ff9f43;}
 .gallery-viewer-top-btn.trash:hover { background: #ff9f43; color: #000; box-shadow: 0 0 0 1px #ff9f43; }
-.gallery-viewer-top-btn.focus-mode { right: 280px; font-size: 20px; color: #1abc9c; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; }
+.gallery-viewer-top-btn.focus-mode { right: 280px; font-size: 20px; color: #1abc9c; transition: right 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease, background-color 0.2s ease, color 0.2s ease !important; }
 .gallery-viewer-top-btn.focus-mode:hover { background: #1abc9c; color: #000; box-shadow: 0 0 0 1px #1abc9c; }
 
 .gallery-viewer-top-btn.zoom-label { left: 0; right: 0; width: fit-content; margin: 0 auto; transform: none; padding: 0 20px; border-radius: 20px; font-weight: bold; font-size: 14px; background: rgba(15, 15, 20, 0.85); color: var(--title-color); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); cursor: default; display: none; }
 .gallery-viewer-top-btn.zoom-label.show { display: flex; }
 
 /* ===== SMART HOVER META PANEL ===== */
-.gallery-viewer-meta { position: absolute; bottom: 30px; left: 0; right: 0; width: fit-content; min-width: 320px; max-width: 80%; margin: 0 auto; transform: none; background: rgba(15, 18, 25, 0.65); backdrop-filter: blur(12px); border: 1px solid transparent; border-radius: 24px; padding: 10px 20px; display: flex; flex-direction: column; z-index: 10010; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.15); transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; height: 44px; }
-.gallery-viewer-meta:hover { height: 300px; border-radius: 16px; background: rgba(15, 18, 25, 0.95); box-shadow: 0 10px 40px rgba(0, 210, 211, 0.2), 0 0 0 1px var(--title-color); }
+.gallery-viewer-meta { position: absolute; bottom: 30px; left: 0; right: 0; width: fit-content; min-width: 320px; max-width: 80%; margin: 0 auto; transform: none; background: rgba(15, 18, 25, 0.92); /* no backdrop-filter: WebKitGTK re-rasterizes the blur surface on the hover height change and everything painted into it blinks */ border: 1px solid transparent; border-radius: 24px; padding: 10px 20px; display: flex; flex-direction: column; z-index: 10010; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.15); /* height only: animating `all` repaints the shadow/background every frame — the expansion crawled on WebKitGTK; opacity keeps focus-mode's fade */ transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease; overflow: hidden; height: 44px; }
+.gallery-viewer-meta:hover { height: 300px; border-radius: 16px; background: rgba(15, 18, 25, 0.98); box-shadow: 0 10px 40px rgba(0, 210, 211, 0.2), 0 0 0 1px var(--title-color); transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
 .g-meta-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 24px; }
 .g-meta-title { font-weight: 600; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; max-width: 480px; }
 .g-meta-badges { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-.g-meta-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 15px; padding: 15px 4px 4px; border-top: 1px dashed rgba(255,255,255,0.15); overflow-y: auto; height: calc(100% - 40px); opacity: 0; transition: opacity 0.3s 0.1s; align-content: flex-start; }
+.g-meta-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 15px; padding: 15px 4px 4px; border-top: 1px dashed rgba(255,255,255,0.15); overflow-y: auto; height: calc(100% - 40px); opacity: 0; align-content: flex-start; /* no fade: WebKitGTK blinks the fade while the panel's backdrop-filter layer re-rasterizes during the height expansion; the panel's own animation is the entrance */ will-change: opacity; transform: translateZ(0); backface-visibility: hidden; }
 .gallery-viewer-meta:hover .g-meta-tags { opacity: 1; }
 .g-meta-tags::-webkit-scrollbar { width: 4px; }
 .g-meta-tags::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 4px; }
@@ -1308,7 +1391,6 @@ body.blur-nsfw .image-card-log.is-nsfw:hover .gallery-hover-media {
 @keyframes gPulse { 0% {opacity: 0.4;} 50% {opacity: 1;} 100% {opacity: 0.4;} }
 
 /* ===== FOCUS MODE (CLEAN VIEW) ===== */
-.gallery-viewer.focus { background: #0f1420; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .gallery-viewer.focus .gallery-viewer-top-btn:not(.focus-mode),
 .gallery-viewer.focus .gallery-viewer-nav,
 .gallery-viewer.focus .gallery-viewer-meta,
@@ -1334,7 +1416,7 @@ datalist, option {
 
 /* ===== RESPONSIVE SIZING FOR ALL MONITORS ===== */
 @media (max-width: 768px) {
-    .glass-panel { width: 98vw; height: auto; max-height: 98vh; }
+    .glass-panel { width: 98vw; height: 94vh; max-height: 98vh; }
     .glass-panel-content { padding: 12px; gap: 8px; }
     .tab-buttons { width: 100%; max-width: 100vw; border-left: none; border-top: 1px solid var(--border-color); }
     h2 { font-size: 18px; }
@@ -1408,7 +1490,11 @@ datalist, option {
 * {
     scrollbar-width: thin;
     scrollbar-color: var(--title-color) transparent;
+    /* smooth scrolling everywhere; script.js jumpScroll() opts out for
+       programmatic position restores so they stay instant */
+    scroll-behavior: smooth;
 }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track {
@@ -1446,3 +1532,266 @@ input[type="number"]:focus::-webkit-outer-spin-button {
     opacity: 1;
     filter: invert(80%) sepia(80%) saturate(700%) hue-rotate(140deg) drop-shadow(0 0 3px rgba(0, 210, 211, 0.7));
 }
+
+/* CJK tags: avoid synthetic bold (blurry strokes) and give dense glyphs a bit more room */
+.v-tag, .g-tag-pill { font-synthesis: none; }
+.v-tag:lang(ja), .v-tag:lang(zh), .v-tag:lang(ko) { font-size: 12px; }
+
+/* blur stays off: this is what actually fixes the blink */
+.gallery-viewer {
+    background: rgba(8, 10, 16, 0.94) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+.gallery-viewer.focus {
+    background: #0f1420 !important;
+}
+
+/* focus button: slide with transform (GPU-composited) instead of animating `right` */
+.gallery-viewer-top-btn.focus-mode {
+    --focus-shift: 240px;   /* 280px -> 40px */
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.4s ease,
+                background-color 0.2s ease,
+                color 0.2s ease !important;
+    will-change: transform;
+}
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode {
+    right: 280px !important;                 /* don't change layout, just move it */
+    transform: translateX(var(--focus-shift));
+    opacity: 0.3 !important;
+}
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode:hover {
+    transform: translateX(var(--focus-shift)) scale(1.1);
+    opacity: 1 !important;
+}
+@media (max-width: 768px) {
+    .gallery-viewer-top-btn.focus-mode { --focus-shift: 180px; }  /* 220px -> 40px */
+    .gallery-viewer.focus .gallery-viewer-top-btn.focus-mode { right: 220px !important; }
+}
+
+/* ===== FOCUS MODE BLINK FIX (round 2) ===== */
+/* 1. Same background in both states, so nothing snaps */
+.gallery-viewer,
+.gallery-viewer.focus {
+    background: #0f1420 !important;
+}
+
+/* 2. Everything that fades gets its own layer and one consistent transition */
+.gallery-viewer-top-btn,
+.gallery-viewer-nav,
+.gallery-viewer-meta,
+.gallery-video-ctrls {
+    will-change: opacity;
+    backface-visibility: hidden;
+    transition: opacity 0.25s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+/* 3. The hover rule on the capsule replaced the transition list and dropped
+      opacity, so a fade started while hovering was instant. Keep both. */
+.gallery-viewer-meta:hover {
+    transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+}
+
+/* 4. In focus mode the hidden capsule must not expand when the mouse passes over it */
+.gallery-viewer.focus .gallery-viewer-meta {
+    height: 44px !important;
+}
+
+/* 5. Don't fade the focus button's own scale/shadow with `all` */
+.gallery-viewer-top-btn.focus-mode {
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease,
+                background-color 0.2s ease,
+                color 0.2s ease !important;
+}
+
+/* ===== FOCUS BUTTON SLIDE FIX ===== */
+
+/* 1. Hover must never change the focus button's transform, only its colors */
+.gallery-viewer-top-btn.focus-mode:hover {
+    transform: none;
+}
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode:hover {
+    transform: translateX(var(--focus-shift));
+}
+
+/* 2. Entering focus: the other buttons fade out quickly, before the slide covers them */
+.gallery-viewer.focus .gallery-viewer-top-btn:not(.focus-mode) {
+    transition: opacity 0.12s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+/* 3. Leaving focus: the other buttons wait until the slide has finished, then fade in */
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn:not(.focus-mode) {
+    transition: opacity 0.2s ease 0.35s, background-color 0.2s ease, color 0.2s ease;
+}
+
+/* 4. Buttons hidden under the sliding focus button shouldn't react to the pointer */
+.gallery-viewer.focus .gallery-viewer-top-btn:not(.focus-mode) {
+    pointer-events: none !important;
+}
+
+/* ===== FINAL FOCUS MODE STABILITY OVERRIDE =====
+   Avoid opacity/compositing flicker in WebKitGTK and stop the focus button
+   from having competing `right` and `transform` animations. */
+.gallery-viewer-top-btn.focus-mode,
+.gallery-viewer-top-btn.focus-mode:hover,
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode,
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode:hover {
+    right: 40px !important;
+    transform: none !important;
+    transition: background-color 0.15s ease, color 0.15s ease !important;
+    will-change: auto !important;
+}
+
+.gallery-viewer.focus .gallery-viewer-top-btn:not(.focus-mode),
+.gallery-viewer.focus .gallery-viewer-nav,
+.gallery-viewer.focus .gallery-viewer-meta,
+.gallery-viewer.focus .gallery-video-ctrls {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    transition: none !important;
+    will-change: auto !important;
+}
+
+.gallery-viewer.focus .gallery-viewer-meta,
+.gallery-viewer.focus .gallery-viewer-meta:hover {
+    height: 44px !important;
+    transition: none !important;
+}
+
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn:not(.focus-mode),
+.gallery-viewer:not(.focus) .gallery-viewer-nav,
+.gallery-viewer:not(.focus) .gallery-viewer-meta,
+.gallery-viewer:not(.focus) .gallery-video-ctrls {
+    visibility: visible;
+}
+
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn:not(.focus-mode),
+.gallery-viewer:not(.focus) .gallery-viewer-nav,
+.gallery-viewer:not(.focus) .gallery-viewer-meta,
+.gallery-viewer:not(.focus) .gallery-video-ctrls {
+    transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+/* ===== FOCUS MODE: HARD HIDE, NO OPACITY ANIMATION =====
+   WebKitGTK was still repainting the other controls during opacity fades.
+   Remove them from layout/painting in focus mode instead of fading them. */
+.gallery-viewer.focus .gallery-viewer-top-btn:not(.focus-mode),
+.gallery-viewer.focus .gallery-viewer-nav,
+.gallery-viewer.focus .gallery-viewer-meta,
+.gallery-viewer.focus .gallery-video-ctrls {
+    display: none !important;
+    animation: none !important;
+    transition: none !important;
+}
+
+/* Keep the focus toggle itself fixed and completely stationary. */
+.gallery-viewer-top-btn.focus-mode,
+.gallery-viewer-top-btn.focus-mode:hover,
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode,
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode:hover {
+    position: absolute !important;
+    top: 30px !important;
+    right: 40px !important;
+    left: auto !important;
+    transform: none !important;
+    opacity: 1 !important;
+    animation: none !important;
+    transition: none !important;
+    will-change: auto !important;
+}
+
+/* Restore normal layout when focus mode is off; preserve the existing
+   single-image/start/end navigation rules and video-control opacity logic. */
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn:not(.focus-mode) {
+    display: flex;
+}
+.gallery-viewer:not(.focus) .gallery-viewer-nav {
+    display: flex;
+}
+.gallery-viewer:not(.focus) .gallery-viewer-meta {
+    display: flex;
+}
+.gallery-viewer:not(.focus) .gallery-video-ctrls {
+    display: flex;
+}
+
+/* Slight transparency for the stationary focus toggle, only while Focus Mode is active. */
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode,
+.gallery-viewer.focus .gallery-viewer-top-btn.focus-mode:hover {
+    opacity: 0.82 !important;
+}
+
+/* Remove the unwanted frame around the gallery image/viewer. */
+#galleryViewer {
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+#galleryViewerImg,
+#galleryViewerImg:focus,
+#galleryViewerImg:focus-visible {
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+    object-fit: fill !important;
+    image-rendering: auto;
+}
+
+/* Restore the tag capsule's expand (up) + collapse (down) animation in normal
+   view — the focus-mode transition overrides above apply even outside focus. */
+.gallery-viewer:not(.focus) .gallery-viewer-meta {
+    transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease;
+}
+.gallery-viewer:not(.focus) .gallery-viewer-meta:hover {
+    transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+}
+
+/* the zoom pill is display-flex forced by the generic top-btn rule above —
+   pin its visibility to the JS-toggled .show class (only >0% zoom) instead */
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn.zoom-label,
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn.zoom-label:not(.show) {
+    display: none;
+}
+.gallery-viewer:not(.focus) .gallery-viewer-top-btn.zoom-label.show {
+    display: flex;
+}
+
+
+/* Lightweight is the default. Retain rating/image blur: only decorative
+   backdrop surfaces and compositor hints are reduced here. */
+:root:not([data-effects="full"]) * {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    will-change: auto !important;
+    transition-duration: 0.08s !important;
+}
+:root:not([data-effects="full"]) .g-expand-hint,
+:root:not([data-effects="full"]) .image-card-log { animation: none !important; }
+:root:not([data-effects="full"]) .glass-panel { --panel-bg: rgba(15, 15, 20, 0.93); }
+:root[data-theme="light"]:not([data-effects="full"]) .glass-panel { --panel-bg: rgba(255, 255, 255, 0.93); }
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.001s !important; animation-duration: 0.001s !important; animation-iteration-count: 1 !important; }
+}
+/* Allow narrow windows/high UI scaling without a fixed-width panel overflow. */
+.glass-panel-content, .tab-container, .tab-content { min-width: 0; }
+.gallery-viewer-meta { min-width: min(320px, 90vw); }
+@media (max-width: 760px) {
+    .glass-panel-content { padding: 8px; }
+    .tab-buttons { width: 125px; min-width: 100px; padding: 8px; }
+    .gallery-toolbar { gap: 6px; }
+    .gallery-toolbar input { min-width: 0; max-width: 100%; }
+    .settings-card { min-width: 0; }
+}
+
+/* Connection recovery and unsaved settings indicators. */
+#settingsDirtyMark { color: #ffc46b; }
+.ux-connection { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 29000; display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 40px); width: max-content; box-sizing: border-box; padding: 12px 16px; border-radius: 10px; border: 1px solid #c79847; background: #292215; color: #fff0d2; box-shadow: 0 4px 16px #0004; font-size: 13px; }
+.ux-connection[hidden], .ux-connection button[hidden], #settingsDirtyMark[hidden] { display: none !important; }
+@media (max-width: 600px) { .ux-connection { flex-wrap: wrap; } }

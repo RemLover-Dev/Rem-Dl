@@ -1,13 +1,25 @@
-import os
 import asyncio
+import os
 import threading
 import time
+
 from curl_cffi import requests as curl_requests
+
+from core import shared
+from core.dedup_store import hash_bytes
 from core.shared import (
-    BaseDownloader, MASTER_FOLDER, add_to_gallery, send_tags,
-    write_image_metadata, save_history, build_tagd, check_duplicate,
+    BaseDownloader,
     absorb_duplicate,
-    sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_wait
+    add_to_gallery,
+    build_tagd,
+    check_duplicate,
+    folder_component,
+    pace_wait,
+    safe_ensure_dir,
+    sanitize_filename,
+    save_history,
+    send_tags,
+    write_image_metadata,
 )
 
 API = "https://api.anime-pictures.net/api/v3"
@@ -58,7 +70,7 @@ class AnimeDlWorker(BaseDownloader):
         self.exclude_tags = [t[1:] for t in toks if t.startswith('-') and len(t) > 1]
         self._exclude_norm = {t.replace("_", " ").strip().lower() for t in self.exclude_tags}
         self.tag = " ".join(t for t in toks if not t.startswith('-'))
-        self.tag_slug = sanitize_path_component(self.tag.replace(" ", "_"), fallback="anime_pictures")
+        self.tag_slug = folder_component(self.tag, fallback="anime_pictures")
         self.tag_dir = os.path.join(self.site_root, self.tag_slug)
         safe_ensure_dir(self.tag_dir)
         
@@ -84,18 +96,49 @@ class AnimeDlWorker(BaseDownloader):
                 # outcome; only retries earn a log line
                 if attempt:
                     self.log(f"Downloading {filename} (attempt {attempt + 1}/{self.dl_retries})...")
-                # ponytail: flat 600s cap; switch to streaming + stall detection if bigger files crawl
+                # stream to .part so the progress bar moves while bytes arrive;
+                # the body still lands in memory for hash_bytes (same profile
+                # as the old buffered get). curl re-raises mid-stream failures
+                # from iter_content, so a truncated body can't pass silently
+                loop = asyncio.get_running_loop()
                 resp = await asyncio.to_thread(
-                    self.curl_session.get, 
-                    url, 
-                    timeout=600, 
+                    self.curl_session.get,
+                    url,
+                    timeout=600,
+                    stream=True,
                     headers={"Referer": "https://anime-pictures.net/"}
                 )
-                if resp.status_code != 200 or len(resp.content) <= 1000:
-                    raise Exception(f"HTTP {resp.status_code} or file too small")
-                
-                with open(part_path, "wb") as f:
-                    f.write(resp.content)
+                if resp.status_code != 200:
+                    resp.close()
+                    raise Exception(f"HTTP {resp.status_code}")
+                try:
+                    total = int(resp.headers.get("Content-Length", 0) or 0)
+                except Exception:
+                    total = 0
+
+                def _stream_body():
+                    chunks = []
+                    got = 0
+                    with open(part_path, "wb") as f:
+                        # curl ignores chunk_size and picks its own chunking
+                        for chunk in resp.iter_content():
+                            if not chunk:
+                                continue
+                            if self.stop_event.is_set():
+                                break
+                            f.write(chunk)
+                            chunks.append(chunk)
+                            got += len(chunk)
+                            now = time.monotonic()
+                            if total and now - self._last_progress_emit >= 0.2:
+                                self._last_progress_emit = now
+                                self._inflight[filepath] = got / total
+                                loop.call_soon_threadsafe(self._emit_progress)
+                    return b"".join(chunks)
+
+                content = await asyncio.to_thread(_stream_body)
+                if len(content) <= 1000:
+                    raise Exception(f"file too small ({len(content)} bytes)")
 
                 if self.stop_event.is_set():
                     if os.path.exists(part_path): os.remove(part_path)
@@ -104,8 +147,12 @@ class AnimeDlWorker(BaseDownloader):
 
                 os.replace(part_path, filepath)
 
-                # persistent perceptual-hash dedup (see core/shared.py)
-                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
+                # persistent perceptual-hash dedup (see core/shared.py); all
+                # formats of the bytes just served are the site's own hashes
+                generated = hash_bytes(content)
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name,
+                                              source_md5=generated["md5"],
+                                              generated_hashes=generated)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)
@@ -120,7 +167,6 @@ class AnimeDlWorker(BaseDownloader):
                     return False
 
                 self.downloaded_count += 1
-                self.downloaded_bytes += len(resp.content)
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 
@@ -131,7 +177,10 @@ class AnimeDlWorker(BaseDownloader):
 
                 pct = int((self.downloaded_count / target_total) * 100) if target_total > 0 else 0
 
-                rel_path = os.path.relpath(filepath, MASTER_FOLDER)
+                try:
+                    rel_path = os.path.relpath(filepath, shared.MASTER_FOLDER)
+                except ValueError:
+                    rel_path = filepath
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
@@ -156,6 +205,13 @@ class AnimeDlWorker(BaseDownloader):
                     err_msg = str(e).strip()
                     if not err_msg: err_msg = "Download failed"
                     self.log(f"[FAILED] {filename}: {err_msg}")
+        # a mid-stream failure leaves a partial .part behind (the old
+        # buffered get never touched disk before the body was complete)
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
         return False
 
     def _fetch_child_tags(self):
@@ -231,7 +287,8 @@ class AnimeDlWorker(BaseDownloader):
 
             sem = asyncio.Semaphore(6)
 
-            async def fetch_detail(pid):
+            # bind sem as a default arg — closures must not late-bind the loop variable
+            async def fetch_detail(pid, sem=sem):
                 async with sem:
                     if self.stop_event.is_set():
                         return None
@@ -292,7 +349,7 @@ class AnimeDlWorker(BaseDownloader):
                             elif tag_type == 7: metadata_tags.append(tag_name)
                             else: general.append(tag_name)
 
-                        if await self.enqueue_download(dl_url, filepath, filename, general, artists, characters, copyrights, metadata_tags):
+                        if await self.enqueue_download(dl_url, filepath, filename, general, artists, characters, copyrights, metadata_tags, source_md5=detail.get("md5")):
                             collected += 1
             finally:
                 for t in pending:

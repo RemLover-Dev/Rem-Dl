@@ -1,7 +1,9 @@
-import os, random
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+import os
+import random
+
 from core.shared import pace_requests
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 # Safeguard importlib.metadata in frozen bundles (e.g. PyInstaller standalone / portable builds)
 try:
@@ -82,7 +84,7 @@ class Rule34Worker(BaseWorker):
         self.log(f"Final Payload sent to rule34Py: {TAGS}")
 
         clean_folder_name = " ".join([t for t in tag_list if not t.startswith('-')])
-        self.safe_tag = sanitize_path_component(clean_folder_name.replace("~", ""), fallback="mixed_tags")
+        self.safe_tag = folder_component(clean_folder_name.replace("~", ""), fallback="mixed_tags")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
@@ -103,10 +105,10 @@ class Rule34Worker(BaseWorker):
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             client.session.proxies = {"http": p, "https": p}
-            client.session.verify = self.net_config.get("verify_tls", False)
+            client.session.verify = self.net_config.get("verify_tls", True)
         else:
             client.session.proxies = {"http": "", "https": "", "no_proxy": "*"}
-            client.session.verify = False
+            client.session.verify = self.net_config.get("verify_tls", True)
 
         self.client = client
         return session
@@ -197,7 +199,9 @@ class Rule34Worker(BaseWorker):
                     tags_list = [str(t).strip() for t in tags_raw if str(t).strip()]
                     artists, characters, copyrights, metadata_tags = [], [], [], []
 
-                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                # rule34Py maps the API's JSON `hash` (the source md5) to the
+                # Post.hash property — `pHash` in the lib is a local variable
+                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=getattr(result, "hash", None)):
                     collected_count += 1
                     had_valid = True
 

@@ -1,8 +1,10 @@
-import html, os
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+import html
+import os
+
+from core.database import DATABASE_DIR, DatabaseManager
 from core.shared import TAG_TYPE_MAP, media_subdir
-from core.database import DatabaseManager, DATABASE_DIR
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "gelbooru_tag_types.json")
 
@@ -44,7 +46,7 @@ class GelbooruWorker(BaseWorker):
         self.api_tag, self.rating_allowed, self.rating_display = build_query(self.original_tag, rating)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag_name = sanitize_path_component(clean_tag, fallback="gelbooru")
+        self.safe_tag_name = folder_component(clean_tag, fallback="gelbooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag_name)
         safe_ensure_dir(self.tag_dir)
 
@@ -178,7 +180,7 @@ class GelbooruWorker(BaseWorker):
 
                 raw_filename = file_url.split('/')[-1].split('?')[0]
                 filename = sanitize_filename(raw_filename, fallback=f"gelbooru_{post.get('id', 'item')}.jpg")
-                rating_label = sanitize_path_component(self.rating_label_map.get(post_rating, "Unknown"), fallback="Unknown")
+                rating_label = folder_component(self.rating_label_map.get(post_rating, "Unknown"), fallback="Unknown")
 
                 raw_tags = [html.unescape(t.strip()) for t in post.get("tags", "").split() if t.strip()]
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(raw_tags)
@@ -189,7 +191,7 @@ class GelbooruWorker(BaseWorker):
                     made_dirs.add(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
 
-                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

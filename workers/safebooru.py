@@ -1,9 +1,11 @@
-import html, os
 import asyncio
+import html
+import os
 import xml.etree.ElementTree as ET
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
-import core.shared as shared
-from core.database import DatabaseManager, DATABASE_DIR
+
+from core import shared
+from core.database import DATABASE_DIR, DatabaseManager
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "safebooru_tag_types.json")
 
@@ -15,7 +17,7 @@ class SafebooruWorker(BaseWorker):
         self.exclusions = exclusions
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="safebooru")
+        self.safe_tag = folder_component(clean_tag, fallback="safebooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
         # persistent across runs — known tags never refetch (verified types only)
@@ -141,7 +143,7 @@ class SafebooruWorker(BaseWorker):
                 metadata_tags = cats["metadata"]
                 tags_list = cats["tag"]
 
-                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(file_url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("hash")):
                     collected_count += 1
                     had_valid = True
 

@@ -1,7 +1,15 @@
-import os
 import asyncio
+import os
+
 import aiohttp
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir, media_subdir
+
+from workers import (
+    BaseWorker,
+    folder_component,
+    media_subdir,
+    safe_ensure_dir,
+    sanitize_filename,
+)
 
 
 class DanbooruWorker(BaseWorker):
@@ -26,11 +34,12 @@ class DanbooruWorker(BaseWorker):
         self.rating_display = ", ".join(self.rating_map[c] for c in codes)
         self.dan_login = os.getenv("DANBOORU_LOGIN", "")
         self.dan_api_key = os.getenv("DANBOORU_API_KEY", "")
-        self._auth = aiohttp.BasicAuth(self.dan_login, self.dan_api_key) if (self.dan_login and self.dan_api_key) else None
+        # BasicAuth objects are deprecated in aiohttp 3.14 — pass the encoded header instead
+        self._auth = {"Authorization": aiohttp.encode_basic_auth(self.dan_login, self.dan_api_key)} if (self.dan_login and self.dan_api_key) else None
 
         FORMAT_WORDS = {"video", "image"}
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-') and t not in FORMAT_WORDS)
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="danbooru")
+        self.safe_tag = folder_component(clean_tag, fallback="danbooru")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
@@ -40,7 +49,7 @@ class DanbooruWorker(BaseWorker):
         try:
             async with self.session.get(
                     "https://danbooru.donmai.us/profile.json",
-                    auth=self._auth,
+                    headers=self._auth,
                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     # non-200 here means bad credentials — this must not
@@ -74,7 +83,7 @@ class DanbooruWorker(BaseWorker):
                 self.log(f"Scanning API... (Page {page})")
                 limit_val = min(200, self.amount - collected_count if self.amount > 0 else 200)
 
-                resp = await self.session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}, auth=self._auth)
+                resp = await self.session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}, headers=self._auth)
                 if resp.status in [403, 429]:
                     self.log(f"ERROR {resp.status}. Change proxy.")
                     break
@@ -142,7 +151,7 @@ class DanbooruWorker(BaseWorker):
                     continue
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}")
-                rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
+                rating_label = folder_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
                 if rating_dir not in made_dirs:
                     safe_ensure_dir(rating_dir)
@@ -163,7 +172,7 @@ class DanbooruWorker(BaseWorker):
                 meta_set = set(metadata_tags)
                 tags_list = [t for t in tags_list if t not in artist_set and t not in char_set and t not in copy_set and t not in meta_set]
 
-                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

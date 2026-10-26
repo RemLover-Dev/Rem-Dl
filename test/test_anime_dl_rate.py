@@ -1,6 +1,6 @@
 import time
 
-from workers.anime_dl import _RateLimiter, _rate_limit_session
+from workers.anime_dl import _rate_limit_session, _RateLimiter
 
 
 def test_rate_limiter_spaces_requests_at_four_per_second():

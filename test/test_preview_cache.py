@@ -54,7 +54,7 @@ def test_preview_strips_audio(tmp_path):
 
 
 def test_evict_removes_cached_preview(tmp_path):
-    from core.preview_cache import preview_path, evict
+    from core.preview_cache import evict, preview_path
     src = tmp_path / "with_audio.mp4"
     _make_mp4(src, audio=True)
     cache = tmp_path / "cache"
@@ -96,10 +96,28 @@ def test_preview_no_audio_returns_original(tmp_path):
 
 
 def test_preview_route_range_206(client, tmp_path, monkeypatch):
+    import time
+
+    from Rems_Dl import preview_ready_for
+
     src = tmp_path / "v.mp4"
     _make_mp4(src, audio=True)
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
     monkeypatch.setattr(Rems_Dl, "PREVIEW_CACHE_DIR", str(tmp_path / "pcache"))
+    # cold cache: the remux goes to the background pool, the request answers
+    # immediately (inline ffmpeg would hold the request for up to 120s)
+    r0 = client.get("/api/gallery/preview/v.mp4",
+                    headers={**H, "Range": "bytes=0-99"})
+    assert r0.status_code == 204
+    assert r0.data == b""
+    # wait until the warm pool finished the remux
+    dst = None
+    for _ in range(120):
+        dst = preview_ready_for(str(src), str(tmp_path / "pcache"))
+        if dst is not None:
+            break
+        time.sleep(0.05)
+    assert dst is not None
     r = client.get("/api/gallery/preview/v.mp4",
                    headers={**H, "Range": "bytes=0-99"})
     assert r.status_code == 206
@@ -108,6 +126,8 @@ def test_preview_route_range_206(client, tmp_path, monkeypatch):
     r2 = client.get("/api/gallery/preview/v.mp4", headers=H)
     assert r2.status_code == 200
     assert r2.content_type == "video/mp4"
+    # the range replies serve the cached no-audio copy, not the original
+    assert dst != str(src)
 
 
 def test_preview_route_traversal_blocked(client, tmp_path, monkeypatch):

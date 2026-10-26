@@ -1,8 +1,10 @@
-import os, hashlib
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+import hashlib
+import os
+
+from core.database import DATABASE_DIR, DatabaseManager
 from core.shared import TAG_TYPE_MAP, media_subdir
-from core.database import DatabaseManager, DATABASE_DIR
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 TAG_TYPES_FILE = os.path.join(DATABASE_DIR, "konachan_tag_types.json")
 
@@ -33,14 +35,14 @@ class KonachanWorker(BaseWorker):
             self.api_tag = f"{self.original_tag} rating:{codes[0]}".strip()
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="konachan")
+        self.safe_tag = folder_component(clean_tag, fallback="konachan")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
     async def _fetch_tag_types(self, tag_names):
-        # ponytail: cap per run — v1 cache migration drops unverified "tag"
-        # entries; heal incrementally instead of stalling the first run
-        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
+        # no cap: capping made every tag past #150 feed the folder
+        # classifier as a miscategorized "tag"; Semaphore(4) keeps the pace
+        uncached = [t for t in tag_names if t not in self.tag_cache]
         if not uncached:
             return
         sem = asyncio.Semaphore(4)
@@ -179,7 +181,7 @@ class KonachanWorker(BaseWorker):
                     continue
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"kona_{post.get('id', 'item')}.jpg")
-                rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
+                rating_label = folder_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 rating_dir = os.path.join(self.tag_dir, rating_label, media_subdir(ext))
                 safe_ensure_dir(rating_dir)
                 filepath = os.path.join(rating_dir, filename)
@@ -188,7 +190,7 @@ class KonachanWorker(BaseWorker):
                 tags_list = [t.strip() for t in tags_raw.split() if t.strip()]
                 tags_list, artists, characters, copyrights, metadata_tags = self._categorize_tags(tags_list)
 
-                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

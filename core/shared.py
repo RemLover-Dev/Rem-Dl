@@ -1,21 +1,16 @@
-import os
-import re
-import sys
-import threading
-import json
-import time
 import asyncio
 import hashlib
-import atexit
-import aiohttp
+import json
+import os
+import re
+import threading
+import time
 import zlib
 
-def _app_base_dir():
-    # core/ lives one level below the repo root — go up one more.
-    # Frozen (PyInstaller) builds: keep user data next to the exe.
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import aiohttp
+
+
+from core.runtime_paths import app_base_dir as _app_base_dir
 
 BASE_DIR = _app_base_dir()
 APP_NAME = "Rems Dl"
@@ -30,8 +25,6 @@ if os.path.isdir(os.path.join(BASE_DIR, LEGACY_DOWNLOAD_DIR_NAME)) and not os.pa
         pass
 HISTORY_LOCK = threading.Lock()
 STOP_EVENTS = {}
-
-WAIFU_TAG_MAP = {}
 
 # queue batch reporting — the app registers a callback telling us whether more
 # jobs are waiting for a site, so a queued run reports its totals once
@@ -73,9 +66,13 @@ def finish_report(site, downloaded, failed, duplicates, stopped, log):
 # --- LOGGING & TAG SYSTEM ---
 def default_logger(worker_name, msg): print(f"[{worker_name.upper()}] {msg}")
 log_callback = default_logger
-def log_msg(worker_name, msg): log_callback(worker_name, msg)
+def log_msg(worker_name, msg):
+    from core.privacy import redact
+    log_callback(worker_name, redact(msg))
 
 def default_tag_handler(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None): pass
+post_download_callback = None  # Rems_Dl assigns the JXL auto-convert hook
+
 tag_callback = default_tag_handler
 TAG_CATEGORIES = ["artist", "character", "copyright", "metadata", "outfit", "group", "hair", "eyes", "tag"]
 
@@ -87,9 +84,8 @@ SITE_CANONICAL = {
     "sankaku": "sankaku", "safebooru": "safebooru", "safe": "safebooru", "rule34": "rule34",
     "pinterest": "pinterest", "pixiv": "pixiv",
     "zero": "zerochan", "zerochan": "zerochan",
-    "neko": "nekos.life", "nekos.life": "nekos.life",
-    "nekos.best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
-    "waifu": "waifu.im", "waifu.im": "waifu.im",
+    "neko": "nekos.life", "nekos.life": "nekos.life", "nekos_life": "nekos.life",
+    "nekos.best": "nekos.best", "nekos_best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
     "anime_dl": "anime_dl", "animepictures": "anime_dl",
 }
 
@@ -101,7 +97,7 @@ def sort_tags_by_category(tags_dict):
     from collections import OrderedDict
     result = OrderedDict()
     for cat in TAG_CATEGORIES:
-        if cat in tags_dict and tags_dict[cat]:
+        if tags_dict.get(cat):
             result[cat] = sorted(tags_dict[cat])
     return result
 
@@ -167,6 +163,48 @@ _WINDOWS_RESERVED_NAMES = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
 }
 
+def pretty_folder_name(name) -> str:
+    """Folder naming policy for tag-derived download directories.
+
+    Underscores become spaces, and the first letter at the start of the name or
+    directly after a space, '-' or '(' is capitalised
+    ("reze_(chainsaw_man)" -> "Reze (Chainsaw Man)").
+
+    Kept separate from sanitize_path_component on purpose: that one also runs on
+    filenames and on individual components of absolute paths, where turning
+    "images" into "Images" would fork the download tree or rename "/home".
+    A digit at a boundary is not capitalised, so "1st_costume" stays "1st Costume".
+    """
+    if not name:
+        return name
+    try:
+        spaced = re.sub(r"\s+", " ", str(name).replace("_", " ")).strip()
+        out = []
+        cap = True
+        for ch in spaced:
+            if ch in " -(":
+                cap = True
+                out.append(ch)
+            elif cap and ch.isalpha():
+                cap = False
+                out.append(ch.upper())
+            else:
+                # a letter or digit has consumed the boundary; punctuation
+                # (', :, .) leaves it pending for the next real word
+                if ch.isalnum():
+                    cap = False
+                out.append(ch)
+        return "".join(out)
+    except Exception:
+        return str(name)
+
+def folder_component(name: str, fallback: str = "misc", max_length: int = 120) -> str:
+    """sanitize_path_component(pretty_folder_name(...)) — the folder name a worker
+    should use. Prettify first so the Windows reserved-name guard still sees "CON"
+    rather than the " CON" that underscore-to-space would leave behind. The fallback
+    is prettified too: "anime_pictures" is a folder name as much as a tag is."""
+    return sanitize_path_component(pretty_folder_name(name), pretty_folder_name(fallback), max_length)
+
 def sanitize_path_component(name: str, fallback: str = "misc", max_length: int = 120) -> str:
     """Make a tag or directory name completely safe for Windows and POSIX filesystems.
 
@@ -211,10 +249,13 @@ def media_subdir(ext: str) -> str:
     """Leaf folder under <tag>/<rating> for a file's media kind."""
     e = (ext or "").lower().lstrip(".")
     if e in VIDEO_EXTS:
-        return "videos"
+        return "Videos"
     if e == "gif":
-        return "gifs"
-    return "images"
+        return "Gifs"
+    return "Images"
+
+_DIRS_CACHE: dict[str, str] = {}
+_DIRS_LOCK = threading.Lock()
 
 def safe_ensure_dir(path: str) -> str:
     """Ensure directory exists with safe, sanitized components across all platforms (Windows, Linux, macOS).
@@ -222,26 +263,36 @@ def safe_ensure_dir(path: str) -> str:
     """
     if not path:
         return ""
-    try:
-        drive, rest = os.path.splitdrive(path)
-        is_abs = os.path.isabs(path)
-        parts = [p for p in rest.replace("\\", "/").split("/") if p]
-        safe_parts = [sanitize_path_component(p) for p in parts]
-        if drive:
-            prefix = drive + os.sep if drive.endswith(":") else drive
-            safe_path = os.path.join(prefix, *safe_parts)
-        elif is_abs:
-            safe_path = os.path.join(os.sep, *safe_parts)
-        else:
-            safe_path = os.path.join(*safe_parts) if safe_parts else "."
-        os.makedirs(safe_path, exist_ok=True)
-        return safe_path
-    except Exception:
+    with _DIRS_LOCK:
+        safe_path = _DIRS_CACHE.get(path)
+    if safe_path is None:
         try:
-            os.makedirs(path, exist_ok=True)
-            return path
+            drive, rest = os.path.splitdrive(path)
+            is_abs = os.path.isabs(path)
+            parts = [p for p in rest.replace("\\", "/").split("/") if p]
+            safe_parts = [sanitize_path_component(p) for p in parts]
+            if drive:
+                prefix = drive + os.sep if drive.endswith(":") else drive
+                safe_path = os.path.join(prefix, *safe_parts)
+            elif is_abs:
+                safe_path = os.path.join(os.sep, *safe_parts)
+            else:
+                safe_path = os.path.join(*safe_parts) if safe_parts else "."
         except Exception:
+            try:
+                os.makedirs(path, exist_ok=True)
+            except Exception:
+                pass
             return path
+    # cache result; re-check isdir before makedirs only when it was
+    # written before (the dir may be deleted mid-run outside our control)
+    with _DIRS_LOCK:
+        if len(_DIRS_CACHE) > 20000:
+            _DIRS_CACHE.clear()
+        _DIRS_CACHE[path] = safe_path
+    if not os.path.isdir(safe_path):
+        os.makedirs(safe_path, exist_ok=True)
+    return safe_path
 
 def safe_filepath(folder: str, filename: str) -> tuple:
     """Sanitize filename and ensure parent folder exists, returning (safe_filepath, safe_filename)."""
@@ -257,105 +308,122 @@ def default_emit(event, data): pass
 emit_callback = default_emit
 def socketio_emit(event, data): emit_callback(event, data)
 
-GALLERY_FILE = os.path.join(BASE_DIR, "database", "gallery.json")
 TAG_TYPE_MAP = {0: "tag", 1: "artist", 3: "copyright", 4: "character", 5: "metadata"}
 
 def load_gallery():
-    """Return the gallery, cached in memory after first disk read.
+    """Return the gallery, cached in memory after first store read.
 
     All readers/mutators share one object (guarded by _GALLERY_LOCK), so
-    concurrent workers can't clobber each other's entries. Call
-    flush_gallery() or save_gallery() to persist.
+    concurrent workers can't clobber each other's entries.
+
+    Entries carry every column EXCEPT tags: tags live in their own table and
+    are read on demand via gallery_tags_for(). That split is what stops
+    resident memory from growing with the size of the library.
+    Call save_gallery() to persist.
     """
     with _GALLERY_LOCK:
         return _gallery_cached_locked()
 
-def _load_gallery_from_disk():
-    if os.path.exists(GALLERY_FILE):
-        try:
-            with open(GALLERY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            # quarantine the bad file — returning an empty gallery here would
-            # get persisted over all real entries by the next save
-            try:
-                os.replace(GALLERY_FILE, GALLERY_FILE + ".corrupt")
-            except OSError:
-                pass
-            return {"images": []}
-        try:
-            _migrate_gallery_tags(data)
-        except Exception:
-            pass
-        return data
-    return {"images": []}
+def _store():
+    from core.gallery_store import get_store
+    return get_store()
 
-def _migrate_gallery_tags(data):
-    """Convert old flat-list tags to categorized dicts and normalize site names in-place."""
-    changed = False
-    for img in data.get("images", []):
-        tags = img.get("tags")
-        if isinstance(tags, list):
-            img["tags"] = tags_dict_from_lists(tags)
-            changed = True
-        elif isinstance(tags, dict):
-            for bucket, vals in tags.items():
-                if isinstance(vals, list):
-                    kept = [v for v in vals if not is_dup_flag(v)]
-                    if len(kept) != len(vals):
-                        tags[bucket] = kept
-                        changed = True
+def gallery_tags_for(ids):
+    """{entry id: tags} for a batch — the on-demand tag read.
+
+    Do not stash the result on the entries: keeping tags resident again is
+    the exact growth this split exists to prevent.
+    """
+    return _store().get_tags_many(ids)
+
+def search_tag_ids(term, exact=False):
+    """Ids whose tags match `term`, answered by the database.
+
+    Reading all 497725 tag rows to filter them in Python cost ~0.8s per
+    gallery request; this touches only the matching rows instead.
+    """
+    return _store().ids_matching_tags(term, exact)
+
+def all_gallery_ids():
+    return _store().all_ids()
+
+def entry_tags(img):
+    """Tags for one gallery entry.
+
+    The resident list carries no tags, so a bare img.get("tags") reads as
+    "no tags" — and code that writes its verdict back would then overwrite
+    the real stored tags with nothing. Every tag reader goes through here
+    instead, and the result is deliberately not stored on the entry.
+    """
+    tags = img.get("tags")
+    if tags is not None:
+        return tags
+    gid = img.get("id") or img.get("filename")
+    if gid is None:
+        return {}
+    return gallery_tags_for([gid]).get(gid) or {}
+
+def _load_gallery_from_store():
+    images = _store().lightweight_entries()
+    # site names are canonicalised at read time (the rescan writes raw folder
+    # names); filters match on the canonical form
+    for img in images:
         site = img.get("site", "")
         canon = normalize_site(site)
         if canon != site:
             img["site"] = canon
-            changed = True
-    if changed:
-        save_gallery(data)
+    return {"images": images}
 
 def save_gallery(data):
-    with _GALLERY_LOCK:
-        # write under the lock: a worker save racing a route save used to
-        # interleave two truncate+dumps and corrupt gallery.json
-        _write_gallery(data)
-        if data is _gallery_cache["data"]:
-            _gallery_cache["filenames"] = {i.get("filename") for i in data.get("images", [])}
-            _gallery_cache["dirty"] = 0
+    """Persist the gallery.
 
-def _write_gallery(data):
-    # compact separators: gallery.json is gitignored data, indent only
-    # cost parse time and disk on every write; tmp+replace so a crash
-    # mid-write can't truncate the live file
-    tmp = GALLERY_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, separators=(",", ":"))
-    os.replace(tmp, GALLERY_FILE)
+    save_entries() writes tags only for entries carrying a `tags` key, so the
+    tagless copies load_gallery() returns update their own columns and cannot
+    clear the tags stored for them. Entries missing from the list are pruned
+    (that is how a rescan drops entries whose file is gone).
+    """
+    with _GALLERY_LOCK:
+        _store().save_entries(data.get("images", []))
+        _reindex_gallery_locked(data)
+
+def save_gallery_partial(entries):
+    """Persist only the given entries — no prune, index kept warm.
+
+    For checkpoint paths (the md5 heal): the entries are the resident objects
+    already mutated in place, so the cache needs no sync and the filename set
+    cannot change.
+    """
+    with _GALLERY_LOCK:
+        _store().save_entries_partial(entries)
 
 _GALLERY_LOCK = threading.RLock()
-_gallery_cache = {"data": None, "filenames": set(), "dirty": 0}
-_GALLERY_FLUSH_EVERY = 10
+_gallery_cache = {"data": None, "filenames": set(), "by_fn": {}}
+# entries whose tags are read per pass (heal, filtering) — keeps a whole
+# library's tags off the heap at once
+_TAG_CHUNK = 500
 
 def _gallery_cached_locked():
     g = _gallery_cache["data"]
     if g is None:
-        g = _load_gallery_from_disk()
+        g = _load_gallery_from_store()
         _gallery_cache["data"] = g
-        _gallery_cache["filenames"] = {i.get("filename") for i in g.get("images", [])}
-        _gallery_cache["dirty"] = 0
+        _reindex_gallery_locked(g)
     return g
 
-def flush_gallery():
-    """Persist pending gallery appends, if any."""
-    with _GALLERY_LOCK:
-        if _gallery_cache["data"] is not None and _gallery_cache["dirty"]:
-            _write_gallery(_gallery_cache["data"])
-            _gallery_cache["dirty"] = 0
+def _reindex_gallery_locked(g):
+    """Rebuild the cache's lookup indexes from the entry list.
 
-# A batched write plus an exit (Ctrl-C, an exception, a CLI run) used to drop
-# the last N records — and the next scan rebuilt them from the folder name
-# alone, losing their tags. Every program importing this module now flushes
-# on the way out. os._exit / SIGTERM skip this: those callers flush by hand.
-atexit.register(flush_gallery)
+    by_fn replaces a linear scan of the resident list per duplicate download
+    (tens of ms of lock-held GIL work on a 90k library, per file).
+    """
+    _gallery_cache["filenames"] = set()
+    by_fn = {}
+    for i in g.get("images", []):
+        fn = i.get("filename")
+        if fn is not None:
+            _gallery_cache["filenames"].add(fn)
+            by_fn[fn] = i
+    _gallery_cache["by_fn"] = by_fn
 
 # --- tag-category repair: downloads freeze categories at fetch time, so a
 # tag that failed its lookup (or hit the v1 [:150] fetch cap) stays in the
@@ -431,6 +499,19 @@ def _tag_caches_fingerprint():
         pass
     return tuple(fp)
 
+_live_fp = None        # cache fingerprint at the last per-image heal load
+_live_caches = None    # {site: {tag: category}} kept alive across images
+
+def _live_tag_caches():
+    """Caches for per-image heals: reload only when database/*_tag_types.json
+    actually changed (one os.stat burst per image, one full read per change)."""
+    global _live_fp, _live_caches
+    fp = _tag_caches_fingerprint()
+    if _live_caches is None or fp != _live_fp:
+        _live_caches = load_tag_caches()
+        _live_fp = fp
+    return _live_caches
+
 def recategorize_all():
     """Heal gallery + image_history entries from the worker tag caches.
     No-op unless a cache changed since the last pass (stat fingerprint),
@@ -444,11 +525,19 @@ def recategorize_all():
     changed_g = 0
     with _GALLERY_LOCK:
         gal = _gallery_cached_locked()
-        for img in gal.get("images", []):
-            if recategorize_tags(img.get("tags"), img.get("site"), caches):
-                changed_g += 1
-        if changed_g:
-            save_gallery(gal)
+        images = gal.get("images", [])
+        # tags are fetched a chunk at a time: materialising them for the whole
+        # library here is exactly the resident growth this split removes
+        for start in range(0, len(images), _TAG_CHUNK):
+            chunk = images[start:start + _TAG_CHUNK]
+            tagmap = _store().get_tags_many(
+                [x.get("id") or x.get("filename") for x in chunk])
+            for img in chunk:
+                gid = img.get("id") or img.get("filename")
+                tags = tagmap.get(gid) or {}
+                if recategorize_tags(tags, img.get("site"), caches):
+                    changed_g += 1
+                    _store().set_tags(gid, tags)
     from core.database import DatabaseManager
     changed_h = DatabaseManager.recat_image_history(caches)
     _recat_fp = fp  # cache state fully healed — later passes skip until it changes
@@ -463,21 +552,48 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             fresh = tags_dict_from_lists(tags_list, artists, characters,
                                          copyrights, metadata_tags, outfits,
                                          groups, hair, eyes)
-            existing = next((i for i in gallery["images"]
-                             if i.get("filename") == filename), None)
-            if existing is None or count_tags(fresh) <= count_tags(existing.get("tags")):
+            existing = _gallery_cache["by_fn"].get(filename)
+            if existing is None:
+                # index miss: fall back to the list and self-heal — external
+                # code appends to the list directly during rescans
+                existing = next((i for i in gallery["images"]
+                                 if i.get("filename") == filename), None)
+                if existing is not None:
+                    _gallery_cache["by_fn"][filename] = existing
+            if existing is None:
                 return
-            existing["tags"] = fresh
+            gid = existing.get("id") or filename
+            # compare against the STORED tags: the resident copy carries none,
+            # and comparing against empty would let a folder-name placeholder
+            # beat real tags
+            have = existing.get("tags")
+            if have is None:
+                have = _store().get_tags(gid)
+            if count_tags(fresh) <= count_tags(have):
+                return
+            # live heal: the cache may have gained this tag's category right
+            # after the entry was built with it still uncached
+            try:
+                recategorize_tags(fresh, site, _live_tag_caches())
+            except Exception:
+                pass
+            # tags go to the store only — drop the copy's stale resident tags
+            # so entry_tags can't serve the old set from the snapshot
+            existing.pop("tags", None)
             if filepath:
                 existing["filepath"] = filepath
             if rating:
                 existing["rating"] = rating
-            _gallery_cache["dirty"] += 1
-            if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
-                _write_gallery(gallery)
-                _gallery_cache["dirty"] = 0
+            _store().update_fields(gid, existing)
+            _store().set_tags(gid, fresh)
             return
         tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+        # live heal at write time: same intent as the job-end recategorize_all,
+        # but the first image shows its categories the moment it lands
+        try:
+            recategorize_tags(tags_dict, site, _live_tag_caches())
+        except Exception:
+            pass
         record = {
             "id": hashlib.md5(f"{site}:{filename}".encode()).hexdigest()[:12],
             "filename": filename,
@@ -493,10 +609,10 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             record["rating"] = rating
         gallery["images"].insert(0, record)
         _gallery_cache["filenames"].add(filename)
-        _gallery_cache["dirty"] += 1
-        if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
-            _write_gallery(gallery)
-            _gallery_cache["dirty"] = 0
+        _gallery_cache["by_fn"][filename] = record
+        _store().insert_entry(record)
+        # the store has the tags; the resident copy stays tagless
+        record.pop("tags", None)
 
 
 def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=None,
@@ -521,11 +637,17 @@ def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=
                 rec = next((i for i in gallery["images"] if i.get("filename") == base), None)
             if rec is None:
                 return False
+            gid = rec.get("id") or rec.get("filename")
             changed = False
             fresh = tags_dict_from_lists(tags_list, artists, characters,
                                          copyrights, metadata_tags, outfits,
                                          groups, hair, eyes)
-            tags = rec.setdefault("tags", {})
+            # union into the STORED tags: rec is a tagless resident copy, and
+            # setdefault() on it would build from empty and drop what is stored
+            stored = rec.get("tags")
+            if stored is None:
+                stored = _store().get_tags(gid)
+            tags = {b: list(v) for b, v in stored.items()} if isinstance(stored, dict) else {}
             for bucket, vals in fresh.items():
                 have = tags.setdefault(bucket, [])
                 for v in vals:
@@ -543,10 +665,11 @@ def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=
                 sources.append(ns)
                 changed = True
             if changed:
-                _gallery_cache["dirty"] += 1
-                if _gallery_cache["dirty"] >= _GALLERY_FLUSH_EVERY:
-                    _write_gallery(gallery)
-                    _gallery_cache["dirty"] = 0
+                # tags go to the store only — drop the copy's stale resident
+                # tags so entry_tags can't serve the old set from the snapshot
+                rec.pop("tags", None)
+                _store().set_tags(gid, tags)
+                _store().update_fields(gid, rec)
             return True
     except Exception as e:
         print(f"[DEDUP] absorb failed for {getattr(dup, 'matched_path', '?')}: {e}")
@@ -702,26 +825,31 @@ def _ebml_find_rems(data):
 
 
 # extensions write_image_metadata can inject into without re-encoding
-EMBEDDABLE = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm", ".mov", ".avi", ".mkv")
+EMBEDDABLE = (".jxl", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm", ".mov", ".avi", ".mkv")
 
 
-def write_image_metadata(filepath, tags_list, artists, site, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
+def write_image_metadata(filepath, tags_list, artists, site, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, *, raw_metadata=None):
     ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''
     tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
     meta_lines = [f"site:{site}"]
     for cat in TAG_CATEGORIES:
         for t in tags_dict.get(cat, []):
             meta_lines.append(f"{cat}:{t}")
-    meta_text = "\n".join(meta_lines)
+    meta_text = raw_metadata if raw_metadata is not None else "\n".join(meta_lines)
 
     try:
+        if ext == 'jxl':
+            from core.jxl_metadata import write_text
+            write_text(filepath, meta_text)
+            return
         with open(filepath, "rb") as f:
             data = f.read()
         if ext in ('jpg', 'jpeg'):
             # inject a COM segment at byte level — saving through PIL here would
             # recompress the image (3MB originals were shrinking to ~1.4MB)
             payload = b"Rems_Dl\n" + meta_text.encode("utf-8")
-            payload = payload[:65531]
+            if len(payload) > 65531:
+                raise ValueError('JPEG tag metadata exceeds the COM segment limit')
             if not data.startswith(b"\xff\xd8"):
                 return
             # segment length includes the 2 length bytes themselves
@@ -885,10 +1013,17 @@ def write_image_metadata(filepath, tags_list, artists, site, characters=None, co
 
 def read_image_metadata(filepath):
     """Read back what write_image_metadata embedded: JPEG COM, PNG tEXt|iTXt,
-    WebP/AVI RIFF `Rems` chunk, GIF comment, MP4/MOV `rems` box, MKV/WebM Tags.
+    WebP/AVI RIFF `Rems` chunk, GIF comment, MP4/MOV `rems` box, MKV/WebM Tags,
+    and the JPEG XL Rems application box.
 
     Returns the raw "site:...\ncat:tag" text, or None when the file carries
     no Rems_Dl block (or is an unsupported format)."""
+    if str(filepath).lower().endswith('.jxl'):
+        try:
+            from core.jxl_metadata import read_record
+            return (read_record(filepath) or {}).get('text')
+        except (OSError, ValueError):
+            return None
     try:
         with open(filepath, "rb") as f:
             data = f.read()
@@ -997,7 +1132,7 @@ def save_history(site_root, history_set):
 # route through _async_download_file (plus 5 custom paths that import this).
 _DEDUP_SKIP_EXTS = {'.mp4', '.webm', '.mov', '.avi', '.mkv', '.zip'}
 
-def check_duplicate(filepath, site, post_id=None):
+def check_duplicate(filepath, site, post_id=None, source_md5=None, generated_hashes=None):
     """Hash `filepath` and check it against everything downloaded so far.
 
     Returns a DedupResult, or None when dedup doesn't apply (disabled in settings,
@@ -1015,7 +1150,15 @@ def check_duplicate(filepath, site, post_id=None):
     try:
         from core.dedup_store import get_store
         pid = str(post_id) if post_id is not None else None
-        return get_store().check_and_add(str(filepath), site=site, post_id=pid)
+        # the API-provided hash claimed at enqueue is authoritative (it's what
+        # the site itself calls the image); the md5 passed in by the download
+        # path is the fallback for sites whose API has no hash field
+        claimed = get_store().claimed_source_md5(str(filepath))
+        if claimed:
+            source_md5 = claimed
+        return get_store().check_and_add(str(filepath), site=site, post_id=pid,
+                                          source_md5=source_md5,
+                                          generated_hashes=generated_hashes)
     except Exception as e:
         print(f"[DEDUP] check skipped for {filepath}: {e}")
         return None
@@ -1088,10 +1231,12 @@ def pace_session(session):
     return session
 
 
-def _seed_md5(path, digest):
+def _seed_hash_state(path, digests):
+    """Resume support: feed the bytes already on disk into every hasher."""
     with open(path, 'rb') as pf:
         for blk in iter(lambda: pf.read(65536), b""):
-            digest.update(blk)
+            for digest in digests:
+                digest.update(blk)
 
 
 class BaseDownloader:
@@ -1109,7 +1254,7 @@ class BaseDownloader:
         self.anti_ban_pause = float(net_config.get("anti_ban_pause", 3.0))
         self.dl_retries = int(net_config.get("download_retries", 3))
 
-        safe_folder = sanitize_path_component(site_folder, fallback=self.name)
+        safe_folder = folder_component(site_folder, fallback=self.name)
         self.site_root = os.path.join(MASTER_FOLDER, safe_folder)
         os.makedirs(self.site_root, exist_ok=True)
         self.dl_history = load_history(self.site_root)
@@ -1118,9 +1263,6 @@ class BaseDownloader:
         self.downloaded_count = 0
         self.failed_count = 0
         self.duplicate_count = 0
-        self.downloaded_bytes = 0
-        self.total_bytes = 0
-        self.total_to_download = 0
         self.download_queue = None
         self.is_scanning = False
         self.enqueued_count = 0
@@ -1129,6 +1271,9 @@ class BaseDownloader:
         # live progress: filepath -> fraction of the current file downloaded
         self._inflight = {}
         self._last_progress_emit = 0.0
+        # filepaths this worker currently holds an in-flight source-md5 claim
+        # for (see _claim_source_md5 / _release_source_claims)
+        self._src_claims = set()
 
     def _progress_pct(self):
         # same target math as the [SUCCESS] log line, plus fractional units
@@ -1170,7 +1315,7 @@ class BaseDownloader:
             proxy = os.environ.get("https_proxy") or os.environ.get("http_proxy") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
 
         connector = aiohttp.TCPConnector(
-            ssl=False if not self.net_config.get("verify_tls", False) else None,
+            ssl=False if not self.net_config.get("verify_tls", True) else None,
             limit=10,
         )
         trace = aiohttp.TraceConfig()
@@ -1198,7 +1343,72 @@ class BaseDownloader:
             save_history(self.site_root, self.dl_history)
             self._history_dirty = 0
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
+    def _claim_source_md5(self, filepath, source_md5, tags_list=None, artists=None,
+                          characters=None, copyrights=None, metadata_tags=None,
+                          outfits=None, groups=None, hair=None, eyes=None) -> bool:
+        """False -> this exact source is already stored or reserved in-flight:
+        skip enqueueing. Missing/invalid hash or dedup off -> True (existing
+        behavior, no reservation). One atomic lookup+claim under the store lock.
+
+        A stored match reuses absorb_duplicate: the duplicate was never
+        downloaded, but its tags/site still enrich the surviving record. """
+        try:
+            from core.dedup_store import get_store, normalize_any_source_hash
+            src = normalize_any_source_hash(source_md5)
+        except Exception:
+            return True
+        if not src:
+            return True
+        algo, digest = src
+        try:
+            from core.database import get_settings
+            if not get_settings().get("dedup_enabled", True):
+                return True
+            claimed, match = get_store().claim_source_md5(digest, filepath)
+        except Exception as e:
+            print(f"[DEDUP] source claim skipped for {filepath}: {e}")
+            return True
+        if not claimed:
+            if match is not None:
+                # gallery-sources behavior: the skipped site's hash is kept on
+                # the surviving record, so future listings from either site
+                # dedupe pre-download
+                try:
+                    get_store().add_source_hash(match["id"], self.name, digest, algo)
+                except Exception:
+                    pass
+                try:
+                    from core.dedup_store import DedupResult
+                    absorb_duplicate(
+                        DedupResult(is_duplicate=True, filepath=filepath,
+                                    matched_path=match["filepath"],
+                                    matched_site=match["site"],
+                                    matched_post_id=match["post_id"],
+                                    matched_by="source_md5"),
+                        self.name, tags_list or [], artists or [], characters,
+                        copyrights, metadata_tags, outfits, groups, hair, eyes)
+                except Exception:
+                    pass
+            return False
+        self._src_claims.add(filepath)
+        return True
+
+    def _release_source_claims(self, filepaths=None):
+        """Drop in-flight source-md5 claims (after a download's outcome is known,
+        and for orphaned queue items at run end). Idempotent per filepath."""
+        try:
+            from core.dedup_store import get_store
+            store = get_store()
+        except Exception:
+            if filepaths is None:
+                self._src_claims.clear()
+            return
+        fps = list(self._src_claims if filepaths is None else filepaths)
+        for fp in fps:
+            store.release_source_md5(fp)
+            self._src_claims.discard(fp)
+
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None, source_md5=None):
         if artists is None: artists = []
         
         # Defensive sanitization against prohibited filesystem characters in folders and filenames
@@ -1215,16 +1425,30 @@ class BaseDownloader:
             if filename in self.dl_history or filename in self.queued_items:
                 return False
 
+        # source-md5 gate: a stored or in-flight duplicate of these exact bytes
+        # is dropped before any transfer (invalid/missing hash -> fall through)
+        if not self._claim_source_md5(filepath, source_md5, tags_list, artists,
+                                      characters, copyrights, metadata_tags,
+                                      outfits, groups, hair, eyes):
+            return False
+
         # ponytail: no HEAD request here — it cost a full round-trip per file
-        # just to feed total_bytes, which nothing reads. The GET reconciles
-        # sizes itself (see content_length handling below).
+        # for a size nothing reads. The GET reconciles sizes itself (see
+        # content_length handling below).
         file_size = 0
-            
-        self.total_bytes += file_size
         self.queued_items.add(filename)
-        self.download_queue.put_nowait((url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating))
-        self.enqueued_count += 1
-        return True
+        item = (url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
+        # Apply backpressure to API producers instead of retaining thousands
+        # of tag-heavy jobs. A full queue must remain responsive to Stop.
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.wait_for(self.download_queue.put(item), 0.25)
+                self.enqueued_count += 1
+                return True
+            except asyncio.TimeoutError:
+                continue
+        self.queued_items.discard(filename)
+        return False
 
     async def _async_download_file(self, url, filepath, filename, tags_list, artists, file_size=0, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
         if self.stop_event.is_set():
@@ -1238,10 +1462,12 @@ class BaseDownloader:
 
         part_path = filepath + ".part"
         # booru filenames embed their md5 (-<32hex>.ext); hash incrementally
-        # during download instead of re-reading the whole file afterwards
-        m = re.search(r'-([0-9a-f]{32})\.[^.]+$', filename, re.I)
+        # during download instead of re-reading the whole file afterwards.
+        # always-on, and md5+sha1+sha256 at once: the hashes of the served
+        # bytes ARE the site's own hash formats — recorded for the site even
+        # when its API supplied none at enqueue
+        m = re.search(r'-([0-9a-f]{32})\.[^.]+$', filename, re.IGNORECASE)
         want_md5 = m.group(1).lower() if m else None
-        h = hashlib.md5() if want_md5 else None
         for attempt in range(self.dl_retries):
             try:
                 referer = self.session.headers.get("Referer") or url
@@ -1264,20 +1490,19 @@ class BaseDownloader:
                     else:
                         downloaded = 0
                         total_expected = int(resp.headers.get('Content-Length', 0)) or file_size
-                        if total_expected and (total_expected != file_size):
-                            self.total_bytes += (total_expected - file_size)
 
-                    if h is not None:
-                        h = hashlib.md5()
-                        if resumed:
-                            # seed the incremental hash with the bytes already on disk
-                            await asyncio.to_thread(_seed_md5, part_path, h)
+                    h_md5, h_sha1, h_sha256 = hashlib.md5(), hashlib.sha1(), hashlib.sha256()
+                    if resumed:
+                        # seed the incremental hashes with the bytes already on disk
+                        await asyncio.to_thread(
+                            _seed_hash_state, part_path, (h_md5, h_sha1, h_sha256))
                     with open(part_path, 'ab' if resumed else 'wb') as f:
                         async for chunk in resp.content.iter_chunked(65536):
                             if self.stop_event.is_set(): break
                             f.write(chunk)
-                            if h is not None:
-                                h.update(chunk)
+                            h_md5.update(chunk)
+                            h_sha1.update(chunk)
+                            h_sha256.update(chunk)
                             downloaded += len(chunk)
                             # live bar updates ~5/s while bytes stream in
                             now = time.monotonic()
@@ -1301,7 +1526,7 @@ class BaseDownloader:
                 # booru filenames embed their md5 (-<32hex>.ext); a CDN serving a
                 # stale recompressed variant passes size checks, so verify the
                 # incrementally computed hash — no second read of the file
-                if want_md5 and h.hexdigest() != want_md5:
+                if want_md5 and h_md5.hexdigest() != want_md5:
                     os.remove(part_path)
                     raise Exception("md5 mismatch: server sent a different/degraded file")
 
@@ -1312,8 +1537,15 @@ class BaseDownloader:
                 # persistent perceptual-hash dedup: skip re-uploads/re-encodes
                 # already seen (any site, any session) before counting success.
                 # to_thread: hashing decodes the image — running it on the event
-                # loop would stall this worker's other 3 download tasks
-                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
+                # loop would stall this worker's other 3 download tasks.
+                # these hashes cover the exact served bytes: every format the
+                # sites can be matched with, recorded for this site even when
+                # its API supplied none at enqueue
+                served = {"md5": h_md5.hexdigest(), "sha1": h_sha1.hexdigest(),
+                          "sha256": h_sha256.hexdigest()}
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name,
+                                              source_md5=served["md5"],
+                                              generated_hashes=served)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)
@@ -1328,7 +1560,6 @@ class BaseDownloader:
                     return False
 
                 self.downloaded_count += 1
-                self.downloaded_bytes += downloaded
                 self.dl_history.add(filename)
                 # ponytail: rewriting the whole history file per download is
                 # O(history) each time — flush every 10, plus a final flush
@@ -1346,7 +1577,10 @@ class BaseDownloader:
 
                 pct = int((self.downloaded_count / target_total) * 100) if target_total > 0 else 0
 
-                rel_path = os.path.relpath(filepath, MASTER_FOLDER)
+                try:
+                    rel_path = os.path.relpath(filepath, MASTER_FOLDER)
+                except ValueError:
+                    rel_path = filepath
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
@@ -1359,6 +1593,9 @@ class BaseDownloader:
                 await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                if post_download_callback is not None:
+                    try: post_download_callback(filepath)
+                    except Exception: pass
                 return True
 
             except Exception as e:
@@ -1392,6 +1629,7 @@ class BaseDownloader:
             try: await self._async_download_file(*item)
             finally:
                 self._inflight.pop(item[1], None)
+                self._release_source_claims((item[1],))
                 self.download_queue.task_done()
 
     def run(self):
@@ -1403,10 +1641,11 @@ class BaseDownloader:
         asyncio.run(self.run_async_loop(self.scraper_task))
 
     async def run_async_loop(self, scraper_coroutine):
+        download_tasks = []
         try:
             self.session = await self._create_session()
             self.log(f"Proxy: {self.proxy or 'Direct'}")
-            self.download_queue = asyncio.Queue()
+            self.download_queue = asyncio.Queue(maxsize=64)
             self.is_scanning = True
 
             num_workers = 4
@@ -1419,7 +1658,7 @@ class BaseDownloader:
             self.is_scanning = False
             # ponytail: always join the queue so in-flight downloads finish
             # before we check counts or cancel workers.  Previously we
-            # skipped join() when total_to_download looked like 0 (qsize
+            # skipped join() when qsize looked like 0 (qsize
             # doesn't count in-flight items), which cancelled workers mid-
             # download via BaseException — file landed on disk but gallery,
             # metadata, history, and SUCCESS log were never written.
@@ -1433,7 +1672,9 @@ class BaseDownloader:
                     break
                 except asyncio.TimeoutError:
                     continue
-            for t in download_tasks: t.cancel()
+            for t in download_tasks:
+                t.cancel()
+            await asyncio.gather(*download_tasks, return_exceptions=True)
 
             # ponytail: dedicated finish signal — log parsing alone is too fragile to drive UI state
             try:
@@ -1445,9 +1686,17 @@ class BaseDownloader:
         except Exception as critical_e:
             self.log(f"CRITICAL ERROR: {critical_e}")
         finally:
-            # flush anything batched during the run (gallery appends, history)
+            # Await cancellation before closing the shared HTTP session or
+            # releasing source claims used by an in-flight worker.
+            for task in download_tasks:
+                if not task.done():
+                    task.cancel()
+            if download_tasks:
+                await asyncio.gather(*download_tasks, return_exceptions=True)
+            # claims for items a STOP orphaned before a worker dequeued them
+            # must not block the next run's re-enqueue
             try:
-                await asyncio.to_thread(flush_gallery)
+                self._release_source_claims()
             except Exception:
                 pass
             try:

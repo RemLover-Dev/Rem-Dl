@@ -1,0 +1,26 @@
+# secrets first — the venv-free image must never carry the user's credentials
+.env
+*.env
+database/
+extensions/
+user_wallpapers/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+.opencode/
+.specify/
+graphify-out/
+test/
+Rem Dl/
+Rems Dl/
+installer/
+icon/
+hooks/
+*.spec
+requirements.docker.txt
+requirements.txt
+*.db
+*.sqlite3

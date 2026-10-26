@@ -1,22 +1,31 @@
 <div align="center">
 
-# Rems Dl 5.3
+# Rems Dl 5.6
 
 **A massive multi-threaded image & media scraping application with a beautiful glass-morphism UI.**
 
 Rems Dl is a **native desktop application** (powered by `pywebview`): it opens as a real app window, not a hosted website. The Python backend only listens on the `127.0.0.1` loopback with an ephemeral port -- nothing is exposed to your network and no browser setup is needed.
 
-Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Waifu.im, Nekos.best, Nekos.life, Yande.re, Konachan, Danbooru, Sankaku, e-shuushuu, NekosAPI, Nekosia, AnimePictures, Pixiv, and Pinterest.
+Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Nekos.best, Nekos.life, Yande.re, Konachan, Danbooru, Sankaku, e-shuushuu, NekosAPI, Nekosia, AnimePictures, Pixiv, and Pinterest.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-5.3.0-ff9ff3.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-5.6.0-ff9ff3.svg)](CHANGELOG.md)
 
 [English](README.md) | [فارسی](README_fa.md) | [Linux & Docker](#-run-on-linux--docker)
 
 </div>
 
 ---
+
+## ✨ New in Version 5.6 (Rem 5.6)
+- **Next-Gen JPEG XL (JXL) Support:** Automatic conversion of downloaded images to JPEG XL (`.jxl`), JXL Lab for batch conversion, lossless/effort compression controls, and native JXL wallpaper & preview support.
+- **Headless Server & Docker Persistence:** Robust headless execution (`--headless`, `--server`, Docker) that persists continuously across browser tab disconnects.
+- **Scraper Rate Limiting & Resilience:** Smart rate limiting (429 handling and exponential backoff) across Anime-DL, Zerochan, and boorus.
+- **Tag Cache & Recategorization:** Gelbooru tag category normalization and caching for lightning-fast autocomplete and filtering.
+- **Packaging & Desktop Automation:** Automated Inno Setup installer builds, bundled `vc_redist.x64.exe` inside portable Windows releases, and automated Linux desktop integration script `install-desktop.sh`.
+- **Safe Folder Rename Protection:** Two-step renaming for case-only changes on case-insensitive filesystems (Windows/macOS) preventing data loss.
+- **Cross-Platform Clipboard & Security:** Literal path escaping for PowerShell/macOS clipboards, plus thread-safe SSRF-guarded notification thumbnail proxying.
 
 ## ✨ New in Version 5.3 (Rem 5.3)
 - **PyInstaller Metadata Fix (`rule34Py`):** Resolved startup failure in frozen standalone/portable builds by packaging distribution metadata and implementing runtime safeguards.
@@ -241,7 +250,9 @@ Automated GitHub Actions workflows build and test every release for Windows and 
 ### Option 2: Portable Zip
 1. Download **`Rems-Dl-Windows-x64-Portable.zip`**.
 2. Extract the archive anywhere on your PC.
-3. Run `Rems_Dl.exe`.
+3. If you encounter any missing C++ runtime errors (e.g. `VCRUNTIME140.dll`), run the included **`vc_redist.x64.exe`** installer.
+4. Microsoft Edge WebView2 runtime (pre-installed on Windows 10/11) is used for the glassmorphism UI. If missing, Rems Dl will notify you and open in your default browser.
+5. Run `Rems_Dl.exe`.
 
 ---
 
@@ -250,24 +261,27 @@ Automated GitHub Actions workflows build and test every release for Windows and 
 Rems Dl runs on Linux as either a **native desktop application** (via WebKitGTK), a **headless web server** in your favorite browser, or inside **Docker**.
 
 ### 1. System Requirements for Native Linux Desktop GUI
-If you want to run the native desktop window rather than the browser UI, ensure WebKitGTK and PyGObject are installed on your distribution:
+If you want to run the native desktop window rather than the browser UI, ensure WebKitGTK, PyGObject, and desktop helper utilities are installed:
 
 - **Debian / Ubuntu / Linux Mint / Pop!_OS:**
   ```bash
   sudo apt update
-  sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
+  sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 xclip zenity
   ```
-  *(On older Ubuntu 20.04/Debian 11 releases, use `gir1.2-webkit2-4.0` instead).*
+  *(On older Ubuntu 20.04/Debian 11 releases, use `gir1.2-webkit2-4.0` instead. On Wayland, you can use `wl-clipboard` instead of `xclip`).*
 
 - **Arch Linux / Manjaro:**
   ```bash
-  sudo pacman -S python-gobject webkit2gtk-4.1 gtk3
+  sudo pacman -S python-gobject webkit2gtk-4.1 gtk3 xclip zenity
   ```
 
 - **Fedora / RHEL:**
   ```bash
-  sudo dnf install -y python3-gobject webkit2gtk4.1 gtk3
+  sudo dnf install -y python3-gobject webkit2gtk4.1 gtk3 xclip zenity
   ```
+
+- **Optional Video Previews:**
+  Installing `ffmpeg` (`sudo apt install ffmpeg` / `pacman -S ffmpeg` / `dnf install ffmpeg`) enables audio-free hover video previews and video thumbnail extraction.
 
 ### 2. Running the Pre-Built Linux Standalone Package
 1. Download **`Rems-Dl-Linux-x86_64.tar.gz`** from [Releases](../../releases).
@@ -279,9 +293,13 @@ If you want to run the native desktop window rather than the browser UI, ensure 
    ```
 
 ### 3. Integrating with Linux Desktop Menu
-To add Rems Dl to your application launcher with its custom icon:
+To add Rems Dl to your application launcher with its custom icon automatically:
 ```bash
-# Copy desktop entry and update database
+# Run the included installer script
+./install-desktop.sh
+```
+Or manually:
+```bash
 cp Rems_Dl.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/
 ```
@@ -302,7 +320,7 @@ python Rems_Dl.py
   # or
   python Rems_Dl.py --headless
   ```
-  The app will bind to `0.0.0.0:$PORT` (default: 5000) and allow external access from any device on your network.
+  The app will bind to `0.0.0.0:$PORT` (default: 5000) and allow external access from any device on your network. Closing browser tabs will **not** terminate the server.
 
 ### 6. Running with Docker (Zero Host Dependencies)
 Pull and run the official image:
@@ -313,7 +331,7 @@ docker run -d -p 5000:5000 \
   -v "$(pwd)/database:/app/database" \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
-Then open `http://localhost:5000` in your browser.
+Then open `http://localhost:5000` in your browser. (The container runs persistently in headless mode and stays active across tab disconnects).
 
 ---
 

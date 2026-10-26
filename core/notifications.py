@@ -13,7 +13,7 @@ pixiv_notifications.json is folded in once on first access.
 import os
 import threading
 
-from core.database import DatabaseManager, DATABASE_DIR
+from core.database import DATABASE_DIR, DatabaseManager
 
 NOTIF_FILE = os.path.join(DATABASE_DIR, "notifications.json")
 LEGACY_PIXIV_FILE = os.path.join(DATABASE_DIR, "pixiv_notifications.json")
@@ -183,6 +183,9 @@ def summary(source=None):
 def mark_read(source, keys=None):
     """keys=None → all of that source; otherwise matches item key or bare
     external_id (legacy callers pass work ids). Returns GLOBAL unread."""
+    if keys is not None and len(keys) == 0:
+        # [] passed by mistake must not flip into "mark everything"
+        return unread()
     with _lock:
         raw = _load()
         kset = set(keys) if keys else None

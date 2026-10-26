@@ -1,32 +1,32 @@
+import asyncio
 import os
 import shutil
 import tempfile
+
 import pytest
-import asyncio
 
 from core.shared import (
-    sanitize_path_component,
-    sanitize_filename,
+    BaseDownloader,
     safe_ensure_dir,
     safe_filepath,
-    BaseDownloader,
+    sanitize_filename,
+    sanitize_path_component,
 )
+from workers.anime_dl import AnimeDlWorker
 from workers.danbooru import DanbooruWorker
+from workers.eshuushuu import EShuushuuWorker
 from workers.gelbooru import GelbooruWorker
 from workers.konachan import KonachanWorker
-from workers.yande import YandeWorker
-from workers.safebooru import SafebooruWorker
-from workers.sankaku import SankakuWorker
-from workers.anime_dl import AnimeDlWorker
-from workers.eshuushuu import EShuushuuWorker
-from workers.rule34 import Rule34Worker
-from workers.pixiv import PixivWorker
 from workers.nekos_best import NekosBestWorker
 from workers.nekos_life import NekosLifeWorker
 from workers.nekosapi import NekosApiWorker
 from workers.nekosia import NekosiaWorker
-from workers.waifu_im import WaifuImWorker
 from workers.pinterest_worker import PinterestWorker
+from workers.pixiv import PixivWorker
+from workers.rule34 import Rule34Worker
+from workers.safebooru import SafebooruWorker
+from workers.sankaku import SankakuWorker
+from workers.yande import YandeWorker
 from workers.zerochan import ZerochanWorker
 
 
@@ -171,6 +171,7 @@ class TestWorkerFolderBuildingWithProhibitedChars:
 
     def test_eshuushuu_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
+        monkeypatch.setattr(EShuushuuWorker, "_resolve_many", lambda self, tags: (["123"], []))
         w = EShuushuuWorker("re:zero", 10, [], "", self.NET_CONFIG)
         assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
@@ -216,13 +217,6 @@ class TestWorkerFolderBuildingWithProhibitedChars:
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         w = NekosiaWorker("re:zero", 10, "safe", self.NET_CONFIG)
         assert os.path.isdir(w.rating_dir)
-        rel = os.path.relpath(w.tag_dir, str(tmp_path))
-        assert ":" not in rel
-
-    def test_waifu_im_worker_folder(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
-        w = WaifuImWorker("re:zero", 10, "", [], self.NET_CONFIG)
-        assert os.path.isdir(w.tag_dir)
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel
 

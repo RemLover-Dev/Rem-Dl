@@ -1,3 +1,4 @@
+import asyncio
 import json as _json
 import os
 import re
@@ -5,30 +6,30 @@ import shutil
 import subprocess
 import sys
 import threading
-import asyncio
 import urllib.parse
 from html.parser import HTMLParser
 
+import urllib3
 from curl_cffi import requests as curl_requests
 
+from core import shared
+from core.dedup_store import hash_bytes
+from core.gallery_dl_interop import ensure_zerochan_page_html
 from core.shared import (
     BaseDownloader,
-    MASTER_FOLDER,
+    absorb_duplicate,
     add_to_gallery,
-    send_tags,
-    write_image_metadata,
-    save_history,
     build_tagd,
     check_duplicate,
-    absorb_duplicate,
-    sanitize_path_component,
-    sanitize_filename,
-    safe_ensure_dir,
+    folder_component,
     pace_session,
+    safe_ensure_dir,
+    sanitize_filename,
+    save_history,
+    send_tags,
+    write_image_metadata,
 )
-from core.gallery_dl_interop import ensure_zerochan_page_html
 
-import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -254,7 +255,7 @@ class ZerochanWorker(BaseDownloader):
         self.original_tag_lower = self.original_tag.lower()
 
         clean_tag = " ".join(t for t in self.original_tag_lower.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="misc")
+        self.safe_tag = folder_component(clean_tag, fallback="misc")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         try:
             os.makedirs(self.tag_dir, exist_ok=True)
@@ -314,7 +315,7 @@ class ZerochanWorker(BaseDownloader):
         return _DummyAsyncSession()
 
     def _verify_flag(self):
-        return bool(self.net_config.get("verify_tls", False))
+        return bool(self.net_config.get("verify_tls", True))
 
     def _blocking_get(self, url, headers=None, timeout=30, allow_redirects=True):
         session = self._ensure_curl_session()
@@ -390,14 +391,17 @@ class ZerochanWorker(BaseDownloader):
         if ZerochanWorker._gallery_dl_cmd is not None:
             return ZerochanWorker._gallery_dl_cmd
         launcher = None
-        try:
-            probe = subprocess.run(
-                [sys.executable, "-m", "gallery_dl", "--version"],
-                capture_output=True, text=True, timeout=60)
-            if probe.returncode == 0:
-                launcher = [sys.executable, "-m", "gallery_dl"]
-        except Exception:
-            launcher = None
+        # A frozen executable is the application, not a Python interpreter:
+        # invoking it with -m would launch another application instance.
+        if not getattr(sys, 'frozen', False):
+            try:
+                probe = subprocess.run(
+                    [sys.executable, "-m", "gallery_dl", "--version"],
+                    capture_output=True, text=True, timeout=15, check=False)
+                if probe.returncode == 0:
+                    launcher = [sys.executable, "-m", "gallery_dl"]
+            except Exception:
+                launcher = None
         if launcher is None and shutil.which("gallery-dl"):
             launcher = ["gallery-dl"]
         ZerochanWorker._gallery_dl_cmd = launcher
@@ -698,7 +702,6 @@ class ZerochanWorker(BaseDownloader):
         # size is only used for progress stats. Record 0 and continue.
         file_size = 0
         try:
-            self.total_bytes += file_size
             self.queued_items.add(filename)
             self.download_queue.put_nowait(
                 (url, filepath, filename, tags_list, artists, file_size,
@@ -765,8 +768,12 @@ class ZerochanWorker(BaseDownloader):
 
                 os.replace(part_path, filepath)
 
-                # persistent perceptual-hash dedup (see core/shared.py)
-                dup = await asyncio.to_thread(check_duplicate, filepath, self.name)
+                # persistent perceptual-hash dedup (see core/shared.py); all
+                # formats of the bytes just served are the site's own hashes
+                generated = hash_bytes(content)
+                dup = await asyncio.to_thread(check_duplicate, filepath, self.name,
+                                              source_md5=generated["md5"],
+                                              generated_hashes=generated)
                 if dup is not None and dup.is_duplicate:
                     try:
                         os.remove(filepath)
@@ -781,7 +788,6 @@ class ZerochanWorker(BaseDownloader):
                     return False
 
                 self.downloaded_count += 1
-                self.downloaded_bytes += downloaded
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 
@@ -792,7 +798,10 @@ class ZerochanWorker(BaseDownloader):
 
                 pct = int((self.downloaded_count / target_total) * 100) if target_total > 0 else 0
 
-                rel_path = os.path.relpath(filepath, MASTER_FOLDER)
+                try:
+                    rel_path = os.path.relpath(filepath, shared.MASTER_FOLDER)
+                except ValueError:
+                    rel_path = filepath
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits)
 

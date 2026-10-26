@@ -54,7 +54,7 @@ def main(argv):
     for img in gallery.get("images", []):
         rel = img.get("filepath") or ""
         path = os.path.join(shared.MASTER_FOLDER, rel)
-        gal_tags = img.get("tags") or {}
+        gal_tags = shared.entry_tags(img)   # stored tags, not the tagless copy
         if not os.path.exists(path):
             skipped += 1
             continue
@@ -72,6 +72,9 @@ def main(argv):
         # once the worker caches carry the tag's real category
         if shared.recategorize_tags(gal_tags, img.get("site"), caches):
             recatted += 1
+            # gal_tags is a copy fetched from the store (the resident entry
+            # carries none) — reattach it or the change never reaches save
+            img["tags"] = gal_tags
         ext = os.path.splitext(path)[1].lower()
         if norm_tags(file_tags) != norm_tags(gal_tags):
             if ext in EMBEDDABLE and (meta or item_count(gal_tags) > 1):

@@ -18,7 +18,7 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import Rems_Dl  # noqa: E402
+import Rems_Dl
 
 for _k, _v in _env_before.items():
     if _v is None:
@@ -28,7 +28,7 @@ for _k, _v in _env_before.items():
 
 
 def _names(images, ratings):
-    out = Rems_Dl._apply_gallery_filters(list(images), "", [], False, [], list(ratings))
+    out = Rems_Dl._apply_gallery_filters(list(images), None, [], False, [], list(ratings))
     return [i["filename"] for i in out]
 
 
@@ -101,6 +101,32 @@ def test_rule34_all_explicit_special_case():
            "filepath": "rule34/x.jpg", "tags": ["whatever"]}
     assert _names([r34], ["explicit"]) == ["x.jpg"]
     assert _names([r34], ["safe"]) == []
+
+
+def test_pixiv_r18_is_questionable_not_explicit():
+    # pixiv's R18 tier is its questionable; the generic "r18" alias used to
+    # drag R18 files into the NSFW filter while R18G matched nothing
+    r18 = {"site": "pixiv", "filename": "1.jpg",
+           "filepath": "pixiv/rem/R18/images/1.jpg", "tags": {"tag": ["rem"]}}
+    r18g = {"site": "pixiv", "filename": "2.jpg",
+            "filepath": "pixiv/rem/R18G/gifs/2.gif", "tags": {"tag": ["rem"]}}
+    gen = {"site": "pixiv", "filename": "3.jpg",
+           "filepath": "pixiv/rem/General/images/3.jpg", "tags": {"tag": ["rem"]}}
+    assert _names([r18], ["questionable"]) == ["1.jpg"]
+    assert _names([r18], ["explicit"]) == []
+    assert _names([r18g], ["explicit"]) == ["2.jpg"]
+    assert _names([r18g], ["questionable"]) == []
+    assert _names([gen], ["safe"]) == ["3.jpg"]
+    assert _names([gen], ["questionable"]) == []
+
+
+def test_pixiv_stored_rating_wins():
+    # new downloads carry the canonical rating from the worker
+    stored = {"site": "pixiv", "filename": "4.jpg",
+              "filepath": "pixiv/rem/General/images/4.jpg",
+              "tags": {"tag": ["rem"]}, "rating": "questionable"}
+    assert _names([stored], ["questionable"]) == ["4.jpg"]
+    assert _names([stored], ["safe"]) == []
 
 
 def test_inherently_safe_site_passes_unless_marked():

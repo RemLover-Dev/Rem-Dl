@@ -1,17 +1,12 @@
-import os
+import atexit
 import json
-import sys
+import os
 import threading
 import time
-import atexit
 
 
-def _app_base_dir():
-    # Frozen (PyInstaller) builds: keep all user data next to the exe,
-    # not inside the read-only _MEIPASS bundle.
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from core.runtime_paths import app_base_dir as _app_base_dir
+from core.atomic_io import write_json, write_lines
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 
@@ -26,12 +21,13 @@ IMAGE_HISTORY_FILE = os.path.join(DATABASE_DIR, "image_history.json")
 UI_CONFIG_FILE = os.path.join(DATABASE_DIR, "ui_config.json")
 LEARNED_TAGS_FILE = os.path.join(DATABASE_DIR, "user_learned_tags.json")
 
-# image history is the download hot path: keep the parsed list in memory and
-# batch disk writes like gallery (_GALLERY_FLUSH_EVERY); flush_image_history()
-# persists whatever is still pending
-_hist_cache = None
-_hist_dirty = 0
-_HIST_FLUSH_EVERY = 10
+# image history lives in gallery.db now. There is deliberately no parsed
+# copy in memory: the old _hist_cache was read in full once and kept forever,
+# so memory grew one entry per lifetime download. flush_image_history()
+# stays registered for the exit hooks but has nothing left to write.
+def _store():
+    from core.gallery_store import get_store
+    return get_store()
 _learned_cache = None
 
 
@@ -58,24 +54,33 @@ class DatabaseManager:
         global _learned_cache
         with _DB_LOCK:
             _learned_cache = data
-            # write-through: saves only happen on a genuinely new tag
-            with open(LEARNED_TAGS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+            # write atomically via save_json (.tmp + replace)
+            DatabaseManager.save_json(LEARNED_TAGS_FILE, data)
 
     @staticmethod
     def add_learned_tag(site, tag):
+        DatabaseManager.add_learned_tags(site, [tag])
+
+    @staticmethod
+    def add_learned_tags(site, new_tags):
+        """Persist one batch per download instead of rewriting once per tag."""
         site = str(site).lower().strip()
-        tag = str(tag).strip()
-        if not tag or len(tag) < 2:
-            return
         with _DB_LOCK:
-            tags = DatabaseManager.load_learned_tags()
-            site_list = tags.setdefault(site, [])
-            if tag not in site_list:
-                site_list.insert(0, tag)
-                # Bound per-site learned tags to top 500 to keep memory negligible (< 100 KB)
-                tags[site] = site_list[:500]
-                DatabaseManager.save_learned_tags(tags)
+            data = DatabaseManager.load_learned_tags()
+            site_list = data.setdefault(site, [])
+            known = set(site_list)
+            changed = False
+            for tag in new_tags:
+                if not isinstance(tag, str):
+                    continue
+                tag = tag.strip()
+                if len(tag) >= 2 and tag not in known:
+                    site_list.insert(0, tag)
+                    known.add(tag)
+                    changed = True
+            if changed:
+                data[site] = site_list[:500]
+                DatabaseManager.save_learned_tags(data)
 
     @staticmethod
     def get_learned_suggestions(site, query, limit=20):
@@ -95,17 +100,60 @@ class DatabaseManager:
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         return json.load(f)
+                except json.JSONDecodeError:
+                    # Trailing junk (one extra closing brace from an external
+                    # tool or a torn write) must not blank a whole store:
+                    # load_json returning [] is what lets the next save wipe
+                    # every watcher. Salvage the parseable prefix, self-heal
+                    # the file, and keep a copy of the corrupt bytes for
+                    # forensics (single deterministic name — this path re-runs
+                    # on every read until the file is healed).
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            obj, _end = json.JSONDecoder().raw_decode(f.read())
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                        restore = DatabaseManager._recover_bak(filepath)
+                        DatabaseManager._quarantine(filepath)
+                        if restore is not None:
+                            write_json(filepath, restore)
+                            return restore
+                        return []
+                    DatabaseManager._quarantine(filepath)
+                    write_json(filepath, obj)
+                    return obj
                 except Exception:
                     return []
             return []
 
     @staticmethod
+    def _recover_bak(filepath):
+        """Last-known-good save (written by atomic_io) for stores wrecked
+        beyond trailing-junk salvage. prefers main-corrupt-but-bak-clean:
+        a deleted main file is treated as an intentional reset, not restored."""
+        bak = filepath + '.bak'
+        if not os.path.exists(bak):
+            return None
+        try:
+            with open(bak, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            return None
+
+    @staticmethod
+    def _quarantine(filepath):
+        backup = filepath + '.corrupt'
+        try:
+            with open(filepath, 'rb') as src:
+                payload = src.read()
+            with open(backup, 'wb') as dst:
+                dst.write(payload)
+        except OSError:
+            pass
+
+    @staticmethod
     def save_json(filepath, data):
         with _DB_LOCK:
-            tmp = filepath + ".tmp"
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(data, f)
-            os.replace(tmp, filepath)
+            write_json(filepath, data)
 
     # --- Tag History ---
     @staticmethod
@@ -129,6 +177,7 @@ class DatabaseManager:
                             "searched_at": time.time(),
                             "exclude_ai": bool(exclude_ai),
                             "filters": dict(filters) if filters else {}})
+            del hist[500:]  # same per-search rewrite as add_learned_tags — cap it
             DatabaseManager.save_tag_history(hist)
 
     @staticmethod
@@ -148,86 +197,62 @@ class DatabaseManager:
     # --- Image History ---
     @staticmethod
     def load_image_history():
-        global _hist_cache, _hist_dirty
-        from core.shared import tags_dict_from_lists
+        """Read straight from the store, newest first.
+
+        No resident cache on purpose — see the note by _store().
+        """
         with _DB_LOCK:
-            if _hist_cache is None:
-                data = DatabaseManager.load_json(IMAGE_HISTORY_FILE)
-                changed = False
-                for entry in data:
-                    tags = entry.get("tags")
-                    if isinstance(tags, list):
-                        entry["tags"] = tags_dict_from_lists(tags, entry.get("artists", []))
-                        changed = True
-                if changed:
-                    DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
-                _hist_cache = data
-            return _hist_cache
+            return _store().history_all()
 
     @staticmethod
     def save_image_history(data):
-        global _hist_cache, _hist_dirty
+        """Replace the whole history (route and maintenance callers pass a
+        complete list). Commits immediately: there is no batch left to lose."""
         with _DB_LOCK:
-            _hist_cache = data
-            if not data:  # clear writes through so a stale cache can't resurrect it
-                _hist_dirty = 0
-                DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
-            else:
-                _hist_dirty += 1
-                if _hist_dirty >= _HIST_FLUSH_EVERY:
-                    _hist_dirty = 0
-                    DatabaseManager.save_json(IMAGE_HISTORY_FILE, data)
+            _store().history_replace(data)
 
     @staticmethod
     def flush_image_history():
-        global _hist_dirty
-        with _DB_LOCK:
-            if _hist_cache is not None and _hist_dirty:
-                DatabaseManager.save_json(IMAGE_HISTORY_FILE, _hist_cache)
-                _hist_dirty = 0
+        """No-op: the store commits per write. Kept for the exit hooks."""
 
     @staticmethod
     def add_image_history(worker_name, filename, tags_list, artist_list, filepath=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None):
         from core.shared import tags_dict_from_lists
         with _DB_LOCK:
-            hist = DatabaseManager.load_image_history()
             tags_dict = tags_dict_from_lists(tags_list, artist_list, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-            entry = {
+            # one row — the old load-everything/rewrite-everything pair turned
+            # each download into a rewrite of the entire history
+            _store().history_insert({
                 "site": worker_name,
                 "filename": filename,
                 "tags": dict(tags_dict),
                 "filepath": filepath,
                 "downloaded_at": time.time()
-            }
-            hist.insert(0, entry)
-            # ponytail: unbounded like gallery.json (~830B/entry — a few MB
-            # rewritten per add at normal rates); move to sqlite if it outgrows that
-            DatabaseManager.save_image_history(hist)
+            })
 
     @staticmethod
     def remove_image_history(filename):
         with _DB_LOCK:
-            hist = [x for x in DatabaseManager.load_image_history() if x.get("filename") != filename]
-            DatabaseManager.save_image_history(hist)
+            _store().history_delete(filename)
 
     @staticmethod
     def clear_image_history():
-        DatabaseManager.save_image_history([])
+        with _DB_LOCK:
+            _store().history_clear()
 
     @staticmethod
     def recat_image_history(caches):
         """Move history entries' tags to the category their site's cache knows."""
         from core.shared import recategorize_tags
         with _DB_LOCK:
-            hist = DatabaseManager.load_image_history()
+            hist = _store().history_all()
             n = 0
             for entry in hist:
                 if isinstance(entry, dict) and recategorize_tags(entry.get("tags"), entry.get("site"), caches):
                     n += 1
             if n:
-                DatabaseManager.save_image_history(hist)
-                # rare maintenance op — persist now, don't wait for a batch flush
-                DatabaseManager.flush_image_history()
+                # rare maintenance op — one rewrite is fine here
+                _store().history_replace(hist)
             return n
 
     # --- Favorites ---
@@ -294,9 +319,19 @@ class DatabaseManager:
         DatabaseManager.save_json(UI_CONFIG_FILE, data)
 
     @staticmethod
+    def update_ui_config(changes):
+        # Keep settings not included by a caller, across sessions and writers.
+        with _DB_LOCK:
+            config = DatabaseManager.load_ui_config()
+            config.update(changes)
+            DatabaseManager.save_ui_config(config)
+            return config
+
+    @staticmethod
     def _default_ui_config():
         return {
             "theme_mode": "dark",
+            "performance_mode": "lite",
             "mute_auth_warnings": False,
             "pixiv_watch_minutes": 90,
             "wallpapers": {
@@ -304,7 +339,6 @@ class DatabaseManager:
                 "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"},
                 "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"},
                 "Zero": {"dark": "Rem_zero_d.png", "light": "Rem_zero_l.png"},
-                "Waifu": {"dark": "Rem_waifu_d.png", "light": "Rem_waifu_l.png"},
                 "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"},
                 "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"},
                 "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"},
@@ -338,17 +372,6 @@ class DatabaseManager:
             }
         }
 
-    # --- Waifu tag map (name -> slug, bundled waifu.im_tags.json) ---
-    @staticmethod
-    def load_waifu_tags():
-        tags_path = os.path.join(DATABASE_DIR, "waifu.im_tags.json")
-        try:
-            with open(tags_path, "r", encoding="utf-8") as f:
-                tags_db = json.load(f)
-            tag_map = {t["name"].lower(): t["slug"] for t in tags_db}
-            return tags_db, tag_map
-        except Exception:
-            return [], {}
 
 
 class SettingsManager:
@@ -358,16 +381,19 @@ class SettingsManager:
         if base_dir is None:
             base_dir = _app_base_dir()
         self.base_dir = base_dir
+        _jxl_effort_env = os.getenv("JXL_EFFORT", "5").strip()
         self.config = {
             "use_proxy": os.getenv("USE_PROXY", "false").lower() == "true",
             "proxy_url": os.getenv("PROXY_URL", "http://127.0.0.1:10808"),
-            "verify_tls": os.getenv("VERIFY_TLS", "false").lower() == "true",
+            "verify_tls": os.getenv("VERIFY_TLS", "true").lower() == "true",
             "api_timeout": int(os.getenv("API_TIMEOUT", "10")),
             "retry_wait": int(os.getenv("RETRY_WAIT", "5")),
             "anti_ban_pause": float(os.getenv("ANTI_BAN_PAUSE", "3.0")),
             "download_retries": int(os.getenv("DOWNLOAD_RETRIES", "3")),
             "req_rate_limit": float(os.getenv("REQ_RATE_LIMIT", "4")),
-            "dedup_enabled": os.getenv("DEDUP_ENABLED", "true").lower() == "true"
+            "dedup_enabled": os.getenv("DEDUP_ENABLED", "true").lower() == "true",
+            "auto_convert_jxl": os.getenv("AUTO_CONVERT_JXL", "false").lower() == "true",
+            "jxl_effort": max(1, min(9, int(_jxl_effort_env))) if _jxl_effort_env.isdigit() else 5
         }
 
     def get(self, key, default=None):
@@ -376,7 +402,13 @@ class SettingsManager:
     def update(self, data):
         for key in data:
             if key in self.config:
-                self.config[key] = data[key]
+                value = data[key]
+                if key == "jxl_effort":
+                    try:
+                        value = max(1, min(9, int(value)))
+                    except (TypeError, ValueError):
+                        value = self.config["jxl_effort"]
+                self.config[key] = value
 
     def _env_path(self):
         return os.path.join(self.base_dir, ".env")
@@ -393,28 +425,23 @@ class SettingsManager:
         return lines
 
     def _write_env_lines(self, lines):
-        with open(self._env_path(), "w", encoding="utf-8") as f:
-            f.writelines(lines)
+        write_lines(self._env_path(), lines)
 
     def _upsert_env_keys(self, env_keys):
-        lines = self._read_env_lines()
-        new_lines = []
-        found = {k: False for k in env_keys}
-        for line in lines:
-            stripped = line.strip()
-            matched = False
-            for key, val in env_keys.items():
-                if stripped.startswith(f"{key}="):
-                    new_lines.append(f"{key}={val}\n")
-                    found[key] = True
-                    matched = True
-                    break
-            if not matched:
-                new_lines.append(line)
-        for key, val in env_keys.items():
-            if not found[key]:
-                new_lines.append(f"{key}={val}\n")
-        self._write_env_lines(new_lines)
+        # Quote values for python-dotenv; embedded newlines must never become keys.
+        env_keys = {k: str(v) for k, v in env_keys.items()}
+        if any("\0" in value for value in env_keys.values()):
+            raise ValueError("Settings cannot contain NUL characters")
+        def env_line(key, value):
+            value = value.replace("\\", "\\\\").replace("'", "\\'")
+            return f"{key}='{value}'\n"
+        with _DB_LOCK:
+            from dotenv import dotenv_values
+            existing = dotenv_values(self._env_path(), interpolate=False)
+            existing.update(env_keys)
+            new_lines = [env_line(k, v or "") for k, v in existing.items()]
+            self._write_env_lines(new_lines)
+
 
     def save_config(self):
         env_keys = {
@@ -426,10 +453,13 @@ class SettingsManager:
             "ANTI_BAN_PAUSE": str(self.config['anti_ban_pause']),
             "DOWNLOAD_RETRIES": str(self.config['download_retries']),
             "DEDUP_ENABLED": str(self.config.get('dedup_enabled', True)).lower(),
+            "AUTO_CONVERT_JXL": str(self.config.get('auto_convert_jxl', False)).lower(),
+            "JXL_EFFORT": str(self.config.get('jxl_effort', 5)),
             "REQ_RATE_LIMIT": str(self.config['req_rate_limit'])
         }
         self._upsert_env_keys(env_keys)
         os.environ["DEDUP_ENABLED"] = env_keys["DEDUP_ENABLED"]
+        os.environ["VERIFY_TLS"] = env_keys["VERIFY_TLS"]
         # the rate gate reads the env live — apply changes without a restart
         os.environ["REQ_RATE_LIMIT"] = env_keys["REQ_RATE_LIMIT"]
 
@@ -462,14 +492,8 @@ class SettingsManager:
             os.environ[k] = v
 
     def load_api_settings(self):
-        config = {}
-        env_path = self._env_path()
-        if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if "=" in line and not line.startswith("#"):
-                        k, v = line.split("=", 1)
-                        config[k.strip()] = v.strip()
+        from dotenv import dotenv_values
+        config = dotenv_values(self._env_path(), interpolate=False)
         # runtime env (set by save_api_settings / load_dotenv) wins over file
         resolved = dict(config)
         resolved.update(os.environ)

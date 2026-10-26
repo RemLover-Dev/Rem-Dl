@@ -7,7 +7,7 @@ the downloader; this only records what's new so the UI can notify.
 
 import threading
 import time
-from urllib.parse import unquote, parse_qs
+from urllib.parse import parse_qs, unquote
 
 import requests
 
@@ -29,7 +29,7 @@ _check_lock = threading.Lock()   # held for a whole check (may sit in rate-limit
 _state_lock = threading.Lock()   # guards pending_toast only — GET must never block
 _wakeup = threading.Event()
 _emit_fn = None
-_get_config = lambda: {}
+_get_config = dict
 _log_fn = None
 _hint_logged = False
 
@@ -53,16 +53,6 @@ def _log_token_hint():
             _log_fn(line)
         except Exception:
             pass
-
-
-def _load_raw():
-    """Legacy-shaped view kept for callers/tests; storage lives in
-    core.notifications, source-scoped to pixiv."""
-    return {
-        "items": notifications.items("pixiv"),
-        "seen": notifications.seen_keys("pixiv"),
-        "last_check": notifications.last_check("pixiv"),
-    }
 
 
 def load_items():
@@ -145,8 +135,8 @@ def _build_api(cfg):
     if cfg.get("use_proxy") and cfg.get("proxy_url"):
         p = cfg["proxy_url"]
         session.proxies = {"http": p, "https": p}
-    session.verify = cfg.get("verify_tls", False)
-    log = lambda *a, **k: None  # noqa: E731 — watcher must not spam worker logs
+    session.verify = cfg.get("verify_tls", True)
+    log = lambda *a, **k: None
     return PixivAppAPI(session, log, cfg.get("refresh_token") or "")
 
 
@@ -183,7 +173,14 @@ def run_check():
                 _stamp_check(time.time())
                 return {"new": 0, "error": STATE["error"]}
             api = _build_api(cfg)
-            fresh = ingest(_fetch_works(api, known_ids()))
+            try:
+                fresh = ingest(_fetch_works(api, known_ids()))
+            finally:
+                # real PixivAppAPI holds a requests.Session; the test fake
+                # is a bare object — close only when present
+                sess = getattr(api, "session", None)
+                if sess is not None:
+                    sess.close()
             STATE["error"] = ""
             STATE["last_new"] = len(fresh)
             _stamp_check(time.time())

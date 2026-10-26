@@ -1,0 +1,26 @@
+.jxl-tools { grid-column: 1 / -1; gap: 12px; }
+.jxl-tools p { margin: 0; font-size: 13px; line-height: 1.6; opacity: .85; }
+.jxl-tools .jxl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.jxl-path { flex: 1 1 280px; min-width: 0; }
+.jxl-options { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.jxl-options label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.jxl-options input[type=number] { width: 75px; }
+.jxl-tools progress { width: 100%; accent-color: var(--accent-color); }
+.jxl-output, .jxl-status { overflow-wrap: anywhere; font-size: 13px; }
+.jxl-results { max-height: 280px; overflow: auto; }
+.jxl-result { padding: 10px 0; border-top: 1px solid var(--border-color, #8885); display: flex; gap: 12px; align-items: center; }
+.jxl-result span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; white-space: pre-line; }
+.jxl-modal { position: fixed; inset: 0; z-index: 20000; background: #0b101af2; padding: 18px; display: flex; align-items: center; justify-content: center; }
+.jxl-modal[hidden] { display: none; }
+.jxl-comparison { display: flex; flex-direction: column; gap: 10px; width: min(1400px, 100%); height: min(920px, 100%); background: var(--bg-color, #19202d); color: var(--text-color, #eee); padding: 16px; border-radius: 12px; box-sizing: border-box; }
+.jxl-comparison header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.jxl-comparison header h3 { margin: 0 auto 0 0; font-size: 16px; }
+.jxl-comparison header label { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.jxl-comparison select { max-width: 130px; }
+.jxl-compare-stage { flex: 1; min-height: 80px; min-width: 0; position: relative; overflow: hidden; background: #181f2a; }
+.jxl-compare-stage canvas { display: block; width: 100%; height: 100%; touch-action: none; outline-offset: -3px; }
+.jxl-comparison footer { font-size: 12px; line-height: 1.6; }
+.jxl-comparison .jxl-mix-row { display: flex; gap: 12px; align-items: center; font-size: 12px; }
+.jxl-comparison .jxl-mix-row input { flex: 1; min-width: 0; }
+.jxl-comparison .jxl-compare-labels { display: flex; justify-content: space-between; gap: 20px; font-size: 12px; }
+@media(max-width: 750px) { .jxl-modal { padding: 4px; } .jxl-comparison { padding: 10px; } .jxl-comparison .action-btn { padding: 6px 10px; } }

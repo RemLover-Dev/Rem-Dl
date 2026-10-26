@@ -11,7 +11,7 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import Rems_Dl  # noqa: E402
+import Rems_Dl
 
 for _k, _v in _env_before.items():
     if _v is None:
@@ -19,7 +19,7 @@ for _k, _v in _env_before.items():
     else:
         os.environ[_k] = _v
 
-from core import shared  # noqa: E402
+from core import shared
 
 H = {"User-Agent": "RemsDlDesktopApp/1.0"}
 

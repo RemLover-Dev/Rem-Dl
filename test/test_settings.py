@@ -1,8 +1,11 @@
 import os
-import pytest
-from core.database import SettingsManager
-import tempfile
 import shutil
+import tempfile
+
+import pytest
+
+from core.database import SettingsManager
+
 
 class TestSettingsManager:
     @pytest.fixture
@@ -32,7 +35,7 @@ class TestSettingsManager:
         # applied live (no restart) and written to .env for the next boot
         assert os.environ["REQ_RATE_LIMIT"] == "7"
         with open(settings_env._env_path(), encoding="utf-8") as f:
-            assert "REQ_RATE_LIMIT=7" in f.read()
+            assert "REQ_RATE_LIMIT='7'" in f.read()
 
     def test_update_config(self, settings_env):
         settings_env.update({"api_timeout": 20})
@@ -65,12 +68,45 @@ class TestSettingsManager:
                                         "pixiv_cookie": "legacy-cookie"})
         with open(settings_env._env_path(), encoding="utf-8") as f:
             content = f.read()
-        assert "RULE34_API_KEY=sekrit" in content
-        assert "PIXIV_COOKIE=legacy-cookie" in content
-        assert "KONACHAN_USERNAME=alice" in content
+        assert "RULE34_API_KEY='sekrit'" in content
+        assert "PIXIV_COOKIE='legacy-cookie'" in content
+        assert "KONACHAN_USERNAME='alice'" in content
         # runtime env wins over file values
         os.environ["KONACHAN_USERNAME"] = "envuser"
         try:
             assert settings_env.load_api_settings()["konachan_login"] == "envuser"
         finally:
             del os.environ["KONACHAN_USERNAME"]
+
+
+def test_jxl_settings_defaults(tmp_path):
+    import importlib
+    import os
+    monkey = __import__("pytest").MonkeyPatch()
+    monkey.delenv("AUTO_CONVERT_JXL", raising=False)
+    monkey.delenv("JXL_EFFORT", raising=False)
+    manager = SettingsManager(str(tmp_path))
+    assert manager.get("auto_convert_jxl") is False
+    assert manager.get("jxl_effort") == 5
+    monkey.undo()
+
+
+def test_jxl_effort_coerced_on_update(tmp_path):
+    manager = SettingsManager(str(tmp_path))
+    manager.update({"jxl_effort": "77"})
+    assert manager.get("jxl_effort") == 9
+    manager.update({"jxl_effort": "abc"})
+    assert manager.get("jxl_effort") == 9
+    manager.update({"jxl_effort": 1})
+    assert manager.get("jxl_effort") == 1
+    manager.update({"jxl_effort": "3"})
+    assert manager.get("jxl_effort") == 3
+
+
+def test_jxl_settings_saved_to_env(tmp_path):
+    manager = SettingsManager(str(tmp_path))
+    manager.update({"auto_convert_jxl": True, "jxl_effort": 7})
+    manager.save_config()
+    text = open(manager._env_path(), encoding="utf-8").read()  # conftest redirects .env to a session dir
+    assert "AUTO_CONVERT_JXL='true'" in text
+    assert "JXL_EFFORT='7'" in text

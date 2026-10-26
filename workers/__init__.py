@@ -1,23 +1,26 @@
 import asyncio
 from abc import ABC, abstractmethod
+
+from core.database import DatabaseManager
 from core.shared import (
     BaseDownloader,
-    sanitize_path_component,
-    sanitize_filename,
+    folder_component,
+    media_subdir,
     safe_ensure_dir,
     safe_filepath,
-    media_subdir
+    sanitize_filename,
+    sanitize_path_component,
 )
-from core.database import DatabaseManager
 
 __all__ = [
-    "BaseWorker",
     "BaseDownloader",
-    "sanitize_path_component",
-    "sanitize_filename",
+    "BaseWorker",
+    "folder_component",
+    "media_subdir",
     "safe_ensure_dir",
     "safe_filepath",
-    "media_subdir"
+    "sanitize_filename",
+    "sanitize_path_component"
 ]
 
 
@@ -42,13 +45,6 @@ class BaseWorker(BaseDownloader, ABC):
         """Core scraping logic. Must be an async coroutine."""
         ...
 
-    @staticmethod
-    def clean_tag(tag: str) -> str:
-        """Remove filesystem-unsafe characters from a tag string."""
-        import re
-        cleaned = " ".join(t for t in tag.split() if not t.startswith('-'))
-        return re.sub(r'[\\/*?:"<>|]', "", cleaned)
-
     def _categorize_tags(self, tag_names):
         artists, characters, copyrights, metadata_tags, general = [], [], [], [], []
         for t in tag_names:
@@ -61,12 +57,14 @@ class BaseWorker(BaseDownloader, ABC):
         return general, artists, characters, copyrights, metadata_tags
 
     async def _run_tag_fetch(self, tag_names, attempt_one, types_file):
-        """Shared tag-fetch skeleton (yande/safebooru): uncached filter
-        (150/run) → Semaphore(4) → 3-attempt retry with backoff → gather →
+        """Shared tag-fetch skeleton (yande/safebooru): uncached filter →
+        Semaphore(4) → 3-attempt retry with backoff → gather →
         persist. attempt_one(tag) returns True once a 200 was processed
         (exact match stored or genuinely absent); non-200/exception retries
         and a tag that never comes back stays uncached."""
-        uncached = [t for t in tag_names if t not in self.tag_cache][:150]
+        # no cap: capping made every tag past #150 feed the folder
+        # classifier as a miscategorized "tag"; Semaphore(4) keeps the pace
+        uncached = [t for t in tag_names if t not in self.tag_cache]
         if not uncached:
             return self.tag_cache
         # ponytail: concurrent — sequential per-tag requests stalled every page

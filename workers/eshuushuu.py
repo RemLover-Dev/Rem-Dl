@@ -1,6 +1,18 @@
-import os, re, asyncio, json
+import asyncio
+import json
+import os
+import re
+
 import requests
-from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir, pace_session
+
+from core.shared import (
+    BaseDownloader,
+    folder_component,
+    pace_session,
+    safe_ensure_dir,
+    sanitize_filename,
+)
+
 
 class EShuushuuWorker(BaseDownloader):
     def __init__(self, tag, amount, exclusions, user_id, net_config):
@@ -25,7 +37,7 @@ class EShuushuuWorker(BaseDownloader):
         self.tag_id = ",".join(self.tag_ids)
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="all")
+        self.safe_tag = folder_component(clean_tag, fallback="all")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag)
         safe_ensure_dir(self.tag_dir)
 
@@ -67,7 +79,7 @@ class EShuushuuWorker(BaseDownloader):
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             s.proxies = {"http": p, "https": p}
-        s.verify = self.net_config.get("verify_tls", False)
+        s.verify = self.net_config.get("verify_tls", True)
         # tag-resolve + page scans share the global ISP pace
         return pace_session(s)
 
@@ -195,7 +207,8 @@ class EShuushuuWorker(BaseDownloader):
                 break
             sem = asyncio.Semaphore(4)
 
-            async def fetch_post(img_id):
+            # bind sem as a default arg — closures must not late-bind the loop variable
+            async def fetch_post(img_id, sem=sem):
                 if self.stop_event.is_set():
                     return None
                 async with sem:
@@ -249,7 +262,7 @@ class EShuushuuWorker(BaseDownloader):
                     out_name = sanitize_filename(f"{img_id}.{ext}")
 
                     if self.user_id and username:
-                        user_dir = sanitize_path_component(username, fallback="user")
+                        user_dir = folder_component(username, fallback="user")
                         base = self.tag_dir if self.original_tag else self.site_root
                         download_dir = os.path.join(base, user_dir)
                     else:

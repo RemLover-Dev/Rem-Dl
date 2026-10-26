@@ -1,12 +1,40 @@
-let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": false, "dedup_enabled": true };
+let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": true, "dedup_enabled": true };
 var workerRunning = {};
 let queuedCounts = {}; // site -> waiting entries, tracked so START can kick off the queue
-let uiConfig = {};
+// The HTML carries the on-disk effects choice so startup cannot reset it.
+const initialEffects = document.querySelector('meta[name="rems-performance-mode"]');
+let uiConfig = {performance_mode: initialEffects && initialEffects.content === 'full' ? 'full' : 'lite'};
 let currentActiveTheme = 'dark';
 
 // localStorage throws when blocked (private mode / file://) — a crash here kills the whole script
 function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function storeSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+// Effects are persisted by /api/ui_config in database/ui_config.json.
+function lightweightUI() { return uiConfig.performance_mode !== 'full'; }
+function applyPerformanceMode() {
+    document.documentElement.dataset.effects = lightweightUI() ? 'lite' : 'full';
+    const select = document.getElementById('performanceMode');
+    if (select) select.value = lightweightUI() ? 'lite' : 'full';
+}
+let performanceModeRevision = 0;
+let performanceModeSaveQueue = Promise.resolve();
+async function savePerformanceMode() {
+    const mode = document.getElementById('performanceMode').value === 'full' ? 'full' : 'lite';
+    performanceModeRevision++;
+    uiConfig.performance_mode = mode;
+    applyPerformanceMode();
+    // Serialize rapid changes, and save just this preference to durable config.
+    const save = performanceModeSaveQueue.then(async () => {
+        const response = await fetch('/api/ui_config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({performance_mode: mode}) });
+        if (!response.ok) throw new Error('Save failed');
+    });
+    performanceModeSaveQueue = save.catch(() => {});
+    try {
+        await save;
+    } catch (error) { showToast('Could not save performance mode. Please try again.', {warn:true}); }
+    try { trimViewerCaches(); } catch (error) { console.warn('Viewer cache cleanup failed', error); }
+}
+applyPerformanceMode();
 // fullscreen keybind (default F11) in the pywebview desktop shell — plain
 // browsers have no window.pywebview, so we bail out and let their native key handle it
 document.addEventListener("keydown", function (e) {
@@ -14,6 +42,68 @@ document.addEventListener("keydown", function (e) {
     e.preventDefault();
     window.pywebview.api.toggle_fullscreen();
 });
+// CSS gives every scroller scroll-behavior:smooth; programmatic position
+// restores/tail-follow must be instant or they animate and fight the user
+function jumpScroll(el, top) {
+    if (!el) return;
+    const prev = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    el.scrollTop = top;
+    el.style.scrollBehavior = prev;
+}
+// Mouse-wheel smoothing: CSS scroll-behavior only smooths programmatic scrolls,
+// the wheel itself jumps in WebKitGTK — so ease every scroller toward its target.
+(function () {
+    const anim = new WeakMap();
+    function scrollableAncestor(el) {
+        while (el && el !== document.documentElement && el.nodeType === 1) {
+            const oy = getComputedStyle(el).overflowY;
+            if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) return el;
+            el = el.parentElement;
+        }
+        return null;
+    }
+    document.addEventListener("wheel", function (e) {
+        if (lightweightUI() || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) || e.defaultPrevented || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+        if (e.target.closest && e.target.closest("#galleryViewer")) return; // viewer owns wheel = zoom
+        const el = scrollableAncestor(e.target);
+        if (!el) return;
+        let dy = e.deltaY;
+        if (e.deltaMode === 1) dy *= 40; else if (e.deltaMode === 2) dy *= el.clientHeight;
+        const max = el.scrollHeight - el.clientHeight;
+        let s = anim.get(el);
+        if (!s) { s = { raf: 0, pos: 0, target: 0 }; anim.set(el, s); }
+        if (!s.raf) { s.pos = el.scrollTop; s.target = el.scrollTop; }
+        const next = Math.max(0, Math.min(max, s.target + dy));
+        if (next === s.target && !s.raf) return; // already at the edge: let it chain naturally
+        e.preventDefault();
+        s.target = next;
+        if (s.raf) return;
+        el.style.scrollBehavior = "auto";
+        const step = function () {
+            const diff = s.target - s.pos;
+            if (Math.abs(diff) < 0.5) {
+                el.scrollTop = s.target;
+                s.raf = 0;
+                el.style.scrollBehavior = "";
+                return;
+            }
+            s.pos += diff * 0.2;
+            el.scrollTop = s.pos;
+            s.raf = requestAnimationFrame(step);
+        };
+        s.raf = requestAnimationFrame(step);
+    }, { passive: false });
+})();
+// history rows already played their slide-in once; re-renders must not replay it
+const _histAnimated = new Set();
+function histRowKey(img) { return String(img.filepath || img.filename || ""); }
+function markHistRowsAnimated(rows) {
+    const ui = document.getElementById("imageHistoryUI");
+    if (!ui || ui.offsetParent === null) return; // hidden tab: animation hasn't played yet
+    rows.forEach(img => _histAnimated.add(histRowKey(img)));
+}
 function escapeHtml(str) {
     return String(str)
         .replace(/&/g, "&amp;")
@@ -90,7 +180,9 @@ function displayTagList(raw, site) {
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
 function siteLabel(site) { const s = site || "unknown"; return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
-function escJs(s) { return String(s || "").replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'"); }
+function escJs(s) {
+    return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
+}
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
 document.addEventListener("focusin", e => { if (e.target && e.target.matches('input[type="number"]')) { _selBox = e.target; _selAt = Date.now(); try { e.target.select(); } catch (_) {} } });
@@ -158,25 +250,36 @@ function renderCategorizedTags(tagsInput, clickable) {
             let cls = getTagCategoryClass(cat);
             let safeT = escJs(t);
             if (clickable) {
-                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')">${display}</span>`;
+                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')">${escapeHtml(display)}</span>`;
             } else {
-                html += `<span class="g-tag-pill ${cls}">${display}</span>`;
+                html += `<span class="g-tag-pill ${cls}">${escapeHtml(display)}</span>`;
             }
         });
     });
     return html;
 }
 
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-    if (uiConfig.theme_mode === 'system') applyRenderTheme(e.matches ? 'dark' : 'light');
-});
+if (window.matchMedia) {
+    const themeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const changeTheme = e => { if (uiConfig.theme_mode === 'system') applyRenderTheme(e.matches ? 'dark' : 'light'); };
+    if (themeQuery.addEventListener) themeQuery.addEventListener('change', changeTheme);
+    else if (themeQuery.addListener) themeQuery.addListener(changeTheme);
+}
 
 async function loadUIConfig() {
     try {
+        const modeRevision = performanceModeRevision;
         let resp = await fetch("/api/ui_config");
-        uiConfig = await resp.json();
+        if (!resp.ok) throw new Error('Could not load UI settings');
+        const loaded = await resp.json();
+        // A startup response must not undo a dropdown change made while loading.
+        if (modeRevision !== performanceModeRevision) loaded.performance_mode = uiConfig.performance_mode;
+        uiConfig = loaded;
+        applyPerformanceMode();
         const fk = document.getElementById("fullscreenKey");
         if (fk) fk.value = uiConfig.fullscreen_key || "F11";
+        const zs = document.getElementById("viewerZoomStep");
+        if (zs) zs.value = uiConfig.viewer_zoom_pct !== undefined ? uiConfig.viewer_zoom_pct : 15;
         await syncBlurSettings();
 
         let radio = document.querySelector(`input[name="themeMode"][value="${uiConfig.theme_mode}"]`);
@@ -193,6 +296,22 @@ async function loadUIConfig() {
     } catch(e) { console.error("Error loading UI config", e); }
 }
 
+function viewerZoomPctInput() {
+    const zs = document.getElementById("viewerZoomStep");
+    const v = zs ? parseFloat(zs.value) : NaN;
+    return (isFinite(v) && v > 0 && v <= 100) ? v : 15; // speed is >0 by definition; 0 would freeze zoom
+}
+function saveViewerZoomStep() {
+    uiConfig.viewer_zoom_pct = viewerZoomPctInput();
+    const zs = document.getElementById("viewerZoomStep");
+    if (zs) zs.value = uiConfig.viewer_zoom_pct;
+    fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+}
+function getViewerZoomStep() {
+    const fromConfig = Number(uiConfig.viewer_zoom_pct);
+    const pct = (isFinite(fromConfig) && fromConfig > 0) ? Math.min(100, fromConfig) : viewerZoomPctInput();
+    return pct / 100;
+}
 let capturingFullscreenKey = false;
 function startFullscreenKeyCapture() {
     const inp = document.getElementById("fullscreenKey");
@@ -243,6 +362,8 @@ function applyRenderTheme(themeStr) {
         let tabMatch = activeTabBtn.getAttribute("onclick").match(/'([^']+)'/);
         if (tabMatch) updateBackground(tabMatch[1]);
     }
+    if (window.requestIdleCallback) requestIdleCallback(preloadWallpapers, {timeout:5000});
+    else setTimeout(preloadWallpapers, 3000);
 }
 
 function changeThemeMode(mode) {
@@ -277,14 +398,27 @@ function renderWallpaperGrid() {
 
         ui.innerHTML += `
         <div style="display: flex; flex-direction: column; gap: 5px;">
-        <span style="color: var(--text-color); font-size: 13px; font-weight: bold;">${siteLabel(tab)}</span>
+        <span style="color: var(--text-color); font-size: 13px; font-weight: bold;">${escapeHtml(siteLabel(tab))}</span>
         <div style="display: flex; gap: 10px;">
-        <div class="wp-box dark-mode" onclick="document.getElementById('${boxIdDark}').click()">Dark Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdDark}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'dark', this)"></div>
-        <div class="wp-box light-mode" onclick="document.getElementById('${boxIdLight}').click()">Light Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${boxIdLight}" accept="image/*" style="display:none" onchange="uploadWpBox('${tab}', 'light', this)"></div>
+        <div class="wp-box dark-mode" onclick="pickWpBox('${escJs(tab)}', 'dark')">Dark Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${escapeHtml(boxIdDark)}" accept="image/*" style="display:none" onchange="uploadWpBox('${escJs(tab)}', 'dark', this)"></div>
+        <div class="wp-box light-mode" onclick="pickWpBox('${escJs(tab)}', 'light')">Light Mode<br><span style="font-size:10px; opacity:0.7;">Click to upload</span><input type="file" id="${escapeHtml(boxIdLight)}" accept="image/*" style="display:none" onchange="uploadWpBox('${escJs(tab)}', 'light', this)"></div>
         </div>
         </div>
         `;
     });
+}
+
+function _wpUploaded(tabName, mode, result) {
+    if (!result.success) return;
+    uiConfig.wallpapers[tabName][mode] = result.filename;
+    let box = document.getElementById(`file_${tabName}_${mode}`).parentElement;
+    box.style.border = "2px solid var(--title-color)";
+    setTimeout(() => box.style.border = "", 1000);
+
+    let activeTabBtn = document.querySelector(".tab-btn.active");
+    if (activeTabBtn && activeTabBtn.getAttribute("onclick").includes(`'${tabName}'`) && currentActiveTheme === mode) {
+        updateBackground(tabName);
+    }
 }
 
 async function uploadWpBox(tabName, mode, fileInput) {
@@ -293,19 +427,27 @@ async function uploadWpBox(tabName, mode, fileInput) {
     formData.append("file", fileInput.files[0]);
     try {
         let resp = await fetch("/api/upload_wallpaper", { method: "POST", body: formData });
-        let result = await resp.json();
-        if (result.success) {
-            uiConfig.wallpapers[tabName][mode] = result.filename;
-            fileInput.parentElement.style.border = "2px solid var(--title-color)";
-            setTimeout(() => fileInput.parentElement.style.border = "", 1000);
-
-            let activeTabBtn = document.querySelector(".tab-btn.active");
-            if (activeTabBtn && activeTabBtn.getAttribute("onclick").includes(`'${tabName}'`) && currentActiveTheme === mode) {
-                updateBackground(tabName);
-            }
-        }
+        _wpUploaded(tabName, mode, await resp.json());
     } catch (e) { alert("Upload failed: " + e); }
     fileInput.value = "";
+}
+
+// on KDE the webview's file input opens the default file manager instead of a
+// file dialog — ask the backend for the native kdialog picker, else fall back
+async function pickWpBox(tabName, mode) {
+    try {
+        let resp = await fetch("/api/file/browse", { method: "POST" });
+        let data = await resp.json();
+        if (data.cancelled) return;
+        if (data.path) {
+            let formData = new FormData();
+            formData.append("path", data.path);
+            resp = await fetch("/api/upload_wallpaper", { method: "POST", body: formData });
+            _wpUploaded(tabName, mode, await resp.json());
+            return;
+        }
+    } catch (e) {}
+    document.getElementById(`file_${tabName}_${mode}`).click();
 }
 
 const _wpReady = {};
@@ -343,21 +485,14 @@ function _drainWpWaiters(url) {
     delete _wpWaiters[url];
     fns.forEach(fn => { try { fn(); } catch (e) {} });
 }
-let _wpLayerA = null;
-let _wpLayerB = null;
-let _wpFrontIsA = true;
+let _wpLayer = null;
 let _wpGen = 0;
 
 function _ensureWpLayers() {
-    if (_wpLayerA) return;
-    _wpLayerA = document.createElement('div');
-    _wpLayerA.id = 'wpFade'; // reuses existing #wpFade CSS (position/size/etc.)
-    _wpLayerB = document.createElement('div');
-    _wpLayerB.id = 'wpFade';
-    document.body.prepend(_wpLayerB);
-    document.body.prepend(_wpLayerA);
-    _wpLayerA.style.opacity = '1';
-    _wpLayerB.style.opacity = '0';
+    if (_wpLayer) return;
+    _wpLayer = document.createElement('div');
+    _wpLayer.className = 'wp-bg';
+    document.body.prepend(_wpLayer);
 }
 
 function updateBackground(tabName) {
@@ -369,47 +504,60 @@ function updateBackground(tabName) {
 
     _ensureWpLayers();
 
-    // ponytail: rapid tab switches used to tangle the two layers (roles
-    // flipped sync while images arrived async) — a stale switch now bails
+    // ponytail: rapid tab switches used to tangle the layers — a stale
+    // switch now bails
     const myGen = ++_wpGen;
-
-    const crossfade = () => {
+    if (_wpLayer.dataset.url === url) return;
+    // Instant decode-gated swap: every wallpaper fade tried on WebKitGTK
+    // (layer crossfades, pinned compositor layers, dip-through-cover)
+    // blinked, and the cover read as a black flash on tab change. A swap
+    // of an already-decoded image is atomic, so nothing can flash.
+    const apply = () => {
         if (myGen !== _wpGen) return;
-        const front = _wpFrontIsA ? _wpLayerA : _wpLayerB;
-        const back = _wpFrontIsA ? _wpLayerB : _wpLayerA;
-        if (front.style.backgroundImage.includes(filename)) return;
-        back.style.transition = 'none';
-        back.style.backgroundImage = `url('${url}')`;
-        back.style.opacity = '0';
-        void back.offsetWidth; // force reflow before enabling transition
-        back.style.transition = 'opacity 0.45s ease';
-        front.style.transition = 'opacity 0.45s ease';
-        back.style.opacity = '1';
-        front.style.opacity = '0'; // old layer fades out at the same time
-        _wpFrontIsA = !_wpFrontIsA; // back becomes the new front for next switch
+        _wpLayer.style.backgroundImage = `url('${url}')`;
+        _wpLayer.dataset.url = url;
     };
-
-    if (_wpReady[url]) crossfade();
-    else warmWallpaper(url, crossfade);
+    if (_wpReady[url]) apply();
+    else warmWallpaper(url, apply);
 }
 
 // ponytail: backgrounds swapped per tab with zero preload, so first visit
 // stalled on download+decode (6MB+ PNGs). Warm the browser cache during
 // idle so every tab switch is instant.
-let _wallpapersPreloaded = false;
+let _wallpaperPreloadTheme = '';
 function preloadWallpapers() {
-    if (_wallpapersPreloaded || !uiConfig.wallpapers) return;
-    _wallpapersPreloaded = true;
+    if (_wallpaperPreloadTheme === currentActiveTheme || !uiConfig.wallpapers) return;
+    const theme = currentActiveTheme;
+    _wallpaperPreloadTheme = theme;
     const seen = new Set();
+    const urls = [];
     Object.values(uiConfig.wallpapers).forEach(wp => {
         if (!wp) return;
-        [wp.dark, wp.light].forEach(fn => {
+        [wp[currentActiveTheme] || wp.dark].forEach(fn => {
             if (fn && !seen.has(fn)) {
                 seen.add(fn);
-                warmWallpaper(_wpUrl(fn));
+                urls.push(_wpUrl(fn));
             }
         });
     });
+    // one at a time, in idle windows: forty parallel Image+decode() calls
+    // starved WebKitGTK's main thread for seconds — the first tab switch
+    // right after launch froze until they finished
+    const next = i => {
+        if (i >= urls.length || currentActiveTheme !== theme) return;
+        const go = () => {
+            if (currentActiveTheme !== theme) return;
+            if (document.hidden) {
+                const resume = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', resume); go(); } };
+                document.addEventListener('visibilitychange', resume);
+                return;
+            }
+            warmWallpaper(urls[i], () => next(i + 1));
+        };
+        if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 2000 });
+        else setTimeout(go, 100);
+    };
+    next(0);
 }
 
 async function saveColors() {
@@ -442,7 +590,7 @@ async function saveWallpapersUI() {
 async function resetWallpapersUI() {
     if (!await customConfirm("Are you sure you want to reset all WALLPAPERS to default? Colors will not be changed.", "Reset")) return;
     uiConfig.wallpapers = {
-        "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"}, "Gallery": {"dark": "Rem_Gallery_d.jpg", "light": "Rem_Gallery_l.jpg"}, "History": {"dark": "Rem_history_d.png", "light": "Rem_history_l.png"}, "AnimeDL": {"dark": "Rem_AnimeDl_d.jpg", "light": "Rem_AnimeDl_l.jpg"}, "Danbooru": {"dark": "Rem_danbooru_d.jpg", "light": "Rem_danbooru_l.jpg"}, "EShuushuu": {"dark": "Rem_EShuushuu_d.jpg", "light": "Rem_EShuushuu_l.jpg"}, "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"}, "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"}, "Kona": {"dark": "Rem_Kona_d.jpg", "light": "Rem_Kona_l.jpg"}, "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"}, "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"}, "NekosAPI": {"dark": "Rem_NekosAPI_d.jpg", "light": "Rem_NekosAPI_l.jpg"}, "Nekosia": {"dark": "Rem_Nekosia_d.jpg", "light": "Rem_Nekosia_l.jpg"}, "Pinterest": {"dark": "Rem_pinterest_d.jpg", "light": "Rem_pinterest_l.jpg"}, "Pixiv": {"dark": "Rem_Pixiv_d.jpg", "light": "Rem_Pixiv_l.jpg"}, "Rule34": {"dark": "Rem_rule34_d.png", "light": "Rem_rule34_l.png"}, "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"}, "Sankaku": {"dark": "Rem_Sankaku_d.jpg", "light": "Rem_Sankaku_l.jpg"}, "Waifu": {"dark": "Rem_waifu_d.png", "light": "Rem_waifu_l.png"}, "Yande": {"dark": "Rem_yande_d.png", "light": "Rem_yande_l.png"}, "Zero": {"dark": "Rem_zero_d.jpg", "light": "Rem_zero_l.jpg"}, "Options": {"dark": "Rem_option_d.png", "light": "Rem_option_l.png"}, "Customize": {"dark": "Rem_custom_d.png", "light": "Rem_custom_l.png"}
+        "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"}, "Gallery": {"dark": "Rem_Gallery_d.jpg", "light": "Rem_Gallery_l.jpg"}, "History": {"dark": "Rem_history_d.png", "light": "Rem_history_l.png"}, "AnimeDL": {"dark": "Rem_AnimeDl_d.jpg", "light": "Rem_AnimeDl_l.jpg"}, "Danbooru": {"dark": "Rem_danbooru_d.jpg", "light": "Rem_danbooru_l.jpg"}, "EShuushuu": {"dark": "Rem_EShuushuu_d.jpg", "light": "Rem_EShuushuu_l.jpg"}, "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"}, "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"}, "Kona": {"dark": "Rem_Kona_d.jpg", "light": "Rem_Kona_l.jpg"}, "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"}, "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"}, "NekosAPI": {"dark": "Rem_NekosAPI_d.jpg", "light": "Rem_NekosAPI_l.jpg"}, "Nekosia": {"dark": "Rem_Nekosia_d.jpg", "light": "Rem_Nekosia_l.jpg"}, "Pinterest": {"dark": "Rem_pinterest_d.jpg", "light": "Rem_pinterest_l.jpg"}, "Pixiv": {"dark": "Rem_Pixiv_d.jpg", "light": "Rem_Pixiv_l.jpg"}, "Rule34": {"dark": "Rem_rule34_d.png", "light": "Rem_rule34_l.png"}, "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"}, "Sankaku": {"dark": "Rem_Sankaku_d.jpg", "light": "Rem_Sankaku_l.jpg"}, "Yande": {"dark": "Rem_yande_d.png", "light": "Rem_yande_l.png"}, "Zero": {"dark": "Rem_zero_d.jpg", "light": "Rem_zero_l.jpg"}, "Options": {"dark": "Rem_option_d.png", "light": "Rem_option_l.png"}, "Customize": {"dark": "Rem_custom_d.png", "light": "Rem_custom_l.png"}
     };
     renderWallpaperGrid();
     await saveWallpapersUI();
@@ -455,14 +603,14 @@ async function resetWallpapersUI() {
 const socket = io({ transports: ["polling"] });
 
 const WORKER_TO_TAB = {
-    "neko": "neko", "nekos_life": "nekos_life", "zero": "zero", "waifu": "waifu",
+    "neko": "neko", "nekos_life": "nekos_life", "zero": "zero",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
     "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
 };
 
 // worker name -> sidebar tab target + primary tag input (history jumps, nav icons)
-const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "waifu": { tab: "Waifu", input: "waifuTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
+const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
@@ -543,7 +691,7 @@ function capConsole(cb, max) {
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "waifu": "consoleLog_waifu", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -555,7 +703,7 @@ function appendLogCard(cb, card) {
     if (atBottom) {
         cb.appendChild(card);
         capConsole(cb);
-        cb.scrollTop = cb.scrollHeight;
+        jumpScroll(cb, cb.scrollHeight);
     } else {
         // capping trims the head while you read — pin the first visible card so
         // a flood of new downloads can't drag what you're looking at upward
@@ -565,7 +713,7 @@ function appendLogCard(cb, card) {
         const before = ref ? ref.getBoundingClientRect().top : null;
         cb.appendChild(card);
         capConsole(cb);
-        if (ref && ref.parentElement === cb && before !== null) cb.scrollTop += ref.getBoundingClientRect().top - before;
+        if (ref && ref.parentElement === cb && before !== null) jumpScroll(cb, cb.scrollTop + ref.getBoundingClientRect().top - before);
     }
     // a new card may have joined the box the open viewer walks — update now so
     // the next/prev arrows appear without reopening the image
@@ -610,8 +758,12 @@ function logToConsole(tabID, msg) {
             var logArtistBadge = "";
             tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
         }
+        // filenames may contain spaces (anime_dl: "Tag Name_123.jpg") — the
+        // token after "Downloaded" truncates there and the viewer's tag-box
+        // lookup misses; the |PATH| tail is the real name (same as viewerNav)
+        let pathSeg = rawPath ? (rawPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || "") : "";
         let fnMatch = raw.match(/Downloaded ([^\s]+)/);
-        let fn = fnMatch ? fnMatch[1] : "image";
+        let fn = pathSeg || (fnMatch ? fnMatch[1] : "image");
 
         let pathUrlStr = rawPath ? rawPath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27") : encodeURIComponent(fn).replace(/'/g, "%27");
 
@@ -619,23 +771,32 @@ function logToConsole(tabID, msg) {
         let logRating = "";
         let pLow = rawPath.toLowerCase().replace(/\\/g, '/');
         if (pLow.includes('/rule34/') || pLow.includes('\\rule34\\') || pLow.includes('rule34')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
             logRating = "explicit";
         }
         else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">Rating: NSFW</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
             logRating = "explicit";
         }
+        // pixiv stores files under <tag>/R18/ and <tag>/R18G/ — r18g before r18
+        else if (pLow.includes('/r18g/')) {
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
+            logRating = "explicit";
+        }
+        else if (pLow.includes('/r18/')) {
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
+            logRating = "questionable";
+        }
         else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Rating: Sensitive</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Sensitive</div>`;
             logRating = "sensitive";
         }
         else if (pLow.includes('moderate') || pLow.includes('questionable')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Rating: Questionable</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
             logRating = "questionable";
         }
         else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Rating: Safe</div>`;
+            ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Safe</div>`;
             logRating = "safe";
         }
         // ponytail: badge only matters when the tab's rating filter doesn't pin it down
@@ -751,7 +912,7 @@ function renderRule34Tags() {
         let cls = isNeg ? 'warning' : 'positive';
         let icon = isNeg ? '− ' : '✔ ';
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -791,46 +952,9 @@ function renderGelbooruTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (gelbooruSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
-let currentWaifuTags = []; // tokens: 'tag' = include, '-tag' = exclude
-let waifuTagList = [];
-
-function renderWaifuTagDropdown() {
-    let menu = document.getElementById("waifuTagDropdown");
-    if (!menu) return;
-    menu.innerHTML = waifuTagList.map(function(t) {
-        let exc = currentWaifuTags.includes('-' + t);
-        let inc = currentWaifuTags.includes(t);
-        return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="waifuTagToggle(this, 0)" oncontextmenu="return waifuTagToggle(this, 1)"><span>' + cleanTagDisplay(t) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
-    }).join('');
-}
-
-// left: neutral→include, include→clear, exclude→include; right: the exclude side.
-// mutates the row in place — an innerHTML rebuild would detach the click target
-// and the document's outside-click closer would fold the open menu
-function waifuTagToggle(el, isRight) {
-    let tag = el.dataset.tag;
-    let next = isRight
-        ? (currentWaifuTags.includes('-' + tag) ? null : '-' + tag)
-        : (currentWaifuTags.includes(tag) ? null : tag);
-    currentWaifuTags = currentWaifuTags.filter(function(t) { return t !== tag && t !== '-' + tag; });
-    if (next) currentWaifuTags.push(next);
-    const exc = !!next && next[0] === '-';
-    el.classList.toggle('dd-excl', exc);
-    el.querySelector('input').checked = !!next && !exc;
-    let hidden = document.getElementById("waifuTag");
-    if (hidden) hidden.value = currentWaifuTags.join(" ");
-    return false;
-}
-
-function syncWaifuTags() {
-    let hidden = document.getElementById("waifuTag");
-    if (hidden) hidden.value = currentWaifuTags.join(" ");
-    renderWaifuTagDropdown();
-}
-
 // --- NekosAPI tag dropdown (flat ~50-tag vocabulary, laid out in columns) ---
 let currentNekosapiTags = []; // tokens: 'tag' = include, '-tag' = exclude
 let nekosapiTagList = [];
@@ -841,11 +965,11 @@ function renderNekosapiTagDropdown() {
     menu.innerHTML = nekosapiTagList.map(function(t) {
         let exc = currentNekosapiTags.includes('-' + t);
         let inc = currentNekosapiTags.includes(t);
-        return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="nekosapiTagToggle(this, 0)" oncontextmenu="return nekosapiTagToggle(this, 1)"><span>' + cleanTagDisplay(t) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
+        return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="nekosapiTagToggle(this, 0)" oncontextmenu="return nekosapiTagToggle(this, 1)"><span>' + escapeHtml(cleanTagDisplay(t)) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
     }).join('');
 }
 
-// same cycle as waifuTagToggle; mutates the row in place — an innerHTML
+// same cycle as the tag toggles above; mutates the row in place — an innerHTML
 // rebuild would detach the click target and the outside-click closer
 // would fold the open menu
 function nekosapiTagToggle(el, isRight) {
@@ -896,7 +1020,7 @@ function renderWatcherTags() {
         const cls = isNeg ? 'warning' : (idx === 0 ? 'main' : 'neutral');
         const icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         const safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeWatcherTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeWatcherTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 function onWatcherRatingChange() { onMultiRatingChange('watcherRatingDropdown', 'watcherGelRating'); }
@@ -1060,7 +1184,7 @@ function renderEshuushuuTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (eshuushuuSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeEshuushuuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeEshuushuuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1096,7 +1220,7 @@ function renderGsbooruTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (gsbooruSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeGsbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeGsbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1132,7 +1256,7 @@ function renderKonaTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (konaSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeKonaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeKonaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1168,7 +1292,7 @@ function renderNekosiaTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (nekosiaSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeNekosiaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeNekosiaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1204,7 +1328,7 @@ function renderSafeTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (safeSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeSafeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeSafeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1240,7 +1364,7 @@ function renderSankakuTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (sankakuSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeSankakuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeSankakuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1276,7 +1400,7 @@ function renderYandeTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (yandeSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeYandeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeYandeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 
@@ -1318,7 +1442,7 @@ function renderZerochanTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (zerochanSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeZerochanTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeZerochanTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 async function showZeroSubtags(dropdown, input) {
@@ -1384,12 +1508,17 @@ document.addEventListener("DOMContentLoaded", function() {
         }
 
         r34SuggestTimer = setTimeout(async () => {
+            // latest keystroke wins — an in-flight older fetch
+            // must not overwrite the newer dropdown
+            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+            let mySeq = input.dataset.suggestSeq;
             try {
                 let resp = await fetch("/api/tags/rule34", {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                 });
                 let data = await resp.json();
+                if (input.dataset.suggestSeq !== mySeq) return;
                 if (data && data.length > 0) {
                     r34SuggestItems = data;
                     r34SuggestActiveIndex = -1;
@@ -1493,12 +1622,17 @@ document.addEventListener("DOMContentLoaded", function() {
         }
 
         eshuSuggestTimer = setTimeout(async () => {
+            // latest keystroke wins — an in-flight older fetch
+            // must not overwrite the newer dropdown
+            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+            let mySeq = input.dataset.suggestSeq;
             try {
                 let resp = await fetch("/api/tags/eshuushuu", {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                 });
                 let data = await resp.json();
+                if (input.dataset.suggestSeq !== mySeq) return;
                 if (data && data.length > 0) {
                     eshuSuggestActiveIndex = -1;
                     dropdown.innerHTML = "";
@@ -1598,12 +1732,17 @@ document.addEventListener("DOMContentLoaded", function() {
         if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
 
         zeroSuggestTimer = setTimeout(async () => {
+            // latest keystroke wins — an in-flight older fetch
+            // must not overwrite the newer dropdown
+            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+            let mySeq = input.dataset.suggestSeq;
             try {
                 let resp = await fetch("/api/tags/zerochan", {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                 });
                 let data = await resp.json();
+                if (input.dataset.suggestSeq !== mySeq) return;
                 if (input.value.trim() === "") return;
                 if (data && data.length > 0) {
                     zeroSuggestItems = data;
@@ -1722,7 +1861,7 @@ function renderAnimeDlTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (animeDlSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeAnimeDlTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeAnimeDlTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 async function showAnimeDlSubtags(dropdown, input) {
@@ -1777,12 +1916,17 @@ document.addEventListener("DOMContentLoaded", function() {
         if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
 
         animeDlSuggestTimer = setTimeout(async () => {
+            // latest keystroke wins — an in-flight older fetch
+            // must not overwrite the newer dropdown
+            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+            let mySeq = input.dataset.suggestSeq;
             try {
                 let resp = await fetch("/api/tags/anime_dl", {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                 });
                 let data = await resp.json();
+                if (input.dataset.suggestSeq !== mySeq) return;
                 if (input.value.trim() === "") return;
                 if (data && data.length > 0) {
                     animeDlSuggestActiveIndex = -1;
@@ -1902,7 +2046,7 @@ function renderDanTags() {
         let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (danSubTags.has(t) ? 'sub' : 'neutral'));
         let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
         let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeDanTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + cleanTagDisplay(text) + '</span>';
+        return '<span class="v-tag ' + cls + '" onclick="removeDanTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
     }).join('');
 }
 async function showDanSubtags(dropdown, input) {
@@ -1957,12 +2101,17 @@ document.addEventListener("DOMContentLoaded", function() {
         if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
 
         danSuggestTimer = setTimeout(async () => {
+            // latest keystroke wins — an in-flight older fetch
+            // must not overwrite the newer dropdown
+            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+            let mySeq = input.dataset.suggestSeq;
             try {
                 let resp = await fetch("/api/tags/dan", {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                 });
                 let data = await resp.json();
+                if (input.dataset.suggestSeq !== mySeq) return;
                 if (input.value.trim() === "") return;
                 if (data && data.length > 0) {
                     danSuggestActiveIndex = -1;
@@ -2293,6 +2442,7 @@ socket.on("worker_finished", function (data) {
     const dup = z ? ` (${z} duplicates removed)` : "";
     const jobs = data.jobs || 1;
     if (jobs > 1) {
+        showToast(`${siteLabel(data.worker)} finished downloading`);
         if (d > 0 && f > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded, ${f} failed${dup}! ---`);
         else if (d > 0) updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, ${d} downloaded${dup}! ---`);
         else updateProgressBar(data.worker, `--- Queue finished: ${jobs} tasks, no new images${dup} ---`);
@@ -2321,9 +2471,16 @@ socket.on("update_history", function () {
     if (_histReloadTimer) return;
     _histReloadTimer = setTimeout(() => {
         _histReloadTimer = null;
-        loadGallery();
-        populateGallerySiteFilter();
-        loadTagsData();
+        const gallery = document.getElementById('Gallery');
+        if (gallery && gallery.style.display !== 'none') {
+            loadGallery();
+            populateGallerySiteFilter(true);
+        } else {
+            invalidateGalleryBuffer();
+            preloadGalleryPage(galleryRequestParams(currentGalleryPage, Math.min(96, Math.max(64, galleryPerPage()))));
+        }
+        const history = document.getElementById('History');
+        if (history && history.style.display !== 'none') loadTagsData();
     }, 1500);
 });
 
@@ -2331,7 +2488,7 @@ socket.on("gallery_rescan_done", function (data) {
     if (data && data.success) {
         showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" });
         loadGallery(1);
-        populateGallerySiteFilter();
+        populateGallerySiteFilter(true);
     } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" });
 });
 
@@ -2578,14 +2735,21 @@ socket.on("dl_queue", function (data) {
 });
 
 window.onload = async function () {
+    const uiConfigReady = loadUIConfig();
     socket.emit("get_queue");
     // buttons must exist before any queue state arrives
     Object.keys(WORKER_TO_TAB).forEach(renderRunBtn);
+    // ponytail: not waste — the first Gallery click after launch otherwise queues
+    // behind startup_rescan's save_gallery (_GALLERY_LOCK) and the thumb cache's
+    // no-cache revalidations. Fire page 1 now so that wait happens here;
+    // openTab still refetches with the real per-page count when shown.
+    loadGallery(1);
     try {
         let resp = await fetch("/api/config");
         let config = await resp.json();
         if (config) {
             globalNetConfig = config;
+            document.getElementById("verifyTls").checked = config.verify_tls !== false;
             document.getElementById("proxyEnabled").checked = config.use_proxy || false;
             document.getElementById("proxyUrl").value = config.proxy_url || "http://127.0.0.1:10808";
             document.getElementById("apiTimeout").value = config.api_timeout || 10;
@@ -2594,6 +2758,10 @@ window.onload = async function () {
             document.getElementById("downloadRetries").value = config.download_retries || 3;
             document.getElementById("reqRateLimit").value = config.req_rate_limit || 4;
             if (document.getElementById("dedupEnabled")) document.getElementById("dedupEnabled").checked = config.dedup_enabled !== false;
+            if (document.getElementById("autoJxlEnabled")) {
+                document.getElementById("autoJxlEnabled").checked = config.auto_convert_jxl === true;
+                document.getElementById("autoJxlEffort").value = config.jxl_effort || 5;
+            }
         }
     } catch (e) { console.error("Config error:", e); }
 
@@ -2604,23 +2772,15 @@ window.onload = async function () {
     } catch (e) { console.error("folder load failed:", e); }
 
     updateNekoDropdown();
-    updateNekosLifeType();
     // ponytail: hardcoded option labels display clean like everything else
     document.querySelectorAll('#nekosLifeCat option, #nekosLifeFormat option').forEach(o => { o.textContent = cleanTagDisplay(o.textContent); });
+    // after the labels are prettified: the format filter snapshots them
+    updateNekosLifeFormat();
     updatePixivMode();
-    await loadUIConfig();
+    await uiConfigReady;
 
-    // ponytail: history/settings/import are mutually independent — run them
-    // alongside the external waifu call instead of gated behind it
+    // ponytail: history/settings/import are mutually independent
     const _startupTail = Promise.allSettled([loadTagsData(), loadApiSettings(), importGallery()]);
-
-    try {
-        let resp = await fetch("/api/tags/waifu", {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig)
-        });
-        waifuTagList = await resp.json();
-        renderWaifuTagDropdown();
-    } catch (e) { console.error("waifu tags load failed:", e); }
 
     try {
         let resp = await fetch("/api/tags/nekosapi", {
@@ -2629,6 +2789,14 @@ window.onload = async function () {
         nekosapiTagList = await resp.json();
         renderNekosapiTagDropdown();
     } catch (e) { console.error("nekosapi tags load failed:", e); }
+
+    try {
+        let resp = await fetch("/api/tags/nekosbest", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig)
+        });
+        nekoEndpoints = await resp.json();
+        updateNekoDropdown();
+    } catch (e) { console.error("nekosbest endpoints load failed:", e); }
 
     await _startupTail;
     const gBlurBtn = document.getElementById("galleryBlurBtn");
@@ -2644,13 +2812,39 @@ window.onload = async function () {
 
 const nekoImages = ["husbando", "kitsune", "neko", "waifu"];
 const nekoGifs = ["angry", "baka", "bite", "bleh", "blowkiss", "blush", "bonk", "bored", "carry", "clap", "confused", "cry", "cuddle", "dance", "facepalm", "feed", "handhold", "handshake", "happy", "highfive", "hug", "kabedon", "kick", "kiss", "lappillow", "laugh", "lurk", "nod", "nom", "nope", "nya", "pat", "peck", "poke", "pout", "punch", "run", "salute", "shake", "shoot", "shocked", "shrug", "sip", "slap", "sleep", "smile", "smug", "spin", "stare", "tableflip", "teehee", "think", "thumbsup", "tickle", "wag", "wave", "wink", "yawn", "yeet"];
+// category -> format ("png"/"gif") from /api/tags/nekosbest; empty until it loads
+let nekoEndpoints = {};
+
+function nekoVisibleCats() {
+    const fmt = document.getElementById("nekoFormat").value;
+    const names = Object.keys(nekoEndpoints);
+    // until /api/tags/nekosbest loads, fall back to the old hardcoded lists
+    if (!names.length) return fmt === "Images" ? nekoImages : nekoGifs;
+    return names.filter(n => ((nekoEndpoints[n] || "png") === "gif") === (fmt === "GIFs"));
+}
 
 function updateNekoDropdown() {
-    let fmt = document.getElementById("nekoFormat").value;
-    let sel = document.getElementById("nekoCat");
-    sel.innerHTML = "";
-    let targetList = fmt === "Images" ? nekoImages : nekoGifs;
-    targetList.forEach(t => { let opt = document.createElement("option"); opt.value = t; opt.textContent = cleanTagDisplay(t); sel.appendChild(opt); });
+    const menu = document.getElementById("nekoCatDropdown");
+    if (!menu) return;
+    const items = nekoVisibleCats();
+    menu.innerHTML = '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>' +
+        items.map(c => '<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>' + escapeHtml(cleanTagDisplay(c)) + '</span><input type="checkbox" value="' + escapeHtml(c) + '"></div>').join('');
+    onNekoCatChange();
+}
+
+function onNekoCatChange() {
+    const menu = document.getElementById('nekoCatDropdown');
+    const hidden = document.getElementById('nekoCat');
+    if (!menu || !hidden) return;
+    const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
+    const allCheck = menu.querySelector('input[value=""]');
+    const checked = itemChecks.filter(c => c.checked);
+    if (checked.length === 0 && allCheck) allCheck.checked = true;
+    // "All" spells out every category of the current format so the payload
+    // always carries an explicit list the worker can loop over
+    hidden.value = ((allCheck && allCheck.checked) ? itemChecks : checked).map(c => c.value).join(' ');
+    const btn = document.querySelector('[onclick="toggleDropdown(\'nekoCatDropdown\')"]');
+    if (btn) btn.textContent = getMultiLabel('nekoCatDropdown', 'All Categories') + ' ▾';
 }
 
 function updatePixivMode() {
@@ -2691,20 +2885,29 @@ function toggleGifExclusion(formatId, checkboxId) {
     else { checkbox.style.display = ''; label.style.display = ''; }
 }
 
-function updateNekosLifeType() {
-    const gifOnly = ["ngif", "hug", "pat", "cuddle", "tickle", "feed", "slap", "kiss", "smug"];
-    const staticOnly = ["gecg", "meow", "neko", "lewd", "gasm", "8ball", "avatar", "woof", "fox_girl", "waifu"];
-    const mixed = ["goose", "wallpaper", "lizard", "span"];
+// The format dropdown drives the category list: each optgroup is one bucket
+// (GIF Only / Static Only / Mixed), so picking a format narrows the categories
+// down to the ones that can actually deliver it.
+function updateNekosLifeFormat() {
+    const fmtSel = document.getElementById("nekosLifeFormat");
+    const catSel = document.getElementById("nekosLifeCat");
 
-    let cat = document.getElementById("nekosLifeCat").value;
-    let typeEl = document.getElementById("nekosLifeType");
-    let formatLabel = document.getElementById("nekosLifeFormatLabel");
-    let formatSelect = document.getElementById("nekosLifeFormat");
+    // snapshot the full list once — the labels only live in the markup, and
+    // the custom menu rebuilds itself from whatever options are present
+    if (!catSel.dataset.all) {
+        catSel.dataset.all = JSON.stringify([...catSel.options].map(
+            o => ({ v: o.value, t: o.textContent, g: o.parentNode.label || "" })));
+    }
+    const group = { gif: "GIF Only", image: "Static Only" }[fmtSel.value] || "Mixed (GIF/Static)";
+    const keep = JSON.parse(catSel.dataset.all).filter(o => o.g === group);
+    const prev = catSel.value;
 
-    if (gifOnly.includes(cat)) { typeEl.textContent = "[GIF]"; typeEl.style.color = "var(--accent-color)"; formatLabel.style.display = "none"; formatSelect.style.display = "none"; }
-    else if (staticOnly.includes(cat)) { typeEl.textContent = "[STATIC]"; typeEl.style.color = "#00d2d3"; formatLabel.style.display = "none"; formatSelect.style.display = "none"; }
-    else if (mixed.includes(cat)) { typeEl.textContent = "[MIXED]"; typeEl.style.color = "#ffd93d"; formatLabel.style.display = ""; formatSelect.style.display = ""; }
-    else { typeEl.textContent = ""; formatLabel.style.display = "none"; formatSelect.style.display = "none"; }
+    catSel.innerHTML = "";
+    keep.forEach(o => catSel.appendChild(new Option(o.t, o.v)));
+    // a category that survives the new format stays selected, otherwise land on
+    // the first one; through setSelectValue so the trigger's label follows
+    const target = keep.find(o => o.v === prev) || keep[0];
+    if (target) setSelectValue(catSel, target.v);
 }
 
 async function saveProxySettings() {
@@ -2765,12 +2968,18 @@ function openTab(tabName, btn) {
     if (tabName === "Gallery") {
         const blurBtn = document.getElementById("galleryBlurBtn");
         if (blurBtn) blurBtn.classList.toggle("active", galleryBlurNsfw);
-        clearTimeout(_resizeTimer);
-        _resizeTimer = setTimeout(() => loadGallery(), 60);
+        // Opening and resize share one frame so they cannot launch duplicate
+        // requests while the tab's flex box is becoming visible.
+        settleGalleryLayout(true);
     }
     // gallery keeps its hearts fresh by reloading on open; the history tab
     // must refetch too, or favourites toggled in the gallery stay stale here
-    if (tabName === "History") loadTagsData();
+    if (tabName === "History") {
+        // rows rendered while the tab was hidden start their slide-in only now —
+        // mark them played so the refetch/re-render below can't replay it
+        if (typeof imgHistFiltered !== "undefined" && imgHistFiltered.length) markHistRowsAnimated(imgHistFiltered.slice(0, imageHistoryVisible));
+        loadTagsData();
+    }
     if (tabName === "Notifications") loadNotifications();
 }
 
@@ -2881,6 +3090,7 @@ function notifCardShell(n, idx, body, flashTitle) {
 function pixivNotifCard(n, idx) {
     const title = escapeHtml(n.title || "Untitled");
     const artist = escapeHtml(n.artist_name || "Unknown artist");
+    const artistId = String(n.artist_id || "").replace(/[^0-9]/g, "");
     const date = String(n.create_date || "").replace("T", " ").slice(0, 16);
     const thumb = n.thumb ? `/api/pixiv/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
     return notifCardShell(n, idx, `
@@ -2889,13 +3099,31 @@ function pixivNotifCard(n, idx) {
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
                 <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
-                <div style="font-size: 12px; opacity: 0.75;">${artist}${date ? " · " + date : ""}</div>
+                <div>${artistId ? `<span onclick="pixivGotoArtist('${escJs(artistId)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${artist}</span>` : artist}</div>
+                <div style="font-size: 12px; opacity: 0.75;">${date ? " · " + date : ""}</div>
             </div>`, "Open this artist in the Pixiv downloader");
+}
+
+// gelbooru notif titles are the watcher's raw tags bullet-joined
+// (core/watchers.py _entries) — clean each part, then show the SAME tags as
+// clickable gallery pills, but only the ones the title didn't already cover
+function notifTagRow(m, titleClean) {
+    const titleBits = new Set(titleClean.split(/\s*•\s*/).filter(Boolean).map(s => s.toLowerCase()));
+    const tags = (m.tags || [])
+        .map(t => String(t).trim())
+        .filter(Boolean)
+        .filter(t => !titleBits.has(cleanTagDisplay(t).toLowerCase()));
+    if (!tags.length) return "";
+    const pills = tags.map(t =>
+        `<span class="g-tag-pill ${getTagCategoryClass(categorizeTag(t))}" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`
+    ).join(' ');
+    return `<div style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 60px; overflow: hidden;">${pills}</div>`;
 }
 
 function gelbooruNotifCard(n, idx) {
     const m = n.metadata || {};
-    const title = escapeHtml(n.title || "New matching Gelbooru post");
+    const titleClean = String(n.title || "").split("•").map(p => cleanTagDisplay(p.trim())).filter(Boolean).join(" • ");
+    const title = escapeHtml(titleClean || "New matching Gelbooru post");
     const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
     const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
     const thumb = n.thumb ? `/api/gelbooru/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
@@ -2905,6 +3133,7 @@ function gelbooruNotifCard(n, idx) {
             </div>
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
                 <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
+                ${notifTagRow(m, titleClean)}
                 <div style="font-size: 12px; opacity: 0.75;">New matching Gelbooru post · ${rating}${date ? " · " + date : ""}</div>
             </div>`, "Populate the Gelbooru downloader with this watcher's tags");
 }
@@ -3005,7 +3234,7 @@ function showToast(msg, opts) {
     let toast = document.createElement("div");
     toast.className = "toast-item" + (opts.warn ? " warn" : "");
     if (opts.key) toast.dataset.toastKey = opts.key;
-    toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${escapeHtml(msg)}</span></div><button class="toast-dismiss" onclick="this.parentElement.remove()">✕</button>`;
+    toast.innerHTML = `<div class="toast-icon">${opts.icon || '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z"/></svg>'}</div><div class="toast-body"><span class="toast-title">${escapeHtml(msg)}</span></div><button class="toast-dismiss" aria-label="Dismiss notification" onclick="this.parentElement.remove()">✕</button>`;
     container.appendChild(toast);
     // ponytail: warnings (e.g. copy fallback) stay until dismissed; info toasts fade
     if (!opts.sticky) setTimeout(() => { if (!toast.parentElement) return; toast.classList.add("fade-out"); setTimeout(() => toast.remove(), 350); }, 4000);
@@ -3077,9 +3306,8 @@ function buildWorkerPayload(workerName) {
     payload.net_config.anti_ban_pause = document.getElementById("antiBanPause").value;
 
     if (workerName === 'zero') { payload.tag = currentZerochanTags.join(','); payload.limit = document.getElementById('zeroLimit').value; }
-    else if (workerName === 'waifu') { payload.tag = currentWaifuTags.join(' '); payload.limit = document.getElementById('waifuLimit').value; payload.rating = document.getElementById('waifuRating').value; }
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
-    else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; const mixed = ["goose", "wallpaper", "lizard", "span"]; if (mixed.includes(payload.category)) payload.format = document.getElementById('nekosLifeFormat').value; }
+    else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; payload.format = document.getElementById('nekosLifeFormat').value; }
     else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
     else if (workerName === 'gelbooru') { payload.tag = currentGelbooruTags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !currentGelbooruTags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
     else if (workerName === 'gsbooru') { payload.tag = currentGsbooruTags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
@@ -3147,7 +3375,6 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
     if (workerName === 'gelbooru') { currentGelbooruTags = []; gelbooruSubTags.clear(); renderGelbooruTags(); document.getElementById('gelbooruTag').value = ''; }
-    if (workerName === 'waifu') { currentWaifuTags = []; syncWaifuTags(); }
     if (workerName === 'nekosapi') { currentNekosapiTags = []; syncNekosapiTags(); }
     if (workerName === 'eshuushuu') { currentEshuushuuTags = []; eshuushuuSubTags.clear(); renderEshuushuuTags(); document.getElementById('eshuushuuTag').value = ''; }
     if (workerName === 'gsbooru') { currentGsbooruTags = []; gsbooruSubTags.clear(); renderGsbooruTags(); document.getElementById('gsbooruTag').value = ''; }
@@ -3156,6 +3383,9 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'safe') { currentSafeTags = []; safeSubTags.clear(); renderSafeTags(); document.getElementById('safeTag').value = ''; }
     if (workerName === 'sankaku') { currentSankakuTags = []; sankakuSubTags.clear(); renderSankakuTags(); document.getElementById('sankakuTag').value = ''; }
     if (workerName === 'yande') { currentYandeTags = []; yandeSubTags.clear(); renderYandeTags(); document.getElementById('yandeTag').value = ''; }
+    // plain-text boxes (no tag-chip state): empty the field that was queued
+    if (workerName === 'pixiv') document.getElementById('pixivTag').value = '';
+    if (workerName === 'pinterest') document.getElementById('pinterestTag').value = '';
 }
 
 function startWorker(workerName) {
@@ -3186,7 +3416,11 @@ function startWorker(workerName) {
     return true;
 }
 
+const PENDING_TAG_ADD = { zero:'addZerochanTag', anime_dl:'addAnimeDlTag', dan:'addDanTag', gelbooru:'addGelbooruTag', eshuushuu:'addEshuushuuTag', gsbooru:'addGsbooruTag', kona:'addKonaTag', nekosia:'addNekosiaTag', safe:'addSafeTag', sankaku:'addSankakuTag', yande:'addYandeTag', rule34:'addRule34Tag' };
 function addWorkerToQueue(workerName) {
+    // a tag typed in the box but never committed with Enter must still be queued
+    const addFn = window[PENDING_TAG_ADD[workerName]];
+    if (addFn) addFn();
     const payload = buildWorkerPayload(workerName);
     if (!payload) return false;
     delete stoppedWorker[workerName];
@@ -3252,7 +3486,7 @@ async function saveApiSettings() {
     };
     let resp = await fetch("/api/api-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     let result = await resp.json();
-    return result.success ? "Saved!" : "Error!";
+    return resp.ok && result.success ? "Saved!" : "Could not save API settings.";
 }
 
 async function startPixivLogin() {
@@ -3262,7 +3496,7 @@ async function startPixivLogin() {
         let resp = await fetch("/api/pixiv/oauth/start", { method: "POST" });
         let result = await resp.json();
         if (!result.success) { statusEl.textContent = result.error || "Failed to start login."; return; }
-        window.open(result.url, "_blank");
+        window.open(result.url, "_blank", "noopener,noreferrer");
         statusEl.textContent = "Log in, then paste the code from Network → callback?state=... ";
         const a = document.createElement("a");
         a.href = result.url;
@@ -3293,21 +3527,47 @@ async function exchangePixivCookie() {
 }
 
 async function saveDownloadSettings() {
+    globalNetConfig.verify_tls = document.getElementById("verifyTls").checked;
     globalNetConfig.api_timeout = document.getElementById("apiTimeout").value;
     globalNetConfig.retry_wait = document.getElementById("retryWait").value;
     globalNetConfig.anti_ban_pause = document.getElementById("antiBanPause").value;
     globalNetConfig.download_retries = document.getElementById("downloadRetries").value;
     globalNetConfig.req_rate_limit = document.getElementById("reqRateLimit").value;
     if (document.getElementById("dedupEnabled")) globalNetConfig.dedup_enabled = document.getElementById("dedupEnabled").checked;
-    await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
+    if (document.getElementById("autoJxlEnabled")) {
+        globalNetConfig.auto_convert_jxl = document.getElementById("autoJxlEnabled").checked;
+        globalNetConfig.jxl_effort = Number(document.getElementById("autoJxlEffort").value) || 5;
+    }
+    const response = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
+    if (!response.ok) throw new Error(response.status === 401 ? "Session ended. Sign in again to save." : "Could not save download settings.");
     return "Saved!";
 }
 
+let _settingsSavePending = false;
 async function saveAllSettings() {
+    if (_settingsSavePending) return;
+    _settingsSavePending = true;
     const st = document.getElementById('settingsSaveStatus');
-    const results = [await saveApiSettings(), await saveDownloadSettings(), await saveBlurRatings()];
-    const bad = results.find(r => r !== "Saved!");
-    if (st) { st.textContent = bad || "Saved!"; setTimeout(() => st.textContent = "", 2000); }
+    const button = document.getElementById('saveAllSettingsBtn');
+    const started = window.RemUX ? window.RemUX.settingsRevision() : 0;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    if (st) st.textContent = 'Saving…';
+    try {
+        for (const save of [saveApiSettings, saveDownloadSettings, saveBlurRatings]) {
+            const result = await save();
+            if (result !== 'Saved!') throw new Error(result || 'Could not save settings.');
+        }
+        if (window.RemUX) window.RemUX.settingsSaved(started);
+        else if (st) st.textContent = 'All changes saved';
+        showToast(window.RemUX && window.RemUX.hasUnsavedChanges() ? 'Settings saved. New edits remain unsaved.' : 'Settings saved');
+    } catch (error) {
+        if (window.RemUX) window.RemUX.settingsFailed();
+        if (st) st.textContent = (error.message || 'Save failed.') + ' Your edits are still here. Retry saving.';
+        showToast('Some settings could not be saved. Your edits are still here.', {warn:true});
+    } finally {
+        _settingsSavePending = false;
+        if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
 }
 
 let historyTags = [];
@@ -3352,7 +3612,7 @@ function populateHistSourceDropdown() {
     const prev = getMultiSelectValues("histSourceDropdown");
     const prevSet = prev && prev !== "__none__" ? prev.split(",") : [];
     menu.innerHTML = `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>All</span><input type="checkbox" value="" checked></div>` +
-        sites.map(s => `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>${siteLabel(s)}</span><input type="checkbox" value="${s}"></div>`).join("");
+        sites.map(s => `<div class="dd-item" onclick="toggleDropdownCheck(this, event); renderHistory()"><span>${escapeHtml(siteLabel(s))}</span><input type="checkbox" value="${escapeHtml(s)}"></div>`).join("");
     if (prevSet.length) {
         menu.querySelectorAll('input[type="checkbox"]').forEach(c => { if (prevSet.includes(c.value)) c.checked = true; });
         const all = menu.querySelector('input[value=""]');
@@ -3668,24 +3928,24 @@ function renderHistory() {
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
                 timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${siteLabel(item.site)}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site)}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
-    ui.parentElement.scrollTop = currentScroll;
+    jumpScroll(ui.parentElement, currentScroll);
 }
 
 function renderFavorites() {
     let ui = document.getElementById("favoritesListUI");
     if(!ui) return;
-    ui.innerHTML = "";
     if (favoriteTags.length === 0) {
         ui.innerHTML = "<p style='color: var(--text-color); opacity: 0.7; font-size: 12px;'>Click the heart icon in the History tab to add favorites.</p>";
         return;
     }
-    favoriteTags.forEach(item => {
-        ui.innerHTML += `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(siteLabel(item.site))}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`;
-    });
+    // array + one innerHTML: `ui.innerHTML +=` in a loop re-parses the whole list per item
+    ui.innerHTML = favoriteTags.map(item =>
+        `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(siteLabel(item.site))}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`
+    ).join("");
 }
 
 async function toggleFavorite(site, tag) {
@@ -3783,13 +4043,25 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
         }
         const pixExAI = document.getElementById('pixiv-exclude-ai');
         if (pixExAI) pixExAI.checked = excludeAI === true;
-    } else if (site === "waifu") {
-        currentWaifuTags = String(tag || "").split(/\s+/).filter(Boolean);
-        syncWaifuTags();
     } else if (site === "nekosapi") {
         // legacy history entries were free text ("catgirl yuri" / "catgirl, yuri")
         currentNekosapiTags = String(tag || "").split(/[\s,]+/).filter(Boolean);
         syncNekosapiTags();
+    } else if (site === "neko") {
+        // history stores the space-joined categories, not the format — derive the
+        // format first (switching it rebuilds the menu), then re-check exactly those
+        const cats = String(tag || "").trim().split(/[\s,]+/).filter(Boolean);
+        const isGif = c => (nekoEndpoints[c] || (nekoGifs.includes(c) ? "gif" : "png")) === "gif";
+        if (cats.length) {
+            setSelectValue(document.getElementById("nekoFormat"), isGif(cats[0]) ? "GIFs" : "Images");
+            const menu = document.getElementById("nekoCatDropdown");
+            if (menu) {
+                menu.querySelectorAll('input[type="checkbox"]').forEach(c => {
+                    c.checked = c.value !== '' && cats.includes(c.value);
+                });
+                onNekoCatChange();
+            }
+        }
     }
     let mapping = siteMap[site] || { tab: "Safe", input: "safeTag" };
     // ponytail: match the button's openTab target, not its label —
@@ -3797,17 +4069,6 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
     let btn = Array.from(document.querySelectorAll('.tab-btn')).find(el => (el.getAttribute('onclick') || '').includes("'" + mapping.tab + "'"));
     if(btn) openTab(mapping.tab, btn);
     if(mapping.input && site !== "zero" && site !== "rule34" && site !== "anime_dl" && site !== "dan" && site !== "gelbooru" && site !== "eshuushuu" && site !== "gsbooru" && site !== "kona" && site !== "nekosia" && site !== "safe" && site !== "sankaku" && site !== "yande" && site !== "pixiv") { let inputEl = document.getElementById(mapping.input); if(inputEl) inputEl.value = tag; }
-    if (site === "waifu") {
-        // new history stores rating (""/safe/nsfw); old entries carry the nsfw bool
-        const wr = document.getElementById("waifuRating");
-        if (wr) {
-            if ("rating" in f) wr.value = f.rating || "";
-            else if ("nsfw" in f) wr.value = f.nsfw ? "" : "safe";
-            else if (rating) wr.value = rating;
-            // the pair listener redraws the dropdown checkboxes + button label
-            wr.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-    }
     if ("hide_pools" in f) { const el = document.getElementById("sankakuHideBooks"); if (el) el.checked = !!f.hide_pools; }
     if (f.method) setSelectValue(document.getElementById("rule34Method"), f.method);
     if (f.sort_type) setSelectValue(document.getElementById("rule34SortType"), f.sort_type);
@@ -3858,6 +4119,7 @@ function appendHistoryRows(n) {
     if (!next.length) return;
     imageHistoryVisible += next.length;
     ui.insertAdjacentHTML("beforeend", next.map(historyRowHtml).join(""));
+    markHistRowsAnimated(next);
 }
 
 function historyRowHtml(img) {
@@ -3891,16 +4153,16 @@ function historyRowHtml(img) {
     let safeFn = escJs(img.filename || "");
     let fallbackSrc = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><g transform='translate(31,31) scale(2.714)'><path fill='%23888888' fill-rule='evenodd' clip-rule='evenodd' d='M3.05245 2.51408C4.03771 1.6911 5.49493 1.25 7.00004 1.25c1.5051 0 2.96232 0.4411 3.94756 1.26408 1.0842 0.9056 1.706 2.44224 1.7926 4.09343 0.0866 1.6505 -0.3692 3.29207 -1.2845 4.36679 -0.98 1.1509 -2.67952 1.7757 -4.45566 1.7757 -1.77614 0 -3.47564 -0.6248 -4.45569 -1.7757 -0.91524 -1.07472 -1.37107 -2.71629 -1.28451 -4.36679 0.08659 -1.65119 0.70844 -3.18783 1.79261 -4.09343Zm8.69655 -0.95935C10.4845 0.498503 8.71831 0 7.00004 0 5.28177 0 3.51561 0.498503 2.25111 1.55473 0.823564 2.74715 0.11037 4.65779 0.0115513 6.54204 -0.0873029 8.42697 0.42108 10.409 1.59266 11.7848 2.87827 13.2945 4.97748 14 7.00004 14s4.12176 -0.7055 5.40736 -2.2152c1.1716 -1.3758 1.68 -3.35783 1.5811 -5.24276 -0.0988 -1.88425 -0.812 -3.79489 -2.2395 -4.98731ZM7.87691 3.7829c0 -0.34518 -0.27982 -0.625 -0.625 -0.625 -0.34517 0 -0.625 0.27982 -0.625 0.625v0.31657c0 0.34518 0.27983 0.625 0.625 0.625 0.34518 0 0.625 -0.27982 0.625 -0.625V3.7829ZM5.14498 6.01923c0 -0.34518 0.27982 -0.625 0.625 -0.625h0.48689c0.88685 0 1.60579 0.71894 1.60577 1.6058v1.88259c0.33235 0.03652 0.66758 0.10241 1.01035 0.19769 0.33257 0.09243 0.52723 0.43697 0.4348 0.76954 -0.09244 0.33255 -0.43698 0.52725 -0.76955 0.43485 -0.89263 -0.2482 -1.69361 -0.2482 -2.58624 0 -0.33257 0.0924 -0.67711 -0.1023 -0.76954 -0.43485 -0.09244 -0.33257 0.10223 -0.67711 0.4348 -0.76954 0.33762 -0.09384 0.66793 -0.15919 0.99538 -0.19603V7.00003c0.00001 -0.19649 -0.15928 -0.3558 -0.35577 -0.3558h-0.48689c-0.34518 0 -0.625 -0.27983 -0.625 -0.625Z'/></g></svg>`;
     let safeFp = (img.filepath || "").replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27");
-    let siteBadge = `<span style="background: #ff9ff3; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${siteLabel(img.site)}</span>`;
+    let siteBadge = `<span style="background: #ff9ff3; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${escapeHtml(siteLabel(img.site))}</span>`;
     let artistName = (img.tags?.artist || [])[0] || "";
-    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
+    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(artistName))}</span>` : "";
 
     const hExt = (img.filename || '').split('.').pop().toLowerCase();
     const hHoverKind = ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(hExt) ? 'video' : (hExt === 'gif' ? 'gif' : '');
     const hHoverSrc = hHoverKind === 'video' ? previewImageUrl(safeFp, img.filename) : fullImageUrl(safeFp, img.filename);
     const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${hHoverSrc}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
     return `
-    <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
+    <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}${_histAnimated.has(histRowKey(img)) ? ' no-anim' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
     <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
     <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
@@ -3929,6 +4191,11 @@ function renderImageHistory() {
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
     imgHistFiltered = filteredImageHistory();
+    // rows rendered while the tab is hidden would all play slide-in the moment
+    // it first shows — thirty blur rasters in one frame = the multi-second
+    // stall. Bake no-anim in now (the class is markup, marking after the
+    // innerHTML below is too late)
+    if (ui.offsetParent === null) imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => _histAnimated.add(histRowKey(img)));
     let htmlStr = "";
     if (imageHistory.length === 0) {
         htmlStr = "<p style='color: var(--text-color); opacity: 0.7; font-size: 13px;'>No images downloaded yet.</p>";
@@ -3939,7 +4206,8 @@ function renderImageHistory() {
         imgHistFiltered.slice(0, imageHistoryVisible).forEach(img => { htmlStr += historyRowHtml(img); });
     }
     ui.innerHTML = htmlStr;
-    if (scroller) scroller.scrollTop = currentScroll;
+    if (imgHistFiltered.length) markHistRowsAnimated(imgHistFiltered.slice(0, imageHistoryVisible));
+    if (scroller) jumpScroll(scroller, currentScroll);
     // if the rendered list still doesn't fill the view, keep loading —
     // ponytail: never while hidden (clientHeight 0), or the startup render
     // walks the whole history; the scroll listener pages from there.
@@ -3977,8 +4245,15 @@ let _paintPending = false, _paintCard = null, _paintPt = [0, 0];
 // blur settings persist server-side in ui_config.json — localStorage dies with the app session
 let galleryBlurNsfw = storeGet('gallery_blur_nsfw') !== 'false';
 if (document.body) document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
-function persistUiConfig() {
-    fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+async function persistUiConfig() {
+    try {
+        const response = await fetch("/api/ui_config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(uiConfig) });
+        if (!response.ok) throw new Error('Save failed');
+        return true;
+    } catch (_) {
+        showToast('Could not save display preferences. Try again.', {warn:true});
+        return false;
+    }
 }
 function toggleGalleryBlur() {
     galleryBlurNsfw = !galleryBlurNsfw;
@@ -3999,10 +4274,10 @@ function ratingBlurred(canon) {
 function applyBlurMarks() {
     document.querySelectorAll('.image-card-log[data-rating]').forEach(c => c.classList.toggle('is-nsfw', ratingBlurred(c.dataset.rating)));
 }
-function saveBlurRatings() {
+async function saveBlurRatings() {
     const on = [...document.querySelectorAll('.blur-rating-box:checked')].map(cb => cb.value);
     uiConfig.blur_ratings = on.join(' ');
-    persistUiConfig();
+    if (!await persistUiConfig()) return "Could not save blur settings.";
     applyBlurMarks();
     renderGallery();
     renderHistory();
@@ -4021,22 +4296,54 @@ async function syncBlurSettings() {
 }
 document.querySelectorAll('.blur-rating-box').forEach(cb => { cb.checked = getBlurRatings().includes(cb.value); });
 
+// worst-wins ladder: a source may only ever *raise* the rating, never lower it
+const RATING_RANK = { safe: 0, sensitive: 1, questionable: 2, explicit: 3 };
+// the folder the downloader wrote is the real rating, so it is read as whole
+// path segments (mirrors matches_any_rating on the server)
+const RATING_SEGS = {
+    explicit: ['nsfw', 'explicit'],
+    sensitive: ['sensitive', 'suggestive'],
+    questionable: ['questionable'],
+    safe: ['safe', 'general'],
+};
+// tags are only a fallback and are matched whole. Substring matching here is
+// what left a Questionable image unblurred: `sexually_suggestive` contains
+// "suggestive", so it sniffed as sensitive and left the blur list entirely.
+const RATING_TAGS = {
+    explicit: ['nsfw', 'explicit', 'rating:e', 'r18', 'r18g'],
+    sensitive: ['rating:sensitive', 'rating:s', 'suggestive'],
+    questionable: ['rating:questionable', 'rating:q', 'borderline', 'moderate'],
+    safe: ['rating:safe', 'rating:g', 'rating:general'],
+};
+
 function getGalleryImageRating(img) {
     if (!img) return "safe";
-    // stored per-image rating wins — a mixed Safe_Sensitive_Questionable
+    // stored per-image rating wins outright — a mixed Safe_Sensitive_Questionable
     // folder name would otherwise sniff as questionable for every file in it
     const stored = (img.rating || "").toLowerCase();
-    if (["safe", "sensitive", "questionable", "explicit"].includes(stored)) return stored;
-    let allTags = [];
-    let tagsDict = normalizeTags(img.tags || {});
-    TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
-    let pLow = ((img.filepath || img.filename || "") + " " + allTags.join(' ')).toLowerCase();
-    let siteLower = (img.site || "").toLowerCase();
+    if (RATING_RANK[stored] !== undefined) return stored;
+    const siteLower = (img.site || "").toLowerCase();
     if (siteLower === "rule34") return "explicit";
-    if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e') || pLow.includes('r18') || pLow.includes('/nsfw')) return "explicit";
-    if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive') || pLow.includes('suggestive') || pLow.includes('rating:s')) return "sensitive";
-    if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q') || pLow.includes('borderline')) return "questionable";
-    return "safe";
+    const fpl = (img.filepath || img.filename || "").toLowerCase();
+    const segs = new Set(fpl.split(/[\\/]+/).map(s => s.trim()).filter(Boolean));
+    // pixiv: R18 tier is its questionable, only R18G is explicit
+    if (siteLower === "pixiv") {
+        if (segs.has('r18g')) return "explicit";
+        if (segs.has('r18')) return "questionable";
+        return "safe";
+    }
+    let worst = "safe";
+    const bump = c => { if (RATING_RANK[c] > RATING_RANK[worst]) worst = c; };
+    for (const canon in RATING_SEGS) {
+        if (RATING_SEGS[canon].some(s => segs.has(s))) bump(canon);
+    }
+    const tagsDict = normalizeTags(img.tags || {});
+    const tags = new Set();
+    TAG_CATEGORIES.forEach(c => { (tagsDict[c] || []).forEach(t => tags.add(String(t).toLowerCase())); });
+    for (const canon in RATING_TAGS) {
+        if (RATING_TAGS[canon].some(t => tags.has(t))) bump(canon);
+    }
+    return worst;
 }
 
 function selectAllCurrentPage() {
@@ -4072,9 +4379,8 @@ const SOURCE_RATINGS = {
     rule34: ['explicit'],
     nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'],
     nekosia: ['safe', 'sensitive'],
-    'waifu.im': ['safe', 'explicit'],
-    pinterest: ['safe'],
-    pixiv: ['safe', 'explicit'],
+        pinterest: ['safe'],
+    pixiv: ['safe', 'questionable', 'explicit'],
     zerochan: ['safe'],
     'nekos.best': ['safe'],
     'nekos_best': ['safe'],
@@ -4083,6 +4389,41 @@ const SOURCE_RATINGS = {
     anime_dl: ['safe'],
     eshuushuu: ['safe']
 };
+
+// when the applied filter leaves a menu with exactly one option, "All" points
+// at that same set anyway — hide it and let the one option stand alone
+function dropdownAllItem(menu) {
+    const allCheck = menu ? menu.querySelector('input[value=""]') : null;
+    return allCheck ? allCheck.closest('.dd-item') : null;
+}
+
+function dropdownAllHidden(menu) {
+    const item = dropdownAllItem(menu);
+    return !!item && item.style.display === 'none';
+}
+
+function snapAloneMenu(menuId, defaultLabel) {
+    const menu = document.getElementById(menuId);
+    if (!menu) return;
+    const allItem = dropdownAllItem(menu);
+    if (!allItem) return;
+    const alone = [...menu.querySelectorAll('.dd-item')].filter(el => {
+        const cb = el.querySelector('input[type="checkbox"]');
+        return el !== allItem && cb && el.style.display !== 'none';
+    });
+    if (alone.length !== 1) {
+        allItem.style.display = '';
+        return;
+    }
+    allItem.style.display = 'none';
+    const cb = alone[0].querySelector('input[type="checkbox"]');
+    if (!cb.checked) {
+        menu.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = (c === cb); });
+    }
+    // the label has to follow: with All hidden, that one checked item IS the filter
+    const btn = document.querySelector('[onclick="toggleDropdown(\'' + menuId + '\')"]');
+    if (btn) btn.textContent = getMultiLabel(menuId, defaultLabel) + ' ▾';
+}
 
 function toggleDropdownCheck(el, event) {
     if (event && event.target && event.target.tagName === 'INPUT') {
@@ -4103,10 +4444,14 @@ function toggleDropdownCheck(el, event) {
         itemChecks.forEach(c => c.checked = false);
     } else {
         // Clicking items drops "All"; if they end up covering everything, collapse to All
+        // — unless All is hidden (alone menu), where "All" is exactly this option
+        const aloneMenu = dropdownAllHidden(menu);
         const allItemsChecked = itemChecks.length > 0 && itemChecks.every(c => c.checked);
-        if (allCheck) {
+        if (allCheck && !aloneMenu) {
             allCheck.checked = allItemsChecked;
             if (allItemsChecked) itemChecks.forEach(c => c.checked = false);
+        } else if (allCheck) {
+            allCheck.checked = false;
         }
     }
 
@@ -4121,7 +4466,7 @@ function toggleDropdownCheck(el, event) {
     else if (menu.id === 'nekosapiRatingDropdown') onNekosapiRatingChange();
     else if (menu.id === 'yandeRatingDropdown') onYandeRatingChange();
     else if (menu.id === 'sankakuRatingDropdown') onSankakuRatingChange();
-    else if (menu.id === 'waifuRatingDropdown') onWaifuRatingChange();
+    else if (menu.id === 'nekoCatDropdown') onNekoCatChange();
 }
 
 function updateMultiRatingBtn(menuId) {
@@ -4149,12 +4494,11 @@ function onKonaRatingChange() { onMultiRatingChange('konaRatingDropdown', 'konaR
 function onNekosapiRatingChange() { onMultiRatingChange('nekosapiRatingDropdown', 'nekosapiRating'); }
 function onYandeRatingChange() { onMultiRatingChange('yandeRatingDropdown', 'yandeRating'); }
 function onSankakuRatingChange() { onMultiRatingChange('sankakuRatingDropdown', 'sankakuRating'); }
-function onWaifuRatingChange() { onMultiRatingChange('waifuRatingDropdown', 'waifuRating'); }
 
 // jumpToSite writes the hidden input's value directly for history restores;
 // keep the checkboxes and button label in sync with it
 document.addEventListener('DOMContentLoaded', function () {
-    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown'], ['waifuRating', 'waifuRatingDropdown']].forEach(function (pair) {
+    [['gelbooruRating', 'gelRatingDropdown'], ['watcherGelRating', 'watcherRatingDropdown'], ['danRating', 'danRatingDropdown'], ['gsbooruRating', 'gsRatingDropdown'], ['konaRating', 'konaRatingDropdown'], ['nekosapiRating', 'nekosapiRatingDropdown'], ['yandeRating', 'yandeRatingDropdown'], ['sankakuRating', 'sankakuRatingDropdown']].forEach(function (pair) {
         const hidden = document.getElementById(pair[0]);
         if (!hidden) return;
         hidden.addEventListener('change', function () {
@@ -4177,22 +4521,22 @@ function updateRatingDropdown() {
 
     if (allSelected) {
         document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => el.style.display = '');
+        snapAloneMenu('ratingDropdown', 'All Ratings');
         return;
     }
-    let common = null;
+    // union, not intersection: sources differ in which ratings they carry, so
+    // picking gelbooru + zerochan must not collapse the menu down to "safe"
+    const common = new Set(['']);
     selectedSources.forEach(s => {
-        const r = SOURCE_RATINGS[s.toLowerCase()] || [];
-        if (common === null) common = new Set(r);
-        else common = new Set([...common].filter(x => r.includes(x)));
+        (SOURCE_RATINGS[s.toLowerCase()] || []).forEach(r => common.add(r));
     });
-    if (common === null) common = new Set();
-    common.add('');
     document.querySelectorAll('#ratingDropdown .dd-item').forEach(el => {
         const cb = el.querySelector('input[type="checkbox"]');
         if (!cb) return;
         const show = common.has(cb.value);
         el.style.display = show ? '' : 'none';
     });
+    snapAloneMenu('ratingDropdown', 'All Ratings');
 }
 
 function updateSourceDropdown() {
@@ -4203,6 +4547,7 @@ function updateSourceDropdown() {
 
     if (allSelected) {
         document.querySelectorAll('#sourceDropdown .dd-item').forEach(el => el.style.display = '');
+        snapAloneMenu('sourceDropdown', 'All Sources');
         return;
     }
     document.querySelectorAll('#sourceDropdown .dd-item').forEach(el => {
@@ -4212,6 +4557,7 @@ function updateSourceDropdown() {
         const show = ratings && selectedRatings.some(r => ratings.includes(r));
         el.style.display = show ? '' : 'none';
     });
+    snapAloneMenu('sourceDropdown', 'All Sources');
 }
 
 function getMultiSelectValues(id) {
@@ -4221,13 +4567,13 @@ function getMultiSelectValues(id) {
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
     if (allCheck && allCheck.checked) return '';
     const checkedVals = itemChecks.filter(c => c.checked).map(c => c.value);
-    if (checkedVals.length === itemChecks.length && itemChecks.length > 0) {
+    if (checkedVals.length === itemChecks.length && itemChecks.length > 0 && !dropdownAllHidden(menu)) {
         // every item selected == All; keep only All's checkmark
         if (allCheck) allCheck.checked = true;
         itemChecks.forEach(c => c.checked = false);
         return '';
     }
-    if (checkedVals.length === 0) return '__none__';
+    if (checkedVals.length === 0) return '';
     return checkedVals.join(',');
 }
 
@@ -4238,13 +4584,10 @@ function getMultiLabel(id, defaultLabel) {
     const itemChecks = [...menu.querySelectorAll('input[type="checkbox"]')].filter(c => c.value !== '');
     if (allCheck && allCheck.checked) return defaultLabel;
     const checkedItems = itemChecks.filter(c => c.checked);
-    if (checkedItems.length === itemChecks.length && itemChecks.length > 0) return defaultLabel;
-    if (checkedItems.length === 0) {
-        if (id === 'sourceDropdown') return 'None (No Sources)';
-        if (id === 'typeDropdown') return 'None (No Types)';
-        if (id === 'ratingDropdown') return 'None (No Ratings)';
-        return 'None Selected';
-    }
+    if (checkedItems.length === itemChecks.length && itemChecks.length > 0 && !dropdownAllHidden(menu)) return defaultLabel;
+    // deselecting everything reads as All — the state the menu starts in —
+    // not as a filter that matches nothing
+    if (checkedItems.length === 0) return defaultLabel;
     if (checkedItems.length === 1) {
         const item = checkedItems[0].closest('.dd-item');
         const span = item ? item.querySelector('span') : null;
@@ -4290,12 +4633,35 @@ function getGridEstimatedHeight() {
 }
 
 let galleryCols = 0;
-function galleryPerPage() {
+let galleryLastPerPage = 0;
+let _galleryLayoutFrame = null;
+let _galleryRefreshOnFrame = false;
+function settleGalleryLayout(refresh = false) {
+    _galleryRefreshOnFrame = _galleryRefreshOnFrame || refresh;
+    // ResizeObserver and window resize can arrive together. Reflow once, on
+    // the next frame, using the element's current dimensions. Never defer the
+    // geometry until a network response or a multi-second settle timer.
+    if (_galleryLayoutFrame !== null) return;
+    _galleryLayoutFrame = requestAnimationFrame(() => {
+        _galleryLayoutFrame = null;
+        const refreshContent = _galleryRefreshOnFrame;
+        _galleryRefreshOnFrame = false;
+        const tab = document.getElementById("Gallery");
+        const grid = document.getElementById("galleryGrid");
+        if (!tab || tab.style.display === "none" || !grid ||
+            grid.clientWidth <= 0 || grid.clientHeight <= 0) return;
+        const layout = measureGalleryLayout();
+        applyGalleryLayout(layout);
+        if (refreshContent || galleryLastPerPage !== layout.perPage) loadGallery(undefined, false, true);
+    });
+}
+// Measurement is separate from DOM writes; rendering always applies the live
+// layout rather than geometry captured when an earlier fetch began.
+function measureGalleryLayout() {
     const grid = document.getElementById("galleryGrid");
     const availW = getGridEstimatedWidth(grid);
     const targetW = getGalleryTargetTileWidth();
-    galleryCols = Math.max(2, Math.floor(availW / targetW));
-    if (grid) grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
+    const cols = Math.max(2, Math.floor(availW / targetW));
     try {
         const w = window.innerWidth;
         const gap = w >= 3840 ? 14 : w >= 2560 ? 12 : w >= 1920 ? 10 : 8;
@@ -4304,7 +4670,7 @@ function galleryPerPage() {
         const cs = grid ? getComputedStyle(grid) : null;
         const padY = cs ? (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) : 0;
         const availH = (grid && grid.clientHeight > 80) ? grid.clientHeight - padY : getGridEstimatedHeight();
-        const tile = Math.max(60, (availW - (galleryCols - 1) * gap) / galleryCols);
+        const tile = Math.max(60, (availW - (cols - 1) * gap) / cols);
         const floorR = Math.max(1, Math.floor((availH + gap) / (tile + gap)));
         const rowHFor = r => (availH - (r - 1) * gap) / r;
         // ponytail: square tiles always leave <1 row of dead space — try floor and floor+1
@@ -4319,68 +4685,276 @@ function galleryPerPage() {
             rows = cands[0].r;
             rowH = cands[0].rh;
         }
-        if (grid) grid.style.setProperty('--gal-row-h', rowH + 'px');
         // ponytail: no 24-item floor — it added a row the grid can't show, i.e. a scrollbar
-        return Math.min(400, galleryCols * rows);
+        return { cols, rowH, perPage: Math.min(400, cols * rows) };
     } catch (e) {
-        return Math.min(400, galleryCols * Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10))));
+        return { cols, rowH: null, perPage: Math.min(400, cols * Math.max(1, Math.floor((window.innerHeight - 240) / (targetW + 10)))) };
     }
 }
-let galleryReqId = 0;
-async function loadGallery(page, remeasured) {
-    const reqId = ++galleryReqId;
-    const reqW = window.innerWidth;
-    if (page) currentGalleryPage = page;
-    const search = document.getElementById("gallerySearch").value;
-    const site = getMultiSelectValues('sourceDropdown');
-    const sort = document.getElementById("sortDropdown").dataset.sort || 'newest';
-    const type = getMultiSelectValues('typeDropdown');
-    const rating = getMultiSelectValues('ratingDropdown');
-    const params = new URLSearchParams({ search, site, sort, type, rating, page: currentGalleryPage, per_page: galleryPerPage() });
-    if (galleryFavFilter) params.set("favourites", "true");
+function applyGalleryLayout(l) {
+    const grid = document.getElementById("galleryGrid");
+    if (!grid || !l) return;
+    galleryCols = l.cols;
+    const columns = `repeat(${l.cols}, minmax(0, 1fr))`;
+    if (grid.style.gridTemplateColumns !== columns) grid.style.gridTemplateColumns = columns;
+    if (l.rowH) {
+        const height = l.rowH + 'px';
+        if (grid.style.getPropertyValue('--gal-row-h') !== height) grid.style.setProperty('--gal-row-h', height);
+    } else grid.style.removeProperty('--gal-row-h');
+    // Restore must not temporarily add a scrollbar from the larger old page.
+    // Keep the nodes so another maximize can reveal them without decoding again.
+    let index = 0;
+    for (const card of grid.children) {
+        if (card.classList.contains('gallery-card')) card.hidden = index++ >= l.perPage;
+    }
+}
+function galleryPerPage() { return measureGalleryLayout().perPage; }
+// Bounded look-ahead data and decoded thumbnail cache. A hidden gallery can
+// prepare its next visible page without depending on hidden-element geometry.
+const galleryPageBuffer = new Map();
+let galleryBufferEpoch = 0;
+const galleryBufferRequests = new Map();
+const galleryThumbCache = new Map();
+const galleryThumbQueued = new Set();
+const galleryThumbQueue = [];
+let galleryThumbActive = 0;
+function galleryRequestParams(page, perPage) {
+    const params = new URLSearchParams({
+        search: document.getElementById('gallerySearch').value,
+        site: getMultiSelectValues('sourceDropdown'),
+        sort: document.getElementById('sortDropdown').dataset.sort || 'newest',
+        type: getMultiSelectValues('typeDropdown'),
+        rating: getMultiSelectValues('ratingDropdown'), page, per_page: perPage
+    });
+    if (galleryFavFilter) params.set('favourites', 'true');
     applyDateParams(params, galleryDateFilter);
+    return params;
+}
+function galleryBufferKey(params) {
+    const key = new URLSearchParams(params);
+    key.delete('page'); key.delete('per_page'); key.sort();
+    return key.toString();
+}
+function invalidateGalleryBuffer() {
+    galleryBufferEpoch++;
+    galleryPageBuffer.clear();
+    for (const request of galleryBufferRequests.values()) request.controller.abort();
+    galleryBufferRequests.clear();
+    // A new search/filter supersedes speculative thumbnail work too.
+    while (galleryThumbQueue.length) galleryThumbQueued.delete(galleryThumbQueue.shift());
+}
+function rememberGalleryPage(params, data) {
+    const key = galleryBufferKey(params);
+    let ranges = galleryPageBuffer.get(key) || [];
+    // A changed count invalidates offsets in all older ranges.
+    if (ranges.some(r => r.data.total !== data.total)) ranges = [];
+    const start = (data.page - 1) * data.per_page;
+    ranges = ranges.filter(r => r.start !== start || r.data.images.length > data.images.length);
+    ranges.push({ start, data, time: Date.now() });
+    galleryPageBuffer.delete(key);
+    galleryPageBuffer.set(key, ranges.slice(-8));
+    while (galleryPageBuffer.size > 4) galleryPageBuffer.delete(galleryPageBuffer.keys().next().value);
+}
+function bufferedGalleryPage(params) {
+    const ranges = (galleryPageBuffer.get(galleryBufferKey(params)) || [])
+        .filter(r => Date.now() - r.time < 60000);
+    if (!ranges.length) return null;
+    const latest = ranges[ranges.length - 1].data;
+    const perPage = +params.get('per_page');
+    const totalPages = Math.max(1, Math.ceil(latest.total / perPage));
+    const page = Math.min(+params.get('page'), totalPages);
+    const start = (page - 1) * perPage, end = Math.min(latest.total, start + perPage);
+    const images = [];
+    for (let i = start; i < end; i++) {
+        const range = [...ranges].reverse().find(r => i >= r.start && i < r.start + r.data.images.length);
+        if (!range) return null;
+        images.push(range.data.images[i - range.start]);
+    }
+    return { images, total: latest.total, page, total_pages: totalPages, per_page: perPage };
+}
+function warmGalleryThumbnails(images) {
+    for (const image of images) {
+        const url = galleryThumbUrl(image.filepath);
+        if (!url || galleryThumbQueued.has(url)) continue;
+        if (galleryThumbCache.has(url)) {
+            const hit = galleryThumbCache.get(url);
+            galleryThumbCache.delete(url); galleryThumbCache.set(url, hit);
+            continue;
+        }
+        if (galleryThumbQueue.length >= (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 128)) break;
+        galleryThumbQueued.add(url);
+        galleryThumbQueue.push(url);
+    }
+    pumpGalleryThumbnails();
+}
+function pumpGalleryThumbnails() {
+    if (document.hidden) return;
+    while (galleryThumbActive < (typeof lightweightUI === 'function' && lightweightUI() ? 2 : 4) && galleryThumbQueue.length) {
+        const url = galleryThumbQueue.shift();
+        galleryThumbActive++;
+        const image = new Image();
+        image.decoding = 'async';
+        image.fetchPriority = 'low';
+        const done = ok => {
+            image.onload = image.onerror = null;
+            if (ok) {
+                galleryThumbCache.set(url, image);
+                while (galleryThumbCache.size > (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 96)) galleryThumbCache.delete(galleryThumbCache.keys().next().value);
+            }
+            galleryThumbQueued.delete(url);
+            galleryThumbActive--;
+            pumpGalleryThumbnails();
+        };
+        image.onload = () => {
+            if (image.decode) image.decode().then(() => done(true), () => done(true));
+            else done(true);
+        };
+        image.onerror = () => done(false);
+        image.src = url;
+    }
+}
+function preloadGalleryPage(params) {
+    const perPage = +params.get('per_page'), start = (+params.get('page') - 1) * perPage;
+    const epoch = galleryBufferEpoch;
+    // Fixed-size blocks let a 24-item windowed page supply a 45-item maximized
+    // page without changing offsets or showing unrelated page contents.
+    const blockSize = 128;
+    const first = Math.floor(start / blockSize), last = Math.floor((start + perPage - 1) / blockSize);
+    for (let block = first; block <= last; block++) {
+        const query = new URLSearchParams(params);
+        query.set('page', block + 1); query.set('per_page', blockSize);
+        const key = query.toString();
+        if (galleryBufferRequests.has(key)) continue;
+        const hit = bufferedGalleryPage(query);
+        if (hit) { warmGalleryThumbnails(hit.images.slice(0, Math.min(96, Math.max(64, perPage)))); continue; }
+        const controller = new AbortController();
+        const request = { controller };
+        galleryBufferRequests.set(key, request);
+        (async () => {
+            try {
+                const response = await fetch(`/api/gallery?${query}`, { signal: controller.signal });
+                if (!response.ok) return;
+                const data = await response.json();
+                if (epoch !== galleryBufferEpoch || controller.signal.aborted) return;
+                rememberGalleryPage(query, data);
+                const offset = Math.max(0, start - (data.page - 1) * data.per_page);
+                warmGalleryThumbnails(data.images.slice(offset, offset + Math.min(96, Math.max(64, perPage))));
+                // Opening may have raced the preload. Fill the live grid from
+                // this response immediately instead of waiting on a second fetch.
+                const tab = document.getElementById('Gallery');
+                if (tab && tab.style.display !== 'none' && galleryBufferKey(galleryRequestParams(currentGalleryPage, perPage)) === galleryBufferKey(query)) {
+                    const layout = measureGalleryLayout();
+                    const ready = bufferedGalleryPage(galleryRequestParams(currentGalleryPage, layout.perPage));
+                    if (ready && (!galleryState.images.length || galleryState.per_page !== layout.perPage)) {
+                        const prevId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
+                        galleryState = { ...ready, layout };
+                        currentGalleryPage = ready.page;
+                        reanchorGalleryViewer(prevId);
+                        renderGallery();
+                    }
+                }
+            } catch (error) {
+                if (error && error.name !== 'AbortError') console.debug('Gallery preload failed', error);
+            } finally {
+                if (galleryBufferRequests.get(key) === request) galleryBufferRequests.delete(key);
+            }
+        })();
+    }
+}
+// Fetch metadata and decode a bounded number of small thumbnails while the
+// user is on another tab. Do not decode full-size artwork here.
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => preloadGalleryPage(galleryRequestParams(1, Math.min(96, Math.max(64, galleryPerPage())))), 0);
+});
+
+let galleryReqId = 0;
+// one in-flight data fetch per gallery view: a rapid page flip aborts the
+// older query instead of leaving stacked fetches fighting for the browser's
+// connection pool while each abandoned result is already discarded anyway
+let _galleryFetchAbort = null;
+function _abortGalleryFetch() {
+    if (_galleryFetchAbort) {
+        try { _galleryFetchAbort.abort(); } catch (e) {}
+    }
+    _galleryFetchAbort = new AbortController();
+    return _galleryFetchAbort.signal;
+}
+async function loadGallery(page, remeasured, reuseBuffered = false) {
+    if (!reuseBuffered) invalidateGalleryBuffer();
+    const reqId = ++galleryReqId;
+    if (page) currentGalleryPage = page;
+    const layout = measureGalleryLayout();
+    const perPage = layout.perPage;
+    galleryLastPerPage = perPage;
+    applyGalleryLayout(layout);
+    const t0 = performance.now();
+    const params = galleryRequestParams(currentGalleryPage, perPage);
+    const buffered = reuseBuffered ? bufferedGalleryPage(params) : null;
+    if (buffered) {
+        const prevId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
+        galleryState = { ...buffered, layout };
+        currentGalleryPage = buffered.page;
+        reanchorGalleryViewer(prevId);
+        renderGallery();
+    }
     try {
-        let resp = await fetch(`/api/gallery?${params}`);
+        let resp = await fetch(`/api/gallery?${params}`, { signal: _abortGalleryFetch() });
         const data = await resp.json();
         if (reqId !== galleryReqId) return;
-        // viewport moved mid-flight (fast zoom switch) → refetch for the settled size
-        if (window.innerWidth !== reqW) return loadGallery(page);
+        // A size change only needs new data when the page capacity changed.
+        // Height-only resizes matter too; width-only changes with the same
+        // capacity can reuse this response and the current grid geometry.
+        const liveLayout = measureGalleryLayout();
+        if (liveLayout.perPage !== perPage) return loadGallery(page, false, true);
         const prevViewId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
+        rememberGalleryPage(params, data);
+        warmGalleryThumbnails(data.images);
         galleryState = data;
+        galleryState.layout = liveLayout;
+        const ms = Math.round(performance.now() - t0);
+        if (ms > 1500) showToast(`Gallery request took ${ms} ms`, { warn: true, key: "galtime" });
         // server clamps page to total_pages — trust its answer, not our guess
         if (data.page) currentGalleryPage = data.page;
         reanchorGalleryViewer(prevViewId);
         renderGallery();
-        // empty-state hides pagination (grid box grows ~44px) so per_page above was
-        // measured against the wrong height — re-measure with pagination restored and
-        // refetch once if the stale per_page overshoots the grid (scrollbar bug)
-        const pp = galleryPerPage();
-        if (!remeasured && data.images && data.images.length > pp) return loadGallery(page, true);
+        // layout may have settled after we measured (maximize, workload) —
+        // refetch once if the measured per_page no longer fits, in EITHER
+        // direction (maximize → more, restore/blur → less)
+        if (!remeasured && galleryPerPage() !== perPage) return loadGallery(page, true);
         populateGallerySiteFilter();
-    } catch (e) { console.error("loadGallery failed:", e); }
+        preloadGalleryPage(params);
+    } catch (e) { if (e && e.name !== "AbortError") console.error("loadGallery failed:", e); }
 }
 async function loadGalleryPage(page, callback) {
     const reqId = ++galleryReqId;
-    const reqW = window.innerWidth;
     const search = document.getElementById("gallerySearch").value;
     const site = getMultiSelectValues('sourceDropdown');
     const sort = document.getElementById("sortDropdown").dataset.sort || 'newest';
     const type = getMultiSelectValues('typeDropdown');
     const rating = getMultiSelectValues('ratingDropdown');
-    const params = new URLSearchParams({ search, site, sort, type, rating, page, per_page: galleryPerPage() });
+    const layout = measureGalleryLayout();
+    const perPage = layout.perPage;
+    galleryLastPerPage = perPage;
+    applyGalleryLayout(layout);
+    const params = new URLSearchParams({ search, site, sort, type, rating, page, per_page: perPage });
     if (galleryFavFilter) params.set("favourites", "true");
     applyDateParams(params, galleryDateFilter);
     try {
-        let resp = await fetch(`/api/gallery?${params}`);
+        let resp = await fetch(`/api/gallery?${params}`, { signal: _abortGalleryFetch() });
         const data = await resp.json();
         if (reqId !== galleryReqId) return;
-        if (window.innerWidth !== reqW) return loadGalleryPage(page, callback);
+        const liveLayout = measureGalleryLayout();
+        if (liveLayout.perPage !== perPage) return loadGalleryPage(page, callback);
         const prevViewId = viewerIndex >= 0 ? (galleryState.images[viewerIndex] || {}).id : null;
+        rememberGalleryPage(params, data);
+        warmGalleryThumbnails(data.images);
+        preloadGalleryPage(params);
         galleryState = data;
+        galleryState.layout = liveLayout;
         if (data.page) currentGalleryPage = data.page;
         reanchorGalleryViewer(prevViewId);
         if (callback) callback();
-    } catch (e) { console.error("loadGalleryPage failed:", e); }
+    } catch (e) { if (e && e.name !== "AbortError") console.error("loadGalleryPage failed:", e); }
 }
 function resetGalleryFilters() {
     const s = document.getElementById("gallerySearch");
@@ -4397,6 +4971,9 @@ function resetGalleryFilters() {
             menu.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = cb.value === '');
         }
     });
+    // restore any "All" item a snap hid (All is checked everywhere now → not alone)
+    updateSourceDropdown();
+    updateRatingDropdown();
     const srcBtn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
     if (srcBtn) srcBtn.textContent = 'All Sources ▾';
     const typeBtn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]');
@@ -4421,7 +4998,7 @@ function galleryHoverPreview(card, on) {
         return;
     }
     if (on) {
-        if (card._hoverCtl || card.querySelector('.gallery-hover-media')) return;
+        if (document.hidden || card._hoverCtl || card.querySelector('.gallery-hover-media')) return;
         // WebKitGTK freezes the main thread for seconds when a streaming <video>
         // (or one with an audio track) is stopped mid-download — so fetch the
         // audio-free preview fully first and play from the blob: teardown of a
@@ -4452,12 +5029,14 @@ function galleryHoverPreview(card, on) {
             const cx = c.getContext('2d');
             const drawFrame = () => {
                 if (!v.isConnected) return;
-                if (v.videoWidth > 0 && v.readyState >= 2) {
-                    if (c.width !== v.videoWidth || c.height !== v.videoHeight) {
-                        c.width = v.videoWidth;
-                        c.height = v.videoHeight;
+                if (document.hidden || !card.getClientRects().length) { galleryHoverPreview(card, false); return; }
+                if (cx && v.videoWidth > 0 && v.readyState >= 2) {
+                    const size = hoverPreviewSize(v.videoWidth, v.videoHeight, card.clientWidth, card.clientHeight, window.devicePixelRatio);
+                    if (c.width !== size.width || c.height !== size.height) {
+                        c.width = size.width;
+                        c.height = size.height;
                     }
-                    try { cx.drawImage(v, 0, 0); } catch (e) {}
+                    try { cx.drawImage(v, 0, 0, c.width, c.height); } catch (e) {}
                 }
                 scheduleDraw();
             };
@@ -4479,16 +5058,26 @@ function galleryHoverPreview(card, on) {
                 el.pause(); el.removeAttribute('src'); el.load(); el.remove();
                 if (u.startsWith('blob:')) URL.revokeObjectURL(u);
             } else {
+                if (el.tagName === 'CANVAS') el.width = el.height = 1;
                 el.remove();
             }
         });
         if (img) img.style.opacity = '';
     }
 }
+function commitGalleryMarkup(grid, html) {
+    if (grid._galleryMarkup === html) return;
+    grid.innerHTML = html;
+    grid._galleryMarkup = html;
+}
 function renderGallery() {
     const grid = document.getElementById("galleryGrid");
     const pagination = document.getElementById("galleryPagination");
     if (!grid) return;
+    // Fetches may finish during maximize/restore. Never put the grid back
+    // onto the layout measured before the request started.
+    galleryState.layout = measureGalleryLayout();
+    applyGalleryLayout(galleryState.layout);
     // keep the page-jump input alive across background re-renders (downloads
     // fire update_history -> loadGallery while the user is typing a page no.)
     const jumpFocused = document.activeElement && document.activeElement.classList
@@ -4498,23 +5087,11 @@ function renderGallery() {
 
     const { images, total, page, total_pages, per_page } = galleryState;
     if (images.length === 0) {
-        const isNoneSource = getMultiSelectValues('sourceDropdown') === '__none__';
-        const isNoneType = getMultiSelectValues('typeDropdown') === '__none__';
-        const isNoneRating = getMultiSelectValues('ratingDropdown') === '__none__';
         const searchVal = (document.getElementById("gallerySearch") ? document.getElementById("gallerySearch").value : '').trim();
 
         let hint = "No images found";
         let detail = "No images match the current filters.";
-        if (isNoneSource) {
-            hint = "No Sources Selected";
-            detail = "The source filter is currently set to None. Open the sources dropdown and select \"All\" or pick specific downloaders.";
-        } else if (isNoneType) {
-            hint = "No Types Selected";
-            detail = "All file types are deselected. Please select at least one type in the Types dropdown.";
-        } else if (isNoneRating) {
-            hint = "No Ratings Selected";
-            detail = "All ratings are deselected. Please select at least one rating in the Ratings dropdown.";
-        } else if (searchVal) {
+        if (searchVal) {
             hint = "No Matches Found";
             detail = `No downloaded images matched "${searchVal}".`;
         } else if (galleryFavFilter) {
@@ -4527,6 +5104,7 @@ function renderGallery() {
 
         const safeHint = escapeHtml(hint);
         const safeDetail = escapeHtml(detail);
+        grid._galleryMarkup = null;
         grid.innerHTML = `<div class="gallery-empty-state" style="grid-column: 1 / -1; width: 100%; padding: 60px 20px; text-align: center; color: var(--text-color); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
             <div style="font-size: 36px; opacity: 0.6;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg></div>
             <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${safeHint}</div>
@@ -4544,7 +5122,8 @@ function renderGallery() {
             const c = e.target && e.target.closest ? e.target.closest('.gallery-card') : null;
             if (!c || !c.dataset.full || c.dataset.warm) return;
             c.dataset.warm = '1';
-            new Image().src = c.dataset.full;
+            const preview = displayImageUrl(c.dataset.full);
+            if (preview) preloadViewerRaster(preview);
         });
     }
     images.forEach(img => {
@@ -4558,7 +5137,7 @@ function renderGallery() {
         // decoding a raw path corrupts filenames that literally contain %XX
         // (gelbooru saves URL-encoded titles) — hover then 404s and never plays
         const fullU = fullImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename);
-        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
+        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="${galleryPagingFast ? 'lazy' : 'eager'}" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const hoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
         const hoverU = hoverKind === 'video' ? previewImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename) : fullU;
@@ -4581,15 +5160,18 @@ function renderGallery() {
         const isBlurTarget = ratingBlurred(rating);
         const nsfwClass = isBlurTarget ? ' is-nsfw' : '';
         const favCls = img.favourite ? ' is-fav' : '';
-        const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${img.id}', this.checked)">`;
+        const selBox = `<input type="checkbox" class="gallery-card-select" ${gallerySelected.has(img.id) ? 'checked' : ''} onclick="event.stopPropagation(); galleryCardSelectClick('${escJs(img.id)}', this.checked)">`;
 
-        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${img.id}" onclick="openGalleryViewer('${img.id}')" oncontextmenu="galleryCardContextmenu(event,'${img.id}')"${prefetchAttr}${hoverAttr}>${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${img.id}')">${heartIcon(img.favourite)}</button></div>`;
+        html += `<div class="gallery-card${selCls}${nsfwClass}${favCls}" data-id="${escapeHtml(img.id)}" onclick="openGalleryViewer('${escJs(img.id)}')" oncontextmenu="galleryCardContextmenu(event,'${escJs(img.id)}')"${prefetchAttr}${hoverAttr}>${playOverlay}${ratingBadge}${siteBadge}${selBox}${imgTag}<button class="gallery-card-heart" onclick="event.stopPropagation();toggleGalleryFav('${escJs(img.id)}')">${heartIcon(img.favourite)}</button></div>`;
     });
     // pin the column count so the last row is always full
     grid.style.gridTemplateColumns = `repeat(${galleryCols}, minmax(0, 1fr))`;
-    grid.innerHTML = html;
+    // Tab returns and unchanged background refreshes keep decoded thumbnail
+    // nodes alive rather than tearing them down and re-triggering lazy loads.
+    commitGalleryMarkup(grid, html);
+    applyGalleryLayout(galleryState.layout);
     const countPill = `<span class="gallery-count-pill"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg>${total}</span>`;
-    if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; return; }
+    if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; updateSelectBar(); return; }
     let pHtml = '';
     if (page > 2) pHtml += '<button onclick="loadGallery(1)">«</button>';
     if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+')">‹</button>';
@@ -4667,33 +5249,336 @@ function reanchorGalleryViewer(prevId) {
     const at = galleryState.images.findIndex(i => i.id === prevId);
     viewerIndex = at >= 0 ? at : Math.min(viewerIndex, galleryState.images.length - 1);
 }
-// on open: preload the 3 images before + 3 after the current one (HTTP cache
-// makes <-/-> instant). videos skipped (poster covers them)
+// on open: +/−1 neighbor's display copy only — each is a full-server-side
+// PIL resize (~1-2s of CPU) that would otherwise contend with a page switch
+// or the next viewer open right after (±3 was the pre-display-cache count
+// when neighbors were just HTTP bytes). closeGalleryViewer stops the queue
+// behind an aborted generation, so ±1 keeps ←/→ feeling instant.
 function prefetchViewerNeighbors() {
-    const warm = u => { if (u) new Image().src = u; };
     if (viewerSingle) {
-        for (let i = Math.max(0, viewerSingleIdx - 3); i <= Math.min(viewerSingleList.length - 1, viewerSingleIdx + 3); i++) {
+        for (let i = Math.max(0, viewerSingleIdx - 1); i <= Math.min(viewerSingleList.length - 1, viewerSingleIdx + 1); i++) {
             if (i === viewerSingleIdx) continue;
             const p = viewerSingleList[i];
             const clean = (() => { try { return decodeURIComponent(p); } catch (e) { return p; } })();
             const ext = ((clean.split('/').pop() || '').split('.').pop() || '').toLowerCase();
             if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) continue;
-            warm(fullImageUrl(p, clean.split('/').pop() || "image"));
+            // display copies decode across server request threads in parallel —
+            // warm those; the neighbor's original bakes into the cache when
+            // the user actually opens it
+            const du = displayImageUrl(fullImageUrl(p, clean.split('/').pop() || "image"));
+            if (du) preloadViewerRaster(du);
         }
         return;
     }
     if (viewerIndex < 0 || !galleryState.images) return;
-    for (let i = Math.max(0, viewerIndex - 3); i <= Math.min(galleryState.images.length - 1, viewerIndex + 3); i++) {
+    for (let i = Math.max(0, viewerIndex - 1); i <= Math.min(galleryState.images.length - 1, viewerIndex + 1); i++) {
         if (i === viewerIndex) continue;
         const img = galleryState.images[i];
         const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
         if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) continue;
         const fp = (img.filepath || '').replace(/\\/g, '/');
         if (!fp) continue;
-        warm(fullImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename));
+        const du = displayImageUrl(fullImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename));
+        if (du) preloadViewerRaster(du);
     }
 }
+// viewerZoom is a multiplier relative to fit-to-window (1 = fit).
+// The displayed percentage is viewerFitScale * viewerZoom.
 let viewerZoom = 1;
+let viewerFitScale = 1;
+let viewerFitWidth = 0;
+let viewerFitHeight = 0;
+let viewerNaturalWidth = 0;
+let viewerNaturalHeight = 0;
+let viewerPanX = 0;
+let viewerPanY = 0;
+// Image the canvas currently paints: the display copy at stage 1, the
+// original at stage 2. Painting goes through the canvas, never the <img>.
+let viewerStageImage = null;
+
+// Gwenview-style multiresolution raster (lib/documentview/rasterimageitem):
+// the original plus 1/3 and 1/6 samples; paint picks the coarsest sample
+// still above the zoom threshold so a huge bitmap is never resampled whole.
+const VIEWER_SAMPLE_THIRD = 1 / 3;
+const VIEWER_SAMPLE_SIXTH = 1 / 6;
+const viewerDetailCache = new Map(); // url -> {img, third, sixth}
+function viewerDetailFor(url) {
+    const hit = viewerDetailCache.get(url);
+    if (hit) { viewerDetailCache.delete(url); viewerDetailCache.set(url, hit); }
+    return hit;
+}
+function viewerRasterBytes(image) {
+    return image ? (image.naturalWidth || image.width || 0) * (image.naturalHeight || image.height || 0) * 4 : 0;
+}
+function viewerRetainedBytes() {
+    const images = new Set();
+    for (const record of _viewerPreloadRecords.values()) if (!record.pending && record.image) images.add(record.image);
+    for (const detail of viewerDetailCache.values()) {
+        if (detail.img) images.add(detail.img);
+        if (detail.third) images.add(detail.third);
+        if (detail.sixth) images.add(detail.sixth);
+    }
+    let bytes = 0;
+    for (const image of images) bytes += viewerRasterBytes(image);
+    return bytes;
+}
+function trimViewerCaches() {
+    const lowMemory = typeof navigator !== 'undefined' && navigator.deviceMemory && navigator.deviceMemory <= 4;
+    const lite = typeof lightweightUI === 'function' && lightweightUI();
+    const budget = (lite ? (lowMemory ? 32 : 64) : (lowMemory ? 64 : 128)) * 1024 * 1024;
+    const pinned = url => url === viewerResource.url || url === displayImageUrl(viewerResource.url);
+    const dropDetail = () => {
+        for (const [url, detail] of viewerDetailCache) {
+            if (detail.img === viewerStageImage || pinned(url)) continue;
+            viewerDetailCache.delete(url);
+            for (const sample of [detail.third, detail.sixth]) {
+                if (sample && sample.close) { try { sample.close(); } catch (e) {} }
+            }
+            return true;
+        }
+        return false;
+    };
+    const dropPreload = () => {
+        for (const [url] of _viewerPreloadCache) {
+            const record = _viewerPreloadRecords.get(url);
+            if (pinned(url) || (record && record.image === viewerStageImage)) continue;
+            _viewerPreloadCache.delete(url);
+            _viewerPreloadRecords.delete(url);
+            if (record && record.pending && record.image) { record.image.onload = record.image.onerror = null; record.image.src = ''; if (record.cancel) record.cancel(); }
+            return true;
+        }
+        return false;
+    };
+    while (viewerDetailCache.size > 6 && dropDetail()) {}
+    while (_viewerPreloadCache.size > 12 && dropPreload()) {}
+    // The active image is always usable, even when that image alone exceeds
+    // the reusable-cache budget. This is not a cap on total browser memory.
+    while (viewerRetainedBytes() > budget) {
+        if (!dropDetail() && !dropPreload()) break;
+    }
+}
+
+function releaseViewerCaches() {
+    for (const detail of viewerDetailCache.values()) {
+        for (const sample of [detail.third, detail.sixth]) {
+            if (sample && sample.close) { try { sample.close(); } catch (e) {} }
+            else if (sample && sample.getContext) sample.width = sample.height = 1;
+        }
+    }
+    viewerDetailCache.clear();
+    for (const record of _viewerPreloadRecords.values()) {
+        if (record.pending && record.image) {
+            record.image.onload = record.image.onerror = null;
+            record.image.src = '';
+            if (record.cancel) record.cancel();
+        }
+    }
+    _viewerPreloadRecords.clear();
+    _viewerPreloadCache.clear();
+}
+// Fit uses the software filter; only manual zoom needs reduced samples.
+function ensureViewerSample(detail, scale) {
+    if (!detail || viewerZoom === 1 || scale > VIEWER_SAMPLE_THIRD) return;
+    const name = scale <= VIEWER_SAMPLE_SIXTH ? 'sixth' : 'third';
+    if (detail[name] || detail[name + 'Pending']) return;
+    detail[name + 'Pending'] = true;
+    const image = detail.img;
+    buildViewerSample(image, name === 'sixth' ? VIEWER_SAMPLE_SIXTH : VIEWER_SAMPLE_THIRD).then(sample => {
+        detail[name + 'Pending'] = false;
+        if (!sample) return;
+        if (viewerDetailCache.get(viewerResource.url) === detail && viewerStageImage === image) {
+            detail[name] = sample;
+            trimViewerCaches();
+            paintViewer();
+        } else if (sample.close) { try { sample.close(); } catch (e) {} }
+        else if (sample.getContext) sample.width = sample.height = 1;
+    }).catch(() => { detail[name + 'Pending'] = false; });
+}
+function buildViewerSample(image, scaleFactor) {
+    const w = Math.max(1, Math.round(image.naturalWidth * scaleFactor));
+    const h = Math.max(1, Math.round(image.naturalHeight * scaleFactor));
+    if (w >= image.naturalWidth || h >= image.naturalHeight) return Promise.resolve(null);
+    if (typeof createImageBitmap === 'function') {
+        return createImageBitmap(image, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' })
+            .catch(() => viewerSampleFallback(image, w, h));
+    }
+    return Promise.resolve(viewerSampleFallback(image, w, h));
+}
+function viewerSampleFallback(image, w, h) {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d');
+    if (!g) { c.width = c.height = 1; return null; }
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(image, 0, 0, w, h);
+    return c;
+}
+
+// Scale-aware Lanczos low-pass filter. Widen the source footprint as the
+// image shrinks; a fixed-size interpolation kernel cannot prevent minification
+// aliasing. Coefficients are normalized at image edges; alpha is premultiplied.
+function viewerLanczosResize(pixels, sw, sh, dw, dh) {
+    function taps(sourceSize, targetSize) {
+        const ratio = sourceSize / targetSize;
+        const scale = Math.max(1, ratio), radius = 3 * scale;
+        const rows = new Array(targetSize);
+        for (let x = 0; x < targetSize; x++) {
+            const center = (x + 0.5) * ratio - 0.5;
+            const first = Math.max(0, Math.ceil(center - radius));
+            const last = Math.min(sourceSize - 1, Math.floor(center + radius));
+            const weights = new Float32Array(last - first + 1);
+            let sum = 0;
+            for (let i = first; i <= last; i++) {
+                const t = Math.abs((i - center) / scale);
+                const p = Math.PI * t;
+                const weight = t < 1e-8 ? 1 : t < 3 ? Math.sin(p) * Math.sin(p / 3) / (p * p / 3) : 0;
+                weights[i - first] = weight;
+                sum += weight;
+            }
+            for (let i = 0; i < weights.length; i++) weights[i] /= sum;
+            rows[x] = { first, weights };
+        }
+        return rows;
+    }
+    const horizontal = new Map();
+    const freeRows = [];
+    const xTaps = taps(sw, dw), yTaps = taps(sh, dh);
+    function horizontalRow(y) {
+        if (horizontal.has(y)) return horizontal.get(y);
+        const row = freeRows.pop() || new Float32Array(dw * 4);
+        for (let x = 0; x < dw; x++) {
+            const { first, weights } = xTaps[x];
+            let r = 0, g = 0, b = 0, alpha = 0;
+            for (let j = 0; j < weights.length; j++) {
+                const i = (y * sw + first + j) * 4;
+                const weight = weights[j], opacity = pixels[i + 3] / 255;
+                r += pixels[i] * opacity * weight;
+                g += pixels[i + 1] * opacity * weight;
+                b += pixels[i + 2] * opacity * weight;
+                alpha += pixels[i + 3] * weight;
+            }
+            const o = x * 4;
+            row[o] = r; row[o + 1] = g;
+            row[o + 2] = b; row[o + 3] = alpha;
+        }
+        horizontal.set(y, row);
+        return row;
+    }
+    const out = new Uint8ClampedArray(dw * dh * 4);
+    for (let y = 0; y < dh; y++) {
+        const { first, weights } = yTaps[y];
+        for (const [sourceY, row] of horizontal) {
+            if (sourceY < first) { horizontal.delete(sourceY); freeRows.push(row); }
+        }
+        const rows = Array.from({length: weights.length}, (_, j) => horizontalRow(first + j));
+        for (let x = 0; x < dw; x++) {
+            let r = 0, g = 0, b = 0, alpha = 0;
+            for (let j = 0; j < weights.length; j++) {
+                const i = x * 4, weight = weights[j], row = rows[j];
+                r += row[i] * weight;
+                g += row[i + 1] * weight;
+                b += row[i + 2] * weight;
+                alpha += row[i + 3] * weight;
+            }
+            const o = (y * dw + x) * 4;
+            if (alpha > 1e-6) {
+                out[o] = r * 255 / alpha;
+                out[o + 1] = g * 255 / alpha;
+                out[o + 2] = b * 255 / alpha;
+                out[o + 3] = alpha;
+            }
+        }
+    }
+    return out;
+}
+let viewerFitRaster = null;
+function clearViewerFitRaster() {
+    if (viewerFitRaster && viewerFitRaster.worker) viewerFitRaster.worker.terminate();
+    if (viewerFitRaster && viewerFitRaster.canvas) viewerFitRaster.canvas.width = viewerFitRaster.canvas.height = 1;
+    viewerFitRaster = null;
+}
+function viewerPrepareFitRaster(image, width, height) {
+    const generation = viewerResource.generation;
+    if (viewerFitRaster && viewerFitRaster.image === image &&
+        viewerFitRaster.width === width && viewerFitRaster.height === height &&
+        viewerFitRaster.generation === generation) return viewerFitRaster.canvas;
+    clearViewerFitRaster();
+    const job = { image, width, height, generation, canvas: null, worker: null, failed: false };
+    viewerFitRaster = job;
+    const sw = image.naturalWidth, sh = image.naturalHeight;
+    const finish = pixels => {
+        if (viewerFitRaster !== job || viewerResource.generation !== generation) return;
+        if (job.worker) { job.worker.terminate(); job.worker = null; }
+        const c = document.createElement('canvas');
+        c.width = width; c.height = height;
+        const g = c.getContext('2d');
+        if (!g) { c.width = c.height = 1; throw new Error('Viewer fit canvas unavailable'); }
+        const data = g.createImageData(width, height);
+        data.data.set(pixels);
+        g.putImageData(data, 0, 0);
+        job.canvas = c;
+        paintViewer();
+    };
+    const fail = error => {
+        if (viewerFitRaster !== job || viewerResource.generation !== generation) return;
+        job.failed = true;
+        if (job.worker) { job.worker.terminate(); job.worker = null; }
+        console.warn('Viewer fit raster failed; using regular draw', error);
+        scheduleViewerPaint();
+    };
+    try {
+        // Extract native pixels with a 1:1 draw, never a browser resize.
+        const input = document.createElement('canvas');
+        input.width = sw; input.height = sh;
+        const g = input.getContext('2d', { willReadFrequently: true });
+        g.drawImage(image, 0, 0);
+        const pixels = g.getImageData(0, 0, sw, sh).data;
+        input.width = input.height = 1;
+        if (typeof Worker === 'function') {
+            const body = viewerLanczosResize.toString() + '\nonmessage = function(e) {' +
+                'const d=e.data; const p=viewerLanczosResize(new Uint8ClampedArray(d.pixels),d.sw,d.sh,d.dw,d.dh);' +
+                'postMessage(p.buffer,[p.buffer]); };';
+            const url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }));
+            let worker;
+            try { worker = new Worker(url); }
+            catch (error) {
+                // Blob workers may be blocked by an embedding application's policy.
+                // Keep the software filter available in that environment too.
+                setTimeout(() => {
+                    if (viewerFitRaster !== job) return;
+                    try { finish(viewerLanczosResize(pixels, sw, sh, width, height)); }
+                    catch (fallbackError) { fail(fallbackError); }
+                }, 0);
+                return null;
+            } finally { URL.revokeObjectURL(url); }
+            job.worker = worker;
+            worker.onmessage = e => { try { finish(new Uint8ClampedArray(e.data)); } catch (error) { fail(error); } };
+            worker.onerror = fail;
+            worker.postMessage({ pixels: pixels.buffer, sw, sh, dw: width, dh: height }, [pixels.buffer]);
+        } else {
+            // Older engines still get the same filter, outside the current paint.
+            setTimeout(() => {
+                if (viewerFitRaster !== job) return;
+                try { finish(viewerLanczosResize(pixels, sw, sh, width, height)); }
+                catch (error) { fail(error); }
+            }, 0);
+        }
+    } catch (error) { fail(error); }
+    return null;
+}
+
+// The pill shows the user-applied zoom offset from fit-to-window (0 = fit).
+// Only values above 0% show the pill; the % glyph is an SVG, not text.
+const VIEWER_ZOOM_PCT_ICON = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" style="vertical-align:-0.15em;display:inline-block;"><path d="M19 5 5 19"/><circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/></svg>`;
+function updateViewerZoomPct() {
+    const label = document.getElementById("galleryViewerZoom");
+    if (!label) return;
+    const pct = Math.round((viewerZoom - 1) * 100);
+    label.innerHTML = `${pct}${VIEWER_ZOOM_PCT_ICON}`;
+    label.classList.toggle('show', pct > 0);
+}
 function openGalleryViewer(id, force) {
     if (gallerySelectMode && !force) {
         if (_dragSuppressClick) {
@@ -4706,6 +5591,10 @@ function openGalleryViewer(id, force) {
     viewerIndex = galleryState.images.findIndex(i => i.id === id);
     if (viewerIndex < 0) return;
     viewerZoom = 1;
+    // the viewer may page forward while browsing (boundary → next page);
+    // on close we restore the page the user actually opened the viewer on,
+    // otherwise the tab-switch reload surprises them with a different page
+    _viewerOpenedPage = currentGalleryPage;
     showViewerImage();
 }
 
@@ -4856,6 +5745,12 @@ function galleryPageNav(page) {
     }, 200);
     loadGallery(page);
 }
+// viewer close may leave an arrow key auto-repeating (it was still held for
+// viewer ←/→); those repeats must not silently page the gallery beneath a
+// frozen repaint — swallow paging keys until the held key is released
+let _viewerKeyCooldown = false;
+let _viewerOpenedPage = null;
+const _pageKeys = new Set(['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'a', 'd']);
 document.addEventListener('keydown', function(e) {
     const gal = document.getElementById('Gallery');
     if (!gal || gal.style.display === 'none') return;
@@ -4863,6 +5758,7 @@ document.addEventListener('keydown', function(e) {
     if (viewer && viewer.style.display === 'flex') return;
     if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
     if (isTypingTarget(e.target)) return;
+    if (_viewerKeyCooldown && _pageKeys.has(e.key)) return;
     let page = null;
     const k = e.key.toLowerCase();
     if (e.key === 'ArrowRight' || e.key === 'PageDown' || k === 'd') page = currentGalleryPage + 1;
@@ -4871,6 +5767,9 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     galleryPageNav(page);
 });
+document.addEventListener('keyup', function(e) {
+    if (_viewerKeyCooldown && _pageKeys.has(e.key)) _viewerKeyCooldown = false;
+}, true);
 
 // drag-paint: hold left button and sweep across cards to select/deselect
 document.addEventListener('mousedown', function(e) {
@@ -5004,6 +5903,13 @@ function fullImageUrl(filepath, filename) {
     try { clean = decodeURIComponent(clean); } catch (e) {}
     return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
 }
+// viewer-open fast path: the server's fit-to-screen copy (display cache),
+// or '' when the URL isn't a gallery file (fallback thumbs etc.)
+function displayImageUrl(fullUrl) {
+    return fullUrl && fullUrl.startsWith('/api/gallery/file/')
+        ? fullUrl.replace('/api/gallery/file/', '/api/gallery/display/')
+        : '';
+}
 function galleryThumbUrl(fp) {
     return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : '';
 }
@@ -5062,6 +5968,7 @@ let viewerResource = {
     generation: 0
 };
 function clearViewerResource() {
+    clearViewerFitRaster();
     const r = viewerResource;
     if (r.abortController) { try { r.abortController.abort(); } catch (e) {} r.abortController = null; }
     r.generation++;
@@ -5070,6 +5977,40 @@ function clearViewerResource() {
     r.blob = null;
     r.url = null;
     r.filename = null;
+}
+// shared decode cache: URL -> Promise<Image> (loaded + decoded once, reused by
+// neighbor prefetch and the actual display load; bounded so long sessions
+// don't retain every image)
+const _viewerPreloadCache = new Map();
+const _viewerPreloadRecords = new Map();
+function preloadViewerRaster(url) {
+    if (!url) return Promise.resolve(null);
+    const hit = _viewerPreloadCache.get(url);
+    if (hit) {
+        _viewerPreloadCache.delete(url); _viewerPreloadCache.set(url, hit);
+        return hit;
+    }
+    const record = { image: null, pending: true };
+    const p = new Promise(resolve => {
+        const image = new Image();
+        record.cancel = () => resolve(null);
+        record.image = image;
+        image.onload = () => resolve(image);
+        image.onerror = () => resolve(null);
+        image.src = url;
+    }).then(async image => {
+        if (image && image.decode) { try { await image.decode(); } catch (e) {} }
+        record.pending = false;
+        if (_viewerPreloadRecords.get(url) === record) {
+            if (!image) { _viewerPreloadCache.delete(url); _viewerPreloadRecords.delete(url); }
+            trimViewerCaches();
+        }
+        return image;
+    });
+    _viewerPreloadRecords.set(url, record);
+    _viewerPreloadCache.set(url, p);
+    trimViewerCaches();
+    return p;
 }
 function loadViewerRaster(url, filename) {
     const viewerImg = document.getElementById("galleryViewerImg");
@@ -5080,33 +6021,94 @@ function loadViewerRaster(url, filename) {
     viewerResource.filename = filename || "image";
     const controller = new AbortController();
     viewerResource.abortController = controller;
-    viewerImg.style.display = '';
+    // the display img (video/fallback shell) and the canvas both stay hidden
+    // until revealViewer has a decoded image to paint
+    viewerImg.style.display = 'none';
+
+    // revealViewer paints the loaded image into the viewer canvas and retakes
+    // the fit box from its real intrinsic dims; no reveal race (the canvas
+    // draws atomically once decoded). Stage 1 is the server's display-size
+    // copy; stage 2 swaps in the original for full-res zooming. Same aspect
+    // ratio and the same uncapped fit → the box never moves.
+    const revealViewer = async (src, keepZoom) => {
+        const image = await preloadViewerRaster(src);
+        if (generation !== viewerResource.generation || controller.signal.aborted) return;
+        if (!image || !image.naturalWidth) throw new Error("Image load failed");
+        viewerStageImage = image;
+        viewerNaturalWidth = image.naturalWidth;
+        viewerNaturalHeight = image.naturalHeight;
+
+        const fitViewer = document.getElementById("galleryViewer");
+        const availableWidth = fitViewer?.clientWidth || window.innerWidth;
+        const availableHeight = fitViewer?.clientHeight || window.innerHeight;
+
+        // Gwenview fit-to-window: uniform scale; small images are shown at
+        // 100% instead of being enlarged past their native size
+        viewerFitScale = viewerNaturalWidth && viewerNaturalHeight
+            ? Math.min(1, availableWidth / viewerNaturalWidth, availableHeight / viewerNaturalHeight)
+            : 1;
+
+        viewerFitWidth = viewerNaturalWidth * viewerFitScale;
+        viewerFitHeight = viewerNaturalHeight * viewerFitScale;
+
+        if (!keepZoom) {
+            viewerZoom = 1;
+            viewerPanX = 0;
+            viewerPanY = 0;
+            const zoomLabel = document.getElementById("galleryViewerZoom");
+            if (zoomLabel) {
+                zoomLabel.innerHTML = `0${VIEWER_ZOOM_PCT_ICON}`;
+                zoomLabel.classList.remove('show');
+            }
+        }
+
+        if (keepZoom) {
+            // Register before painting; manual zoom builds only its needed sample.
+            const detail = viewerDetailFor(url);
+            if (!detail || detail.img !== image) {
+                viewerDetailCache.set(url, { img: image, third: null, sixth: null });
+                trimViewerCaches();
+            }
+        }
+        viewerShowCanvas();
+        setViewerTransform(viewerPanX, viewerPanY);
+    };
     const p = (async () => {
-        const pre = new Image();
-        try {
-            await new Promise((resolve, reject) => {
-                if (controller.signal.aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-                pre.onload = resolve;
-                pre.onerror = () => reject(new Error("Image load failed"));
-                controller.signal.addEventListener('abort', () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
-                pre.src = url;
-            });
-            if (pre.decode) { try { await pre.decode(); } catch (e) {} }
+        // stage 1: small display copy — ships and decodes fast even for
+        // 100MB originals; if the server couldn't shrink it, it serves the
+        // original bytes under the same URL and this is just the full load
+        const dispUrl = displayImageUrl(url);
+        const first = await preloadViewerRaster(dispUrl || url);
+        if (generation !== viewerResource.generation || controller.signal.aborted) return null;
+        if (!first) throw new Error("Image load failed");
+        await revealViewer(dispUrl || url, false);
+        // stage 2: the original, so zooming uses true pixels. Wait briefly
+        // first: a fast flip would otherwise start a multi-second main-thread
+        // decode per visited image — those pile up and freeze the gallery
+        // after the viewer closes. Only the image the user actually settles
+        // on decodes; abort/generation checks skip the rest.
+        if (dispUrl && dispUrl !== url) {
+            await new Promise(res => setTimeout(res, 450));
             if (generation !== viewerResource.generation || controller.signal.aborted) return null;
-            viewerImg.src = url;
-            return null;
-        } catch (err) {
-            if (generation === viewerResource.generation && err && err.name !== "AbortError") {
-                let msg = err.message || "Image load failed";
+            const full = await preloadViewerRaster(url);
+            if (generation !== viewerResource.generation || controller.signal.aborted) return null;
+            if (!full) throw new Error("Image load failed");
+            await revealViewer(url, true);
+        }
+        return null;
+    })().catch((err) => {
+        if (generation === viewerResource.generation && err && err.name !== "AbortError") {
+            let msg2 = err.message || "Image load failed";
+            return Promise.resolve().then(async () => {
                 try {
                     const r = await fetch(url, { method: "HEAD", signal: controller.signal });
-                    if (r.status) msg = r.status === 404 ? "image was deleted" : "Image load failed (" + r.status + ")";
+                    if (r.status) msg2 = r.status === 404 ? "image was deleted" : "Image load failed (" + r.status + ")";
                 } catch (e) {}
-                showToast("Failed to load image: " + msg, { warn: true, icon: WARN_ICON });
-            }
-            throw err;
+                showToast("Failed to load image: " + msg2, { warn: true, icon: WARN_ICON });
+            }).then(() => { throw err; });
         }
-    })();
+        throw err;
+    });
     viewerResource.loadPromise = p;
     p.catch(() => {});
     return p;
@@ -5178,26 +6180,31 @@ function viewerMetaHtml(img, tagsClickable) {
     let pLow = ((img.filepath || "") + " " + _viewerAllTags.join(' ')).toLowerCase();
     let vSiteLower = (img.site || "").toLowerCase();
     if (vSiteLower === "rule34") {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
     } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: NSFW</span>`;
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+    } else if (pLow.includes('/r18g/')) {
+        // pixiv r18g = NSFW, r18 = questionable — r18g before r18
+        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
+    } else if (pLow.includes('/r18/')) {
+        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
     } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Sensitive</span>`;
+        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
     } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Questionable</span>`;
+        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
     } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:g')) {
-        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Rating: Safe</span>`;
+        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
     }
     let _srcLabels = (Array.isArray(img.sources) && img.sources.length ? img.sources : [img.site])
         .filter(Boolean).map(siteLabel);
     let siteBadge;
     if (_srcLabels.length > 1) {
-        siteBadge = `<span data-collapsed="${_srcLabels.length} sources" data-list="${escJs(_srcLabels.join(', '))}" data-open="0" onclick="toggleSourceBox(this)" title="Click to show all sources" style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase; cursor: pointer;">${_srcLabels.length} sources</span>`;
+        siteBadge = `<span data-collapsed="${_srcLabels.length} sources" data-list="${escapeHtml(_srcLabels.join(', '))}" data-open="0" onclick="toggleSourceBox(this)" title="Click to show all sources" style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase; cursor: pointer;">${_srcLabels.length} sources</span>`;
     } else {
-        siteBadge = `<span style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${_srcLabels[0] || siteLabel(img.site)}</span>`;
+        siteBadge = `<span style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${escapeHtml(_srcLabels[0] || siteLabel(img.site))}</span>`;
     }
     let artistName = (img.tags?.artist || [])[0] || "";
-    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${cleanTagDisplay(artistName)}</span>` : "";
+    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(artistName))}</span>` : "";
 
     return `
     <div class="g-meta-header">
@@ -5223,20 +6230,31 @@ function showViewerImage() {
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
     const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
-    viewerImg.src = '';
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
     viewerImg.style.transform = '';
     viewerImg.style.transformOrigin = '';
+    if (isVideo) {
+        // videos own their layout; drop raster leftovers
+        viewerImg.style.position = '';
+        viewerImg.style.left = '';
+        viewerImg.style.top = '';
+        viewerImg.style.width = '';
+        viewerImg.style.height = '';
+        viewerImg.style.maxWidth = '';
+        viewerImg.style.maxHeight = '';
+    }
     viewerDrag.active = false;
     const zl = document.getElementById("galleryViewerZoom");
-    zl.textContent = '100%';
+    zl.innerHTML = `0${VIEWER_ZOOM_PCT_ICON}`;
     zl.classList.remove('show');
     viewerZoom = 1;
     if (isVideo) {
         clearViewerResource();
         viewerImg.style.display = 'none';
+        const _vc = document.getElementById("galleryViewerCanvas");
+        if (_vc) _vc.style.display = 'none';
         const old = document.querySelector('.gallery-video-wrap');
         if (old) old.remove();
         const wrap = document.createElement('div');
@@ -5344,7 +6362,7 @@ function showViewerImage() {
         video.addEventListener('canplay', () => { if (video.paused && !video.ended) video.play().catch(() => {}); }, { once: true });
         attachVideoStallRecovery(video);
     } else if (fullSrc) { loadViewerRaster(fullSrc, img.filename); }
-    else { clearViewerResource(); viewerImg.style.display = ''; }
+    else { clearViewerResource(); viewerImg.removeAttribute('src'); viewerImg.style.display = 'none'; }
     document.getElementById("galleryViewerFav").innerHTML = heartIcon(img.favourite);
 
     // === پنل اطلاعات و تگ‌ها پایین صفحه ===
@@ -5357,7 +6375,21 @@ function showViewerImage() {
     updateViewerNav();
     prefetchViewerNeighbors();
 }
-function closeGalleryViewer() { clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").src = ''; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } viewerZoom = 1; viewerIndex = -1; viewerDrag.active = false; }
+function closeGalleryViewer() {
+    // a paging key still held when the viewer was closed (its ←/→ repeats)
+    // must not page the gallery until the key is released
+    _viewerKeyCooldown = true;
+    // the viewer's own boundary-crossing may have moved currentGalleryPage
+    // (loadGalleryPage under the viewer); restore the page the user opened
+    // the viewer on so the tab-switch reload doesn't surprise them
+    if (_viewerOpenedPage !== null && _viewerOpenedPage !== currentGalleryPage) {
+        currentGalleryPage = _viewerOpenedPage;
+        // galleryState still holds the walked-to page; the visible grid shows
+        // the opened one — refetch it so card clicks resolve ids again
+        loadGalleryPage(currentGalleryPage);
+    }
+    _viewerOpenedPage = null;
+    clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
 function updateViewerNav() {
     // boundary buttons: no prev on the first image, no next on the last one
     const v = document.getElementById("galleryViewer");
@@ -5388,7 +6420,15 @@ function refreshViewerSingleList() {
     document.getElementById("galleryViewer").classList.toggle("has-list", fresh.length > 1);
     updateViewerNav();
 }
+let _viewerNavLast = 0;
 function viewerNav(dir) {
+    // auto-repeat flood: ~30 repeats/s each starting a server-side display
+    // generation + original preload; repeats also keep arriving for a moment
+    // after release when threads catch up, so a held key must not queue a
+    // load per event. ~70ms = ~14 flips/s held; fresh presses never wait.
+    const now = performance.now();
+    if (now - _viewerNavLast < 70) return;
+    _viewerNavLast = now;
     if (viewerSingle) {
         // log previews carry their sibling list — walk it like the gallery
         refreshViewerSingleList();
@@ -5438,7 +6478,7 @@ function toggleViewerFav() {
     }
     function saveAsDownload(url, filename) {
         const a = document.createElement('a');
-        a.href = url;
+        a.href = /\.jxl$/i.test(filename || '') && url.startsWith('/api/gallery/file/') ? url + (url.includes('?') ? '&' : '?') + 'download=1' : url;
         a.download = filename || 'file';
         document.body.appendChild(a);
         a.click();
@@ -5503,117 +6543,240 @@ function toggleViewerFav() {
         } catch (e) { showToast("Copy failed: " + (e && e.message || e), { warn: true, icon: WARN_ICON }); }
         finally { _copyBusy = false; }
     }
-    function getViewerTransform() { const img = document.getElementById("galleryViewerImg"); const cur = img.style.transform; const m = cur.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/); return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0, 0]; }
-    function setViewerTransform(tx, ty) {
-        const img = document.getElementById("galleryViewerImg");
-
-
-        if (viewerZoom > 1) {
-            img.classList.add('zoomed');
-            img.style.transformOrigin = '0 0';
-            // ponytail: whole-pixel translation — fractional tx/ty makes the GPU
-            // resample across pixel boundaries (shimmer/seams while zoomed)
-            img.style.transform = `translate(${Math.round(tx)}px, ${Math.round(ty)}px) scale(${viewerZoom})`;
-        } else {
-            img.classList.remove('zoomed');
-            img.style.transformOrigin = '50% 50%';
-            img.style.transform = '';
+    function hoverPreviewSize(sw, sh, cw, ch, ratio) {
+        const dpr = Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+        const scale = Math.min(1, Math.max(cw / sw, ch / sh) * dpr, 640 / Math.max(sw, sh));
+        return {width: Math.max(1, Math.round(sw * scale)), height: Math.max(1, Math.round(sh * scale))};
+    }
+    function viewerSurfaceScale(width, height, ratio) {
+        const dpr = Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+        const maxPixels = (lightweightUI() ? 16 : 32) * 1024 * 1024;
+        return Math.min(dpr, 8192 / Math.max(1, width, height), Math.sqrt(maxPixels / Math.max(1, width * height)));
+    }
+    function allocateViewerSurface(canvas, width, height) {
+        const sizeKey = width + 'x' + height + 'x' + window.devicePixelRatio;
+        if (canvas._failedSize === sizeKey) return null;
+        let dpr = viewerSurfaceScale(width, height, window.devicePixelRatio);
+        if (canvas._safeRatio) dpr = Math.min(dpr, canvas._safeRatio);
+        canvas.style.width = width + 'px';
+        canvas.style.height = height + 'px';
+        for (let attempt = 0; attempt < 5; attempt++, dpr /= 2) {
+            const bw = Math.max(1, Math.round(width * dpr)), bh = Math.max(1, Math.round(height * dpr));
+            try {
+                if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
+                const ctx = canvas.getContext('2d');
+                if (ctx && !(ctx.isContextLost && ctx.isContextLost())) {
+                    // Remember allocation failures; panning must not repeat them.
+                    if (attempt) canvas._safeRatio = dpr;
+                    return {ctx, dpr, bw, bh};
+                }
+            } catch (error) {}
         }
+        canvas.width = canvas.height = 1;
+        canvas._failedSize = sizeKey;
+        return null;
+    }
+    function viewerImageFallback(canvas, layout) {
+        const image = document.getElementById('galleryViewerImg');
+        if (!image || !viewerStageImage || !viewerStageImage.src) return;
+        const [sx, sy] = viewerPanToScroll(layout, viewerPanX, viewerPanY);
+        if (image.src !== viewerStageImage.src) image.src = viewerStageImage.src;
+        Object.assign(image.style, {display:'block', position:'absolute', left:(layout.offX - sx)+'px', top:(layout.offY - sy)+'px',
+            width:layout.dispW+'px', height:layout.dispH+'px', maxWidth:'none', maxHeight:'none', transform:'none', pointerEvents:'none'});
+        // Keep the invisible canvas hit-testable so zoom, drag and fit-click
+        // semantics work identically through the image fallback.
+        canvas.style.opacity = '0';
+        canvas.dataset.viewerRaster = 'image-fallback';
+    }
+    function observeDisplayDensity(onChange) {
+        let query = null;
+        const changed = () => { arm(); onChange(); };
+        const arm = () => {
+            if (query) {
+                if (query.removeEventListener) query.removeEventListener('change', changed);
+                else if (query.removeListener) query.removeListener(changed);
+            }
+            if (!window.matchMedia) return;
+            query = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+            if (query.addEventListener) query.addEventListener('change', changed);
+            else if (query.addListener) query.addListener(changed);
+        };
+        arm();
+    }
+    function viewerLayoutState() {
+        const viewer = document.getElementById("galleryViewer");
+        const vw = (viewer && viewer.clientWidth) || window.innerWidth;
+        const vh = (viewer && viewer.clientHeight) || window.innerHeight;
+        const zoom = viewerFitScale * viewerZoom;
+        const dispW = viewerNaturalWidth * zoom;
+        const dispH = viewerNaturalHeight * zoom;
+        return {
+            vw, vh, zoom, dispW, dispH,
+            offX: Math.max(0, (vw - dispW) / 2),
+            offY: Math.max(0, (vh - dispH) / 2),
+            maxScrollX: Math.max(0, dispW - vw),
+            maxScrollY: Math.max(0, dispH - vh)
+        };
+    }
+    // stored pan (image origin minus the signed centering pos) → Gwenview
+    // scrollPos clamped to [0, displayed - view]
+    function viewerPanToScroll(L, px, py) {
+        const sx = L.offX - ((L.vw - L.dispW) / 2 + px);
+        const sy = L.offY - ((L.vh - L.dispH) / 2 + py);
+        return [
+            Math.min(Math.max(sx, 0), L.maxScrollX),
+            Math.min(Math.max(sy, 0), L.maxScrollY)
+        ];
+    }
+    function viewerShowCanvas() {
+        const canvas = document.getElementById("galleryViewerCanvas");
+        if (canvas) canvas.style.display = 'block';
+    }
+    // Gwenview RasterImageItem::paint: clear the viewport, map the visible
+    // rect (+margin) into image space, draw the chosen representation once
+    function paintViewer() {
+        const canvas = document.getElementById("galleryViewerCanvas");
+        if (!canvas || canvas.style.display === 'none') return;
+        const L = viewerLayoutState();
+        if (L.vw < 1 || L.vh < 1 || L.zoom <= 0 || viewerNaturalWidth <= 0) return;
+        const surface = allocateViewerSurface(canvas, L.vw, L.vh);
+        if (!surface) { viewerImageFallback(canvas, L); return; }
+        const {ctx, dpr, bw, bh} = surface;
+        canvas.style.visibility = '';
+        canvas.style.opacity = '';
+        const fallback = document.getElementById('galleryViewerImg');
+        if (fallback && fallback !== canvas) fallback.style.display = 'none';
+        try {
+        // At fit, upload an already filtered bitmap and blit it 1:1. Avoid
+        // both the browser's sample-resize path and a second texture minification.
+        if (viewerZoom === 1 && viewerStageImage && L.zoom * dpr < 1) {
+            const fw = Math.min(bw, Math.max(1, Math.round(L.dispW * dpr)));
+            const fh = Math.min(bh, Math.max(1, Math.round(L.dispH * dpr)));
+            const fitted = viewerPrepareFitRaster(viewerStageImage, fw, fh);
+            if (fitted) {
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.clearRect(0, 0, bw, bh);
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(fitted, Math.round((bw - fw) / 2), Math.round((bh - fh) / 2));
+                canvas.dataset.viewerRaster = 'software-lanczos3-v2';
+                return;
+            }
+            // Do not show an aliased browser resize while the software filter
+            // runs. Keep the previous frame until its replacement is ready.
+            // A failed filter still gets the regular draw so the image is usable.
+            if (!viewerFitRaster || !viewerFitRaster.failed) return;
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, L.vw, L.vh);
+        canvas.dataset.viewerRaster = 'browser';
+        const [sx, sy] = viewerPanToScroll(L, viewerPanX, viewerPanY);
+        const ix0 = (sx - L.offX) / L.zoom;
+        const iy0 = (sy - L.offY) / L.zoom;
+        const margin = 8 / L.zoom;
+        const ix = Math.max(0, Math.floor(ix0 - margin));
+        const iy = Math.max(0, Math.floor(iy0 - margin));
+        const ix1 = Math.min(viewerNaturalWidth, Math.ceil(ix0 + L.vw / L.zoom + margin));
+        const iy1 = Math.min(viewerNaturalHeight, Math.ceil(iy0 + L.vh / L.zoom + margin));
+        if (ix1 <= ix || iy1 <= iy) return;
+        // coarsest representation still finer than the displayed scale
+        let rep = null, repScale = 1;
+        const cachedDetail = viewerResource.url ? viewerDetailFor(viewerResource.url) : null;
+        const detail = cachedDetail && cachedDetail.img === viewerStageImage ? cachedDetail : null;
+        ensureViewerSample(detail, L.zoom);
+        if (L.zoom <= VIEWER_SAMPLE_SIXTH && detail && detail.sixth) { rep = detail.sixth; repScale = VIEWER_SAMPLE_SIXTH; }
+        else if (L.zoom <= VIEWER_SAMPLE_THIRD && detail && detail.third) { rep = detail.third; repScale = VIEWER_SAMPLE_THIRD; }
+        else rep = viewerStageImage;
+        if (!rep) return;
+        // Gwenview: smooth below ~400%, nearest above (pixel peeping)
+        ctx.imageSmoothingEnabled = L.zoom < 4;
+        ctx.imageSmoothingQuality = 'high';
+        // source rect snapped to the representation's own grid, dest derived
+        // from it — never out of bounds, never proportionally clipped
+        const rx = Math.floor(ix * repScale);
+        const ry = Math.floor(iy * repScale);
+        const rw = Math.min(rep.width, Math.ceil(ix1 * repScale)) - rx;
+        const rh = Math.min(rep.height, Math.ceil(iy1 * repScale)) - ry;
+        if (rw <= 0 || rh <= 0) return;
+        ctx.drawImage(rep, rx, ry, rw, rh,
+            L.offX - sx + rx / repScale * L.zoom,
+            L.offY - sy + ry / repScale * L.zoom,
+            rw / repScale * L.zoom,
+            rh / repScale * L.zoom);
+        } catch (error) { viewerImageFallback(canvas, L); }
+    }
+    let _viewerPaintFrame = 0;
+    function scheduleViewerPaint() {
+        if (_viewerPaintFrame) return;
+        _viewerPaintFrame = requestAnimationFrame(() => { _viewerPaintFrame = 0; paintViewer(); });
+    }
+    function getViewerTransform() {
+        return [viewerPanX, viewerPanY];
+    }
+    function setViewerTransform(tx, ty) {
+        const viewer = document.getElementById("galleryViewer");
+        if (!viewer) return;
+
+        viewerPanX = Number.isFinite(tx) ? tx : 0;
+        viewerPanY = Number.isFinite(ty) ? ty : 0;
+
+        // Gwenview adjustScrollPos: clamp the pan so the image edges never
+        // leave blank bands beyond the viewport
+        const L = viewerLayoutState();
+        const [sx, sy] = viewerPanToScroll(L, viewerPanX, viewerPanY);
+        viewerPanX = L.offX - sx - (L.vw - L.dispW) / 2;
+        viewerPanY = L.offY - sy - (L.vh - L.dispH) / 2;
+
+        const canvas = document.getElementById("galleryViewerCanvas");
+        if (canvas) canvas.classList.toggle('zoomed', viewerZoom > 1.001);
+        scheduleViewerPaint();
     }
     function zoomViewer(delta, cx, cy) {
-        const img = document.getElementById("galleryViewerImg");
         const viewer = document.getElementById("galleryViewer");
+        const canvas = document.getElementById("galleryViewerCanvas");
 
-
-        if (!img || !viewer || img.style.display === 'none') return;
-        if (!img.complete || img.naturalWidth === 0) return;
-
+        if (!viewer || !canvas || canvas.style.display === 'none') return;
+        if (viewerNaturalWidth <= 0 || !viewerFitWidth || !viewerFitHeight) return;
 
         const oldZoom = viewerZoom;
-        const newZoom = Math.max(0.25, Math.min(10, oldZoom + delta));
+        // no zoom below fit-to-window: the pill/offset never goes negative
+        const newZoom = Math.max(1, Math.min(10, oldZoom + delta));
 
+        if (Math.abs(newZoom - oldZoom) < 0.0001) return;
 
-        if (newZoom === oldZoom) return;
-
-
-        /*
-         * IMPORTANT:
-         *
-         * At 100% the image is still using:
-         *   max-width: 95vw
-         *   max-height: 90vh
-         *
-         * We get its ORIGINAL untransformed rectangle here.
-         *
-         * Once zoomed, getBoundingClientRect() contains the transform,
-         * so we reconstruct the original rectangle using the current
-         * translation and zoom.
-         */
-
-
-        const rect = img.getBoundingClientRect();
-        const [oldTx, oldTy] = getViewerTransform();
-
-
-        // Position of the image before transform.
-        const baseLeft = rect.left - oldTx;
-        const baseTop = rect.top - oldTy;
-
-
-        // Mouse position. If called from keyboard, use viewer center.
         if (cx == null || cy == null) {
             const viewerRect = viewer.getBoundingClientRect();
             cx = viewerRect.left + viewerRect.width / 2;
             cy = viewerRect.top + viewerRect.height / 2;
         }
 
-
-        /*
-         * Find which point on the ORIGINAL image is underneath
-         * the mouse cursor.
-         *
-         * This is the key calculation.
-         */
-        const imageX = (cx - baseLeft - oldTx) / oldZoom;
-        const imageY = (cy - baseTop - oldTy) / oldZoom;
-
-
-        /*
-         * Calculate the new translation so the SAME image pixel
-         * remains underneath the mouse.
-         */
-        const newTx = cx - baseLeft - imageX * newZoom;
-        const newTy = cy - baseTop - imageY * newZoom;
-
+        // Preserve the image point underneath the cursor while zooming
+        // (Gwenview setZoom re-anchors the scroll around the pointer).
+        const rect = canvas.getBoundingClientRect();
+        const L = viewerLayoutState();
+        const [sx, sy] = viewerPanToScroll(L, viewerPanX, viewerPanY);
+        const imageX = (cx - rect.left - (L.offX - sx)) / L.zoom;
+        const imageY = (cy - rect.top - (L.offY - sy)) / L.zoom;
 
         viewerZoom = newZoom;
 
-
-        const label = document.getElementById("galleryViewerZoom");
-
-
-        if (label) {
-            label.textContent = Math.round(viewerZoom * 100) + '%';
-
-
-            if (viewerZoom > 1) {
-                label.classList.add('show');
-            } else {
-                label.classList.remove('show');
-            }
-        }
-
-
         if (viewerZoom <= 1) {
-            setViewerTransform(0, 0);
+            // At or below fit-to-window, center the image.
+            viewerPanX = 0;
+            viewerPanY = 0;
             stopViewerDrag();
         } else {
-            setViewerTransform(newTx, newTy);
+            const L2 = viewerLayoutState();
+            const drawX = (cx - rect.left) - imageX * L2.zoom;
+            const drawY = (cy - rect.top) - imageY * L2.zoom;
+            setViewerTransform(drawX - (L2.vw - L2.dispW) / 2, drawY - (L2.vh - L2.dispH) / 2);
         }
+
+        updateViewerZoomPct();
+        scheduleViewerPaint();
     }
     document.addEventListener('keydown', function(e) {
         const viewer = document.getElementById("galleryViewer");
-        if (viewer.style.display !== 'flex') return;
+        if (viewer.style.display !== 'flex' || document.querySelector('.custom-confirm-overlay')) return;
 
         if (e.key === 'Escape') {
             if (viewer.classList.contains("focus")) {
@@ -5623,9 +6786,11 @@ function toggleViewerFav() {
                 closeGalleryViewer();
             }
         }
-        else if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey
+        else if ((e.code === 'KeyF' || e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey
                  && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) {
-            // f toggles focus mode (same as the 👁 button); skip when typing
+            // f toggles focus mode (same as the 👁 button); skip when typing.
+            // e.code first: with a non-English layout e.key is the layout
+            // character (а, ß, …), not 'f'
             viewer.classList.toggle("focus");
             syncFocusCursor();
         }
@@ -5640,8 +6805,8 @@ function toggleViewerFav() {
         }
         else if (e.key === 'ArrowLeft') viewerNav(-1);
         else if (e.key === 'ArrowRight') viewerNav(1);
-        else if (e.key === '+' || e.key === '=') zoomViewer(0.05, window.innerWidth/2, window.innerHeight/2);
-        else if (e.key === '-') zoomViewer(-0.05, window.innerWidth/2, window.innerHeight/2);
+        else if (e.key === '+' || e.key === '=') zoomViewer(getViewerZoomStep(), window.innerWidth/2, window.innerHeight/2);
+        else if (e.key === '-') zoomViewer(-getViewerZoomStep(), window.innerWidth/2, window.innerHeight/2);
         else if (e.key === 'Delete') { deleteViewerImage(); }
         else if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyC' || e.key.toLowerCase() === 'c')) {
             e.preventDefault();
@@ -5668,39 +6833,112 @@ function toggleViewerFav() {
             if (viewer.classList.contains("focus")) viewer.classList.add("cursor-hidden");
         }, 5000);
     });
-    let _resizeTimer = null;
+    // single refit helper: viewer element dims are the source of truth (a
+    // maximized window's viewport can differ from screen size)
+    const _viewerFit = { w: 0, h: 0 };
+    function refitViewerImage() {
+        const viewer = document.getElementById("galleryViewer");
+        if (!viewer) return false;
+        const availableWidth = viewer.clientWidth;
+        const availableHeight = viewer.clientHeight;
+        // hidden while closed → force a real refit on the next show
+        if (!availableWidth || !availableHeight ||
+            viewerNaturalWidth <= 0 || viewerNaturalHeight <= 0) {
+            _viewerFit.w = 0;
+            _viewerFit.h = 0;
+            return false;
+        }
+        // manual zoom: pin the image point at the viewport centre while the
+        // fit scale changes (Gwenview resizeEvent re-anchors the scroll)
+        let anchorX = null, anchorY = null;
+        if (viewerZoom > 1.001) {
+            const L0 = viewerLayoutState();
+            const [sx, sy] = viewerPanToScroll(L0, viewerPanX, viewerPanY);
+            anchorX = (L0.vw / 2 - (L0.offX - sx)) / L0.zoom;
+            anchorY = (L0.vh / 2 - (L0.offY - sy)) / L0.zoom;
+        }
+        _viewerFit.w = availableWidth;
+        _viewerFit.h = availableHeight;
+        // Gwenview fit-to-window: uniform scale; small images are shown at
+        // 100% instead of being enlarged past their native size
+        viewerFitScale = Math.min(1,
+            availableWidth / viewerNaturalWidth,
+            availableHeight / viewerNaturalHeight);
+        viewerFitWidth = viewerNaturalWidth * viewerFitScale;
+        viewerFitHeight = viewerNaturalHeight * viewerFitScale;
+        if (anchorX != null) {
+            const L1 = viewerLayoutState();
+            const drawX = L1.vw / 2 - anchorX * L1.zoom;
+            const drawY = L1.vh / 2 - anchorY * L1.zoom;
+            setViewerTransform(drawX - (L1.vw - L1.dispW) / 2, drawY - (L1.vh - L1.dispH) / 2);
+        } else {
+            viewerPanX = 0;
+            viewerPanY = 0;
+            setViewerTransform(0, 0);
+        }
+        updateViewerZoomPct();
+        return true;
+    }
     window.addEventListener('resize', function() {
-        clearTimeout(_resizeTimer);
-        _resizeTimer = setTimeout(() => {
-            const galleryTab = document.getElementById("Gallery");
-            if (galleryTab && galleryTab.style.display !== "none") {
-                loadGallery();
-            }
-        }, 200);
+        const viewer = document.getElementById("galleryViewer");
+        if (viewer && viewer.style.display === 'flex') refitViewerImage();
+        settleGalleryLayout();
     });
+    const _contextCanvas = document.getElementById('galleryViewerCanvas');
+    if (_contextCanvas) {
+        _contextCanvas.addEventListener('contextlost', event => {
+            event.preventDefault();
+            clearViewerFitRaster();
+            if (viewerStageImage) viewerImageFallback(_contextCanvas, viewerLayoutState());
+        });
+        _contextCanvas.addEventListener('contextrestored', () => {
+            delete _contextCanvas._safeRatio;
+            delete _contextCanvas._failedSize;
+            scheduleViewerPaint();
+        });
+    }
+    observeDisplayDensity(() => {
+        const canvas = document.getElementById('galleryViewerCanvas');
+        if (canvas) { delete canvas._safeRatio; delete canvas._failedSize; }
+        clearViewerFitRaster();
+        const viewer = document.getElementById('galleryViewer');
+        if (viewer && viewer.style.display === 'flex') refitViewerImage();
+        settleGalleryLayout();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) { pumpGalleryThumbnails(); return; }
+        document.querySelectorAll('[data-hover-src]').forEach(card => galleryHoverPreview(card, false));
+    });
+    try {
+        const _viewerEl = document.getElementById("galleryViewer");
+        if (_viewerEl && typeof ResizeObserver !== "undefined") {
+            // window resize alone misses maximize/restore changes that the
+            // app relayouts without a viewport resize event — observe the
+            // element's own box
+            const _viewerObserver = new ResizeObserver(entries => {
+                for (const entry of entries) {
+                    const w = Math.round(entry.contentRect.width);
+                    const h = Math.round(entry.contentRect.height);
+                    if (!w || !h ||
+                        (w === _viewerFit.w && h === _viewerFit.h)) continue;
+                    refitViewerImage();
+                }
+            });
+            _viewerObserver.observe(_viewerEl);
+        }
+    } catch (e) {}
 
     try {
         const _gridEl = document.getElementById("galleryGrid");
         if (_gridEl && typeof ResizeObserver !== "undefined") {
-            let _lastW = 0;
-            const _gridObserver = new ResizeObserver(entries => {
-                for (const entry of entries) {
-                    const w = entry.contentRect.width;
-                    if (w > 50 && Math.abs(w - _lastW) > 30) {
-                        _lastW = w;
-                        const galleryTab = document.getElementById("Gallery");
-                        if (galleryTab && galleryTab.style.display !== "none") {
-                            clearTimeout(_resizeTimer);
-                            _resizeTimer = setTimeout(() => loadGallery(), 150);
-                        }
-                    }
-                }
-            });
+            const _gridObserver = new ResizeObserver(() => settleGalleryLayout());
             _gridObserver.observe(_gridEl);
         }
     } catch (e) {}
     let viewerDrag = { active: false, startX: 0, startY: 0, imgX: 0, imgY: 0 };
-    document.getElementById("galleryViewer").addEventListener('click', function(e) { if (e.target === this) closeGalleryViewer(); });
+    document.getElementById("galleryViewer").addEventListener('click', function(e) { // the canvas covers the whole viewport: only empty space at fit
+        // zoom closes; a zoomed canvas owns its area (drag/click)
+        if (e.target === this || (e.target.id === 'galleryViewerCanvas' && viewerZoom <= 1.001)) closeGalleryViewer(); });
     let zoomThrottle = 0;
 
 
@@ -5717,7 +6955,7 @@ function toggleViewerFav() {
         zoomThrottle = now;
 
 
-        const delta = e.deltaY < 0 ? 0.05 : -0.05;
+        const delta = e.deltaY < 0 ? getViewerZoomStep() : -getViewerZoomStep();
 
 
         zoomViewer(
@@ -5726,14 +6964,15 @@ function toggleViewerFav() {
             e.clientY
         );
     }, { passive: false });
-    function stopViewerDrag() { viewerDrag.active = false; const img = document.getElementById("galleryViewerImg"); if (img) img.classList.remove('dragging'); }
-    document.getElementById("galleryViewerImg").addEventListener('mousedown', function(e) { if (viewerZoom <= 1 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
+    function stopViewerDrag() { viewerDrag.active = false; const canvas = document.getElementById("galleryViewerCanvas"); if (canvas) canvas.classList.remove('dragging'); }
+    document.getElementById("galleryViewerCanvas").addEventListener('mousedown', function(e) { if (viewerZoom <= 1.001 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(); } } catch (e) { console.error("gallery import failed:", e); } }
-    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" }); loadGallery(1); populateGallerySiteFilter(); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(true); } } catch (e) { console.error("gallery import failed:", e); } }
+    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" }); loadGallery(1); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
     let _siteFilterSeq = 0;
-    async function populateGallerySiteFilter() {
+    let _lastSourceFilterKey = null;
+    async function populateGallerySiteFilter(force) {
         const seq = ++_siteFilterSeq;
         const container = document.getElementById("sourceDropdown");
         if (!container) return;
@@ -5743,6 +6982,11 @@ function toggleViewerFav() {
         const params = new URLSearchParams({ search: document.getElementById("gallerySearch").value, type: getMultiSelectValues('typeDropdown'), rating: getMultiSelectValues('ratingDropdown') });
         if (galleryFavFilter) params.set("favourites", "true");
         applyDateParams(params, galleryDateFilter);
+        // same filters → same counts; loadGallery calls us on every render
+        // (pagination, re-measure) and that was a wasted /sources roundtrip
+        let key = params.toString();
+        if (key === _lastSourceFilterKey) return;
+        _lastSourceFilterKey = key;
         try {
             let resp = await fetch(`/api/gallery/sources?${params}`);
             const counts = await resp.json();
@@ -5760,7 +7004,7 @@ function toggleViewerFav() {
                 div.className = "dd-item";
                 div.onclick = function(e) { toggleDropdownCheck(this, e); };
                 const isChecked = !allSelectedBefore && selList.includes(site);
-                div.innerHTML = `<span>${siteLabel(site)} (${count})</span><input type="checkbox" value="${site}" ${isChecked ? 'checked' : ''}>`;
+                div.innerHTML = `<span>${escapeHtml(siteLabel(site))} (${Number(count) || 0})</span><input type="checkbox" value="${escapeHtml(site)}" ${isChecked ? 'checked' : ''}>`;
                 container.appendChild(div);
             });
 
@@ -5778,7 +7022,7 @@ function toggleViewerFav() {
                     if (allItems) itemCbs.forEach(c => c.checked = false);
                 }
             }
-        } catch (e) { console.error("site filter load failed:", e); }
+        } catch (e) { _lastSourceFilterKey = null; console.error("site filter load failed:", e); }
         const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
         if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
         updateSourceDropdown();
@@ -5810,14 +7054,34 @@ function toggleViewerFav() {
         return new Promise(resolve => {
             const ov = document.createElement("div");
             ov.className = "custom-confirm-overlay";
-            ov.innerHTML = `<div class="custom-confirm-box"><div class="custom-confirm-msg">${message}</div><div class="custom-confirm-btns"><button class="action-btn stop-btn" id="cfOk">${okLabel || "Delete"}</button><button class="action-btn" id="cfCancel">Cancel</button></div></div>`;
+            ov.innerHTML = `<div class="custom-confirm-box"><div class="custom-confirm-msg">${escapeHtml(message)}</div><div class="custom-confirm-btns"><button class="action-btn stop-btn" id="cfOk">${escapeHtml(okLabel || "Delete")}</button><button class="action-btn" id="cfCancel">Cancel</button></div></div>`;
+            const previous = document.activeElement;
+            const box = ov.querySelector('.custom-confirm-box');
+            box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true');
+            ov.querySelector('.custom-confirm-msg').id = 'cfMessage';
+            box.setAttribute('aria-labelledby', 'cfMessage');
             document.body.appendChild(ov);
-            const done = (v) => { document.removeEventListener("keydown", esc); ov.remove(); resolve(v); };
+            let settled = false;
+            const done = (v) => {
+                if (settled) return;
+                settled = true;
+                document.removeEventListener("keydown", esc, true);
+                ov.remove();
+                if (previous && previous.isConnected) previous.focus();
+                resolve(v);
+            };
             ov.querySelector("#cfOk").onclick = () => done(true);
             ov.querySelector("#cfCancel").onclick = () => done(false);
             ov.addEventListener("click", (e) => { if (e.target === ov) done(false); });
-            const esc = (e) => { if (e.key === "Escape") done(false); };
-            document.addEventListener("keydown", esc);
+            const esc = (e) => {
+                if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); done(false); }
+                else if (e.key === "Tab") {
+                    e.preventDefault();
+                    const next = document.activeElement === ov.querySelector('#cfOk') ? '#cfCancel' : '#cfOk';
+                    ov.querySelector(next).focus();
+                }
+            };
+            document.addEventListener("keydown", esc, true);
             ov.querySelector("#cfCancel").focus();
         });
     }
@@ -5850,7 +7114,7 @@ function toggleViewerFav() {
                 markDeleted(img.filepath, img.filename);
                 if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                 else showToast("Image deleted completely!", { icon: TRASH_ICON });
-                let card = document.querySelector(`.gallery-card[onclick="openGalleryViewer('${img.id}')"]`);
+                let card = document.querySelector(`.gallery-card[onclick="openGalleryViewer('${escJs(img.id)}')"]`);
                 if (card) card.remove();
                 galleryState.images.splice(viewerIndex, 1);
                 if (galleryState.images.length > 0) {
@@ -5882,7 +7146,7 @@ function toggleViewerFav() {
         // ponytail: Enter in any tag box starts its worker (rule34 input keeps
         // its own add-tag-on-Enter handler, so it's excluded here)
         const ENTER_TO_WORKER = {
-            zeroTag: 'zero', waifuTag: 'waifu', safeTag: 'safe',
+            zeroTag: 'zero', safeTag: 'safe',
             gelbooruTag: 'gelbooru', gsbooruTag: 'gsbooru', yandeTag: 'yande',
             danTag: 'dan', konaTag: 'kona', sankakuTag: 'sankaku',
             animeDlTag: 'anime_dl', pinterestTag: 'pinterest', pixivTag: 'pixiv',

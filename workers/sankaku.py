@@ -1,7 +1,13 @@
-import os
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir, media_subdir
+import os
 
+from workers import (
+    BaseWorker,
+    folder_component,
+    media_subdir,
+    safe_ensure_dir,
+    sanitize_filename,
+)
 
 API_BASE = "https://sankakuapi.com"
 
@@ -31,7 +37,7 @@ class SankakuWorker(BaseWorker):
 
         clean_tag = " ".join(t for t in self.original_tag.split() if not t.startswith('-'))
         # Prohibited characters (colon, slashes, etc.) are safely stripped
-        self.safe_tag = sanitize_path_component(clean_tag, fallback="")
+        self.safe_tag = folder_component(clean_tag, fallback="")
         self.tag_dir = os.path.join(self.site_root, self.safe_tag) if self.safe_tag else self.site_root
         safe_ensure_dir(self.tag_dir)
 
@@ -75,14 +81,21 @@ class SankakuWorker(BaseWorker):
 
         return session
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None):
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, source_md5=None):
         if artists is None: artists = []
         if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
+            return False
+        if not self._claim_source_md5(filepath, source_md5, tags_list, artists,
+                                      characters, copyrights, metadata_tags):
             return False
         self.queued_items.add(filename)
         self.enqueued_count += 1
         # Download immediately — Sankaku signed URLs expire before queued download starts
-        return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+        try:
+            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+        finally:
+            # no worker loop owns this item — the outcome is known right here
+            self._release_source_claims((filepath,))
 
     def _tags_param(self):
         # live-verified: sankaku's API honors '-tag' exclusion
@@ -184,7 +197,7 @@ class SankakuWorker(BaseWorker):
 
                 filename = sanitize_filename(f"{post.get('id')}.{ext}", fallback=f"sankaku_{post.get('id', 'item')}.jpg")
 
-                rating_label = sanitize_path_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
+                rating_label = folder_component(self.rating_map.get(post_rating, "Unknown"), fallback="Unknown")
                 subfolder = "books" if post.get("in_visible_pool") else media_subdir(ext)
                 rating_dir = os.path.join(self.tag_dir, rating_label, subfolder)
                 if rating_dir not in made_dirs:
@@ -206,7 +219,7 @@ class SankakuWorker(BaseWorker):
                     copyrights = []
                     metadata_tags = []
 
-                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags):
+                if await self.enqueue_download(url, filepath, filename, tags_list, artists, characters, copyrights, metadata_tags, source_md5=post.get("md5")):
                     collected_count += 1
                     had_valid = True
 

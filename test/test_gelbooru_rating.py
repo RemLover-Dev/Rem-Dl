@@ -2,7 +2,6 @@ import pytest
 
 from workers.gelbooru import GelbooruWorker
 
-
 NET_CONFIG = {
     "anti_ban_pause": 0.0,
     "download_retries": 1,

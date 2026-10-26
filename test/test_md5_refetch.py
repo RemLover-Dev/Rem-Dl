@@ -182,7 +182,7 @@ def test_progress_is_checkpointed_so_a_shutdown_loses_at_most_ten(monkeypatch):
     saves = []
 
     refetch.refetch_entries(_entries(12), caches=CACHES, embed=False,
-                            checkpoint=lambda: saves.append(1))
+                            checkpoint=lambda batch: saves.append(1))
 
     assert len(saves) == 2            # every 10, plus the one on the way out
 
@@ -202,7 +202,7 @@ def test_ctrl_c_keeps_what_was_already_fetched(monkeypatch):
 
     stats = refetch.refetch_entries(_entries(5), caches=CACHES, embed=False,
                                     progress=seen.append,
-                                    checkpoint=lambda: saves.append(1))
+                                    checkpoint=lambda batch: saves.append(1))
 
     assert stats["refetched"] == 2            # the two that completed
     assert saves == [1]                       # flushed before returning
@@ -214,7 +214,7 @@ def test_dry_run_never_writes_the_gallery(monkeypatch):
     saves = []
 
     stats = refetch.refetch_entries(_entries(3), dry=True, caches=CACHES,
-                                    embed=False, checkpoint=lambda: saves.append(1))
+                                    embed=False, checkpoint=lambda batch: saves.append(1))
 
     assert stats["refetched"] == 3
     assert saves == []
@@ -234,7 +234,7 @@ def test_ctrl_c_stops_after_the_current_entry(monkeypatch):
 
     stats = refetch.refetch_entries(_entries(5), caches=CACHES, embed=False,
                                     progress=seen.append,
-                                    checkpoint=lambda: seen.append("SAVE"))
+                                    checkpoint=lambda batch: seen.append("SAVE"))
 
     assert stats["refetched"] == 1               # only the in-flight one
     assert any("interrupted" in line for line in seen)

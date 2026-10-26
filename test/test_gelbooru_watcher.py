@@ -11,10 +11,12 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import Rems_Dl  # noqa: E402
-import core.notifications as notifications  # noqa: E402
-import core.watchers as watchers  # noqa: E402
-from workers.gelbooru import build_query  # noqa: E402
+import Rems_Dl
+from core import (
+    notifications,
+    watchers,
+)
+from workers.gelbooru import build_query
 
 for _k, _v in _env_before.items():
     if _v is None:
@@ -195,7 +197,7 @@ def test_cap_hit_error_keeps_checkpoint_and_resumes(store):
 
     # checkpoint is deep below; feed never reaches it within the cap
     pages = {pid: [_post(10000 - pid * 100 - i) for i in range(100)]
-             for pid in range(0, 10)}
+             for pid in range(10)}
     calls = []
     res = _check(pages, w, calls)
     assert res["error"].startswith("Too many new posts")

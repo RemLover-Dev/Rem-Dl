@@ -1,0 +1,10 @@
+# Artifact evidence numbers (pre-conversion / current)
+on-disk jpg (pre-conversion):   2840x4125  12441944 B  sha256 7795eeaa0c942b84abf4e1e90008c4999e19edc1824a1fe5d7518d052221ba81
+file/.jpg   200 image/jpeg                  12441944 B  sha256 7795eeaa0c942b84abf4e1e90008c4999e19edc1824a1fe5d7518d052221ba81  (byte-identical)
+display/.jpg 200 image/jpeg 1763x2560          742763 B  sha256 7c2b5222a67b2a00085518ab737d9527bd82a040c69378290ce2d19bd0a34b2a  (regen identical, diff bbox None)
+display cache entry: dc6e45ea1106065e.jpg  preserved + restored byte-exact
+current jxl: 9.8MB (9500-ish see jxl file)  sha256 b42a9c779b75475e73696207f4dec8c01d0d2e4377521fa62cde7bde732b299b
+  record: encoding=jpeg original_name=11421060.jpg (lossless transcode, restorable)
+file/.jxl   200 image/png    (browser_png)  16191765 B  sha256 9052edde545dbdc25249b66d9f0c3e34bba7b01aaab9db4609f832a9e023924f
+display/.jxl 200 image/jpeg 1763x2560          742763 B  sha256 7c2b5222a67b2a00085518ab737d9527bd82a040c69378290ce2d19bd0a34b2a  (bit-identical pre-conversion)
+jxl-decode-vs-browser_png lace-crop pixel hash equal: 8486e9a95ee536116fb92bc17cdc1d12b0f517b85c1451338c507741e96ecabf

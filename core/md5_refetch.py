@@ -162,8 +162,13 @@ def _posts(payload):
         return payload
     if isinstance(payload, dict):
         for key in ("post", "posts", "data", "results", "items"):
-            if isinstance(payload.get(key), list):
-                return payload[key]
+            v = payload.get(key)
+            if isinstance(v, list):
+                return v
+            if isinstance(v, dict):
+                # gelbooru returns a bare dict for a single-result page —
+                # the common case for an md5/id lookup
+                return [v]
     return []
 
 
@@ -223,9 +228,12 @@ def miss_count(img):
         return 0
 
 
-def worth_trying(img):
-    """Bare, on an md5-capable site, and not already known to be absent."""
-    return (is_bare(img) and supports(img.get("site", ""))
+def worth_trying(img, tags=None):
+    """Bare, on an md5-capable site, and not already known to be absent.
+
+    `tags` lets a caller that just bulk-read a chunk pass what it already
+    has; omit it and the store is asked."""
+    return (is_bare(img, tags) and supports(img.get("site", ""))
             and miss_count(img) < MISS_LIMIT)
 
 
@@ -246,9 +254,12 @@ def clear_stale_md5_misses(images):
     return dropped
 
 
-def is_bare(img):
+def is_bare(img, tags=None):
     """Folder-name-only entry (or no tags at all) — the rescan signature."""
-    tags = img.get("tags")
+    if tags is None:
+        # the resident gallery list carries no tags: an unqualified
+        # img.get("tags") would report every entry as bare
+        tags = shared.entry_tags(img)
     if not isinstance(tags, dict):
         return True
     return _count(tags) <= 1
@@ -298,26 +309,30 @@ def _upgrade(path, post):
 
 
 def refetch_entries(entries, *, dry=False, embed=True, caches=None, progress=None,
-                    checkpoint=None, fullsize=False):
+                    checkpoint=None, fullsize=False, tags_map=None):
     """Recover tags for entries whose only tag is the folder name.
 
     Mutates each entry's tags in place (the caller owns the gallery dict and
     saves it). Returns a Counter: refetched / unsupported / no_md5 /
     not_found / failed / empty. progress() gets one line per entry;
-    checkpoint() is called every CHECKPOINT_EVERY mutations and again on the
-    way out, so an interrupted run keeps what it already fetched."""
+    checkpoint(mutated_entries) is called every CHECKPOINT_EVERY mutations
+    and again on the way out, so an interrupted run keeps what it already
+    fetched. tags_map is a bulk-read {id: tags} the caller already has —
+    without it every is_bare() re-query is one SELECT per entry."""
     stats = Counter()
     caches = shared.load_tag_caches() if caches is None else caches
     total = len(entries)
     started = time.monotonic()
-    pending = 0
+    mutated = []
     interrupted = False
 
     def _commit():
-        nonlocal pending
-        if checkpoint and pending:
-            checkpoint()
-            pending = 0
+        # partial save: the full-replace save_gallery rewrote every row and
+        # dropped the search index each checkpoint — on a 20k-entry heal that
+        # was ~2000 complete table rewrites for 10 entries of progress each
+        if checkpoint and mutated:
+            checkpoint(mutated)
+            mutated.clear()
 
     try:
         for idx, img in enumerate(entries, 1):
@@ -348,9 +363,9 @@ def refetch_entries(entries, *, dry=False, embed=True, caches=None, progress=Non
                             # blip); a second consecutive miss retires the entry —
                             # but only a bare candidate (a tagged entry that's gone
                             # needs no retiring: it is never asked again anyway)
-                            if not dry and is_bare(img):
+                            if not dry and is_bare(img, tags_map.get(_gid(img)) if tags_map is not None else None):
                                 img["md5_misses"] = miss_count(img) + 1
-                                pending += 1
+                                mutated.append(img)
                         else:
                             tags = _buckets(post, site, caches)
                             if not _count(tags):
@@ -360,6 +375,7 @@ def refetch_entries(entries, *, dry=False, embed=True, caches=None, progress=Non
                                 if not dry:
                                     img.pop("md5_misses", None)
                                     img["tags"] = tags
+                                    mutated.append(img)
                                     path = os.path.join(shared.MASTER_FOLDER,
                                                         img.get("filepath") or "")
                                     if fullsize:
@@ -374,9 +390,8 @@ def refetch_entries(entries, *, dry=False, embed=True, caches=None, progress=Non
                                             detail = str(e)
                                     elif embed:
                                         _embed(path, tags, site)
-                                    pending += 1
             stats[outcome] += 1
-            if pending >= CHECKPOINT_EVERY:
+            if len(mutated) >= CHECKPOINT_EVERY:
                 _commit()
             if progress:
                 progress(_line(idx, total, site, outcome, stats, started, detail))
@@ -398,20 +413,30 @@ def _line(idx, total, site, outcome, stats, started, detail=""):
     return f"{line}  {detail}" if detail else line
 
 
+def _gid(img):
+    return img.get("id") or img.get("filename")
+
+
 def refetch_gallery_bare(limit=None, dry=False, entries=None, progress=None,
                          fullsize=False):
     """Load the gallery, refetch every worth-trying entry, save it."""
     gallery = shared.load_gallery()
-    if entries is None:
-        entries = [i for i in gallery.get("images", []) if worth_trying(i)]
-    else:
-        entries = [i for i in entries if worth_trying(i)]
+    candidates = gallery.get("images", []) if entries is None else entries
+    # one bulk tag read instead of one SELECT per candidate (2 x 20k point
+    # queries on a 20k-entry heal vs 40 chunked reads)
+    ids = [_gid(i) for i in candidates]
+    tagmap = {}
+    for start in range(0, len(ids), shared._TAG_CHUNK):
+        tagmap.update(shared.gallery_tags_for(ids[start:start + shared._TAG_CHUNK]))
+    entries = [i for i in candidates if worth_trying(i, tagmap.get(_gid(i)))]
     if limit:
         entries = entries[:limit]
     # checkpointed saves, not one at the end: a shutdown mid-run keeps the
     # tags it already fetched instead of starting the next launch from zero
     stats = refetch_entries(entries, dry=dry, progress=progress, fullsize=fullsize,
-                            checkpoint=None if dry else (lambda: shared.save_gallery(gallery)))
+                            tags_map=tagmap,
+                            checkpoint=None if dry
+                            else (lambda batch: shared.save_gallery_partial(batch)))
     return stats
 
 
@@ -426,14 +451,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # the app loads .env at import; a standalone run has to do it itself
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"), interpolate=False)
     progress = None if args.quiet else (lambda msg: print(msg, flush=True))
     # only the CLI installs this: the app imports the module and keeps its own
     # signal disposition (the flag stops us after the current entry, with a
     # checkpoint and a summary, instead of dying mid-write)
     signal.signal(signal.SIGINT, _request_stop)
     gallery = shared.load_gallery()
-    clear_stale_md5_misses(gallery.get("images", []))
+    dropped = clear_stale_md5_misses(gallery.get("images", []))
     bare = [i for i in gallery.get("images", []) if is_bare(i)]
     no_api = sum(1 for i in bare if not supports(i.get("site", "")))
     absent = sum(1 for i in bare
@@ -460,7 +485,11 @@ def main(argv=None):
     stats = refetch_entries([*todo, *extra], dry=args.dry, progress=progress,
                             fullsize=args.fullsize,
                             checkpoint=None if args.dry
-                            else (lambda: shared.save_gallery(gallery)))
+                            else (lambda batch: shared.save_gallery_partial(batch)))
+    if not args.dry and dropped and not todo and not extra:
+        # the miss pops above are the only mutation this run made — without
+        # this save every future launch re-does the same stale-miss sweep
+        shared.save_gallery(gallery)
     elapsed = time.monotonic() - started
     print(f"done in {elapsed:.0f}s: " +
           ", ".join(f"{k} {v}" for k, v in sorted(stats.items())), flush=True)

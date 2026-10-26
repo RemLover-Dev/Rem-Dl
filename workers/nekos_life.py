@@ -1,6 +1,7 @@
-import os
 import asyncio
-from workers import BaseWorker, sanitize_path_component, sanitize_filename, safe_ensure_dir
+import os
+
+from workers import BaseWorker, folder_component, safe_ensure_dir, sanitize_filename
 
 GIF_ONLY = {"ngif", "hug", "pat", "cuddle", "tickle", "feed", "slap", "kiss", "smug"}
 STATIC_ONLY = {"gecg", "meow", "neko", "lewd", "gasm", "8ball", "avatar", "woof", "fox_girl", "waifu"}
@@ -11,7 +12,7 @@ class NekosLifeWorker(BaseWorker):
     def __init__(self, category, amount, net_config, fmt="both"):
         super().__init__("nekos_life", "Nekos.life", amount, net_config)
         self.category = category
-        self.safe_category = sanitize_path_component(category, fallback="neko")
+        self.safe_category = folder_component(category, fallback="neko")
         self.fmt = fmt
 
         self.gifs_root = os.path.join(self.site_root, "Gifs")
@@ -66,11 +67,7 @@ class NekosLifeWorker(BaseWorker):
             if self.category in MIXED:
                 # continue targets the fetch loop — without a pause a filtered
                 # response turns into a tight no-sleep API loop
-                if self.fmt == "gif" and not is_gif:
-                    if not self.stop_event.is_set():
-                        await asyncio.sleep(self.anti_ban_pause)
-                    continue
-                elif self.fmt == "image" and is_gif:
+                if self.fmt == "gif" and not is_gif or self.fmt == "image" and is_gif:
                     if not self.stop_event.is_set():
                         await asyncio.sleep(self.anti_ban_pause)
                     continue

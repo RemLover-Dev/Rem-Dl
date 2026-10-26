@@ -4,11 +4,13 @@ import os
 
 block_cipher = None
 
-# Files and directories to bundle with the application
+# Files and directories to bundle with the application.
+# NOT database/: bundling it ships the developer's personal libraries
+# (gallery.db, dedup.sqlite3, watchers, history…) into every published
+# installer; the app creates a fresh database dir at runtime.
 added_files = [
     ('web', 'web'),
     ('icon', 'icon'),
-    ('database', 'database'),
     ('.env.example', '.'),
 ]
 
@@ -42,6 +44,13 @@ hidden_imports = [
     'core.database',
     'core.shared',
     'core.dedup_store',
+    'core.notifications',
+    'core.watchers',
+    'core.preview_cache',
+    'core.md5_refetch',
+    'core.pixiv_notify',
+    'core.extensions',
+    'core.extension_downloader',
     'workers',
 ]
 

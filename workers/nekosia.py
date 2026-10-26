@@ -1,6 +1,13 @@
-import os
 import asyncio
-from core.shared import BaseDownloader, sanitize_path_component, sanitize_filename, safe_ensure_dir
+import os
+
+from core.shared import (
+    BaseDownloader,
+    folder_component,
+    safe_ensure_dir,
+    sanitize_filename,
+)
+
 
 class NekosiaWorker(BaseDownloader):
     def __init__(self, tag, amount, rating, net_config):
@@ -14,9 +21,9 @@ class NekosiaWorker(BaseDownloader):
         self.rating = rating or "safe"
         self.rating_label = {"safe": "Safe", "sensitive": "Sensitive"}.get(self.rating.lower(), "Safe")
         self.api_base = "https://api.nekosia.cat/api/v1/images"
-        safe_tag_folder = sanitize_path_component(self.tag, fallback="catgirl")
+        safe_tag_folder = folder_component(self.tag, fallback="catgirl")
         self.tag_dir = os.path.join(self.site_root, safe_tag_folder)
-        safe_rating_label = sanitize_path_component(self.rating_label, fallback="Safe")
+        safe_rating_label = folder_component(self.rating_label, fallback="Safe")
         self.rating_dir = os.path.join(self.tag_dir, safe_rating_label)
         safe_ensure_dir(self.rating_dir)
 

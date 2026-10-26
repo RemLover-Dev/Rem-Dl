@@ -19,7 +19,7 @@ _ENV_KEYS = [
 ]
 _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
-import Rems_Dl  # noqa: E402
+import Rems_Dl
 
 for _k, _v in _env_before.items():
     if _v is None:
@@ -27,7 +27,7 @@ for _k, _v in _env_before.items():
     else:
         os.environ[_k] = _v
 
-from core import shared  # noqa: E402
+from core import gallery_store, shared
 
 FOLDER = "someartist_(x)"
 
@@ -36,10 +36,13 @@ FOLDER = "someartist_(x)"
 def lib(tmp_path, monkeypatch):
     (tmp_path / "gelbooru" / FOLDER).mkdir(parents=True)
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
-    monkeypatch.setattr(shared, "GALLERY_FILE", str(tmp_path / "gallery.json"))
     monkeypatch.setattr(shared, "_gallery_cache",
-                        {"data": {"images": []}, "filenames": set(), "dirty": 0})
-    return tmp_path
+                        {"data": {"images": []}, "filenames": set(), "by_fn": {}})
+    # per-test store: these tests insert real rows, and a shared one would
+    # let one test's tags answer another test's lookup
+    gallery_store.use_store_path(str(tmp_path / "gallery.db"))
+    yield tmp_path
+    gallery_store.use_store_path(None)
 
 
 def _jpg(lib, name, tags, artists, copyright_=None):
@@ -156,8 +159,9 @@ def test_download_tags_beat_a_scan_placeholder(lib):
 
     images = [i for i in shared.load_gallery()["images"] if i["filename"] == fn]
     assert len(images) == 1
-    assert set(images[0]["tags"]["tag"]) == {"blue_hair", "1girl"}
-    assert images[0]["tags"]["character"] == ["rem"]
+    tags = shared.entry_tags(images[0])
+    assert set(tags["tag"]) == {"blue_hair", "1girl"}
+    assert tags["character"] == ["rem"]
 
 
 def test_a_download_of_an_already_tagged_file_changes_nothing(lib):
@@ -173,40 +177,44 @@ def test_a_download_of_an_already_tagged_file_changes_nothing(lib):
                           ["blue_hair"], [FOLDER])
 
     entry = next(i for i in shared.load_gallery()["images"] if i["filename"] == fn)
-    assert entry["tags"]["tag"] == ["1girl", "smile"]
+    assert shared.entry_tags(entry)["tag"] == ["1girl", "smile"]
     assert entry["favourite"] is True
 
 
 def test_an_exit_persists_the_batched_writes(tmp_path):
-    """Nothing saved explicitly: the process must flush on its own way out.
+    """Nothing saved explicitly: a process that dies must not have lost it.
 
-    A download batched 1-9 records deep, then a Ctrl-C or a CLI run ending —
-    without this the records vanished and the next scan rebuilt them
-    folder-name-only."""
+    Both stores commit as they are written, so there is no batch left for
+    atexit to flush — and if either write ever goes lazy again, the next scan
+    rebuilds the record folder-name-only and the tags are gone."""
     import json
+    import sqlite3
     import subprocess
     import sys
 
-    gallery_file = tmp_path / "gallery.json"
-    hist_file = tmp_path / "image_history.json"
+    gallery_db = tmp_path / "gallery.db"
     script = f"""
 import core.shared as s
-import core.database as d
 from core.database import DatabaseManager
-s.GALLERY_FILE = {str(gallery_file)!r}
-d.IMAGE_HISTORY_FILE = {str(hist_file)!r}
+from core.gallery_store import use_store_path
+use_store_path({str(gallery_db)!r})
 s.load_gallery()
 s.add_to_gallery("gelbooru", "a.jpg", "gelbooru/x/a.jpg", ["blue_hair"], ["artist_x"])
 DatabaseManager.add_image_history("gelbooru", "a.jpg", ["blue_hair"], ["artist_x"])
-# no save_gallery / flush_image_history call: atexit has to do it
+# no save_gallery / flush_image_history call: the exit has to find it there
 """
     subprocess.run([sys.executable, "-c", script], check=True,
                    cwd=shared.BASE_DIR, timeout=60)
 
-    gallery = json.loads(gallery_file.read_text())
-    assert gallery["images"][0]["tags"]["tag"] == ["blue_hair"]
-    history = json.loads(hist_file.read_text())
-    assert history[0]["tags"]["tag"] == ["blue_hair"]
+    con = sqlite3.connect(gallery_db)
+    tags = [r[0] for r in con.execute(
+        "SELECT tag FROM gallery_tags WHERE bucket='tag'")]
+    hist = [r[0] for r in con.execute(
+        "SELECT tags FROM image_history ORDER BY seq DESC LIMIT 1")]
+    con.close()
+    assert "blue_hair" in tags, "gallery record lost on exit"
+    assert hist, "history record lost on exit"
+    assert json.loads(hist[0])["tag"] == ["blue_hair"]
 
 
 def test_sigterm_flushes_before_dying():

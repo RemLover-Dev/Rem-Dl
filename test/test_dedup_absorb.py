@@ -4,17 +4,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import shared
+from core import gallery_store, shared
 
 
 @pytest.fixture
 def lib(tmp_path, monkeypatch):
     (tmp_path / "pixiv" / "art").mkdir(parents=True)
-    monkeypatch.setattr(shared, "GALLERY_FILE", str(tmp_path / "gallery.json"))
     monkeypatch.setattr(shared, "MASTER_FOLDER", str(tmp_path))
     monkeypatch.setattr(shared, "_gallery_cache",
-                        {"data": {"images": []}, "filenames": set(), "dirty": 0})
-    return tmp_path
+                        {"data": {"images": []}, "filenames": set(), "by_fn": {}})
+    gallery_store.use_store_path(str(tmp_path / "gallery.db"))
+    yield tmp_path
+    gallery_store.use_store_path(None)
 
 
 def _original(lib, filename="a.jpg"):
@@ -34,8 +35,9 @@ def test_absorb_unions_tags_and_appends_source(lib):
 
     img = shared._gallery_cache["data"]["images"][0]
     assert img["sources"] == ["pixiv", "danbooru"]
-    assert img["tags"]["tag"] == ["blue_hair", "red_hair"]
-    assert img["tags"]["artist"] == ["alice", "bob"]
+    tags = shared.entry_tags(img)
+    assert tags["tag"] == ["blue_hair", "red_hair"]
+    assert tags["artist"] == ["alice", "bob"]
     # primary site untouched — filters, folders and cards all read it
     assert img["site"] == "pixiv"
 
@@ -47,8 +49,9 @@ def test_absorb_is_idempotent(lib):
 
     img = shared._gallery_cache["data"]["images"][0]
     assert img["sources"] == ["pixiv", "danbooru"]
-    assert img["tags"]["tag"] == ["blue_hair", "red_hair"]
-    assert img["tags"]["artist"] == ["alice", "bob"]
+    tags = shared.entry_tags(img)
+    assert tags["tag"] == ["blue_hair", "red_hair"]
+    assert tags["artist"] == ["alice", "bob"]
 
 
 def test_absorb_collects_third_site(lib):
@@ -58,7 +61,7 @@ def test_absorb_collects_third_site(lib):
 
     img = shared._gallery_cache["data"]["images"][0]
     assert img["sources"] == ["pixiv", "danbooru", "zerochan"]
-    assert img["tags"]["tag"] == ["blue_hair", "t1", "t2"]
+    assert shared.entry_tags(img)["tag"] == ["blue_hair", "t1", "t2"]
 
 
 def test_absorb_matches_by_filename_when_filepath_empty(lib):

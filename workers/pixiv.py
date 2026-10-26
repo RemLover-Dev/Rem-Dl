@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 # Adapted from gallery-dl (https://github.com/mikf/gallery-dl)
 # Original: gallery_dl/extractor/pixiv.py  |  gallery_dl/text.py
@@ -17,28 +16,40 @@
 # CLI/config/Job/postprocessor machinery, switched to the shared session
 # proxy/TLS framework, added ugoira-to-GIF conversion via Pillow.
 
-import os
-import io
-import time
-import hashlib
-import zipfile
 import asyncio
-from datetime import datetime
+import hashlib
+import io
+import os
+import time
+import zipfile
+from datetime import datetime, timezone
 from urllib.parse import unquote
-from PIL import Image
-import requests
 
-from core.shared import (
-    BaseDownloader, save_history, add_to_gallery, send_tags,
-    check_duplicate, absorb_duplicate, MASTER_FOLDER, sanitize_path_component,
-    sanitize_filename, safe_ensure_dir, media_subdir, pace_session
-)
+import requests
+from PIL import Image
+
 from core.pixiv_notify import _log_token_hint  # token steps, logged once per app run
+from core.shared import (
+    MASTER_FOLDER,
+    BaseDownloader,
+    absorb_duplicate,
+    add_to_gallery,
+    check_duplicate,
+    folder_component,
+    media_subdir,
+    pace_session,
+    safe_ensure_dir,
+    sanitize_filename,
+    save_history,
+    send_tags,
+)
 
 CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
 HASH_SECRET = "28c1fdd170a5204386cb1313c7077b34f83e4aaf4aa829ce78c231e05b0bae2c"
 RATING_CODES = {0: "General", 1: "R18", 2: "R18G"}
+# gallery-canonical rating per x_restrict — R18 is pixiv's questionable tier
+RATING_CANON = {0: "safe", 1: "questionable", 2: "explicit"}
 
 
 class PixivAppAPI:
@@ -77,7 +88,7 @@ class PixivAppAPI:
             "refresh_token": self.refresh_token,
             "get_secure_url": "1",
         }
-        ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         headers = {
             "X-Client-Time": ts,
             "X-Client-Hash": hashlib.md5(
@@ -186,7 +197,7 @@ class PixivWorker(BaseDownloader):
         if self.net_config.get("use_proxy"):
             p = self.net_config.get("proxy_url")
             self.api_session.proxies = {"http": p, "https": p}
-        self.api_session.verify = self.net_config.get("verify_tls", False)
+        self.api_session.verify = self.net_config.get("verify_tls", True)
         # login/_call/ugoira zip all funnel through this session — pace it
         pace_session(self.api_session)
 
@@ -209,8 +220,8 @@ class PixivWorker(BaseDownloader):
             kept = " ".join(w for w in words if not w.startswith("-"))
             if self.exclude_tags and kept:
                 self.value = kept
-        safe_mode = sanitize_path_component(self.mode, fallback="artworks")
-        safe_value = sanitize_path_component(self.value, fallback="pixiv")
+        safe_mode = folder_component(self.mode, fallback="artworks")
+        safe_value = folder_component(self.value, fallback="pixiv")
         self.tag_dir = os.path.join(self.site_root, safe_mode, safe_value)
         safe_ensure_dir(self.tag_dir)
 
@@ -239,10 +250,21 @@ class PixivWorker(BaseDownloader):
         MAX_PAGES = 100
         while (need == 0 or collected < need) and not self.stop_event.is_set() and page < MAX_PAGES:
             try:
-                data = await asyncio.to_thread(api._call, endpoint, params)
-            except ValueError as e:
-                self.log(f"Auth error: {e}")
-                return
+                # ponytail: 3 attempts — a transient API blip must not kill
+                # a whole 50-item run; auth ValueError stays fatal
+                for attempt in range(3):
+                    try:
+                        data = await asyncio.to_thread(api._call, endpoint, params)
+                        break
+                    except ValueError as e:
+                        self.log(f"Auth error: {e}")
+                        return
+                    except Exception as e:
+                        if attempt == 2:
+                            self.log(f"API error: {e}")
+                            return
+                        self.log(f"API error (attempt {attempt + 1}/3): {e}")
+                        await asyncio.sleep(2 * (attempt + 1))
             except Exception as e:
                 self.log(f"API error: {e}")
                 return
@@ -257,7 +279,10 @@ class PixivWorker(BaseDownloader):
             for page_i, work in enumerate(works):
                 if self.stop_event.is_set() or (need and collected >= need):
                     break
-                collected += await self._process_work(work)
+                # pass the running headroom down: a 40-page manga work must
+                # not march past the quota on its own file list
+                collected += await self._process_work(
+                    work, (need - collected) if need else 0)
                 if page_i + 1 < len(works) and (need == 0 or collected < need):
                     await asyncio.sleep(self.anti_ban_pause)
             if need and collected >= need:
@@ -280,7 +305,8 @@ class PixivWorker(BaseDownloader):
         if collected:
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
-    async def _process_work(self, work):
+    async def _process_work(self, work, allowance=0):
+        """allowance = running headroom (0 = unlimited) for the per-file loop."""
         work_id = work.get("id")
         if not work_id:
             return 0
@@ -327,7 +353,7 @@ class PixivWorker(BaseDownloader):
 
         for file_info in files:
             if self.stop_event.is_set(): break
-            if self.amount > 0 and count >= self.amount: break
+            if allowance > 0 and count >= allowance: break
 
             url = file_info["url"]
             ext = file_info.get("ext")
@@ -335,20 +361,22 @@ class PixivWorker(BaseDownloader):
             suffix = f"_p{num:02}" if num > 0 else ""
             filename = sanitize_filename(f"{work_id}{suffix}.{ext}", fallback=f"pixiv_{work_id}{suffix}.jpg")
 
-            rating_label = sanitize_path_component(RATING_CODES.get(x_restrict, "Unknown"), fallback="Unknown")
+            rating_label = folder_component(RATING_CODES.get(x_restrict, "Unknown"), fallback="Unknown")
             # ugoira zips become .gif below — route them with the gif, not the zip
             rating_dir = os.path.join(self.tag_dir, rating_label,
-                                      "gifs" if is_u else media_subdir(ext))
+                                      "Gifs" if is_u else media_subdir(ext))
             safe_ensure_dir(rating_dir)
             filepath = os.path.join(rating_dir, filename)
 
             if is_u and ext == "zip":
-                ok = await self._process_ugoira(work_id, tags, artists, rating_dir)
+                ok = await self._process_ugoira(work_id, tags, artists, rating_dir,
+                                                RATING_CANON.get(x_restrict, "safe"))
                 if ok: count += 1
                 continue
 
             if await self.enqueue_download(url, filepath, filename,
-                                           tags, artists):
+                                           tags, artists,
+                                           rating=RATING_CANON.get(x_restrict, "safe")):
                 count += 1
 
         return count
@@ -380,12 +408,12 @@ class PixivWorker(BaseDownloader):
         is_ugoira = work.get("type") == "ugoira"
 
         if is_ugoira:
-            return [{"url": url, "ext": "zip", "num": 0, "_ugoira": True}]
+            return [{"url": url, "ext": "zip", "num": 0}]
 
         return [{"url": url, "ext": ext, "num": 0}]
 
     async def _process_ugoira(self, work_id, tags,
-                              artists, rating_dir):
+                              artists, rating_dir, rating):
         try:
             api = self._api_instance()
             meta = await asyncio.to_thread(api.ugoira_meta, work_id)
@@ -433,7 +461,7 @@ class PixivWorker(BaseDownloader):
             self.dl_history.add(gif_name)
             await asyncio.to_thread(save_history, self.site_root, self.dl_history)
             rel = os.path.relpath(gif_path, MASTER_FOLDER)
-            await asyncio.to_thread(add_to_gallery, self.name, gif_name, rel, tags, artists)
+            await asyncio.to_thread(add_to_gallery, self.name, gif_name, rel, tags, artists, rating=rating)
             await asyncio.to_thread(send_tags, self.name, gif_name, tags, artists, rel)
             self.log(f"[SUCCESS] Ugoira -> GIF: {gif_name}")
             return True

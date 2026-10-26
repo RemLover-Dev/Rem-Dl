@@ -1,5 +1,5 @@
-import os
 import asyncio
+import os
 
 try:
     from workers import BaseWorker
@@ -8,14 +8,14 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from workers import BaseWorker
 
+from core.database import DATABASE_DIR, DatabaseManager
 from core.shared import (
-    sanitize_path_component,
-    sanitize_filename,
-    safe_ensure_dir,
-    media_subdir,
     TAG_TYPE_MAP,
+    folder_component,
+    media_subdir,
+    safe_ensure_dir,
+    sanitize_filename,
 )
-from core.database import DatabaseManager, DATABASE_DIR
 
 POSTS_API = "https://gsbooru.org/api/posts"
 TAGS_API = "https://gsbooru.org/api/tags"
@@ -71,7 +71,7 @@ class GsbooruWorker(BaseWorker):
         self.exclude_tags = [t[1:] for t in parts if t.startswith("-") and t[1:]]
         self.api_tag = " ".join(t for t in parts if not t.startswith("-"))
 
-        self.safe_tag_name = sanitize_path_component(self.api_tag, fallback="all")
+        self.safe_tag_name = folder_component(self.api_tag, fallback="all")
 
         self.tag_dir = os.path.join(
             self.site_root,
@@ -321,7 +321,7 @@ class GsbooruWorker(BaseWorker):
                     fallback=f"gsbooru_{post_id}.{ext}"
                 )
 
-                rating_label = sanitize_path_component(
+                rating_label = folder_component(
                     self.rating_label_map.get(
                         word,
                         "Unknown"
@@ -370,7 +370,8 @@ class GsbooruWorker(BaseWorker):
                     artists,
                     characters,
                     copyrights,
-                    metadata_tags
+                    metadata_tags,
+                    source_md5=post.get("md5")
                 ):
                     page_enqueued += 1
 

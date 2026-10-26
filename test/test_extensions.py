@@ -1,9 +1,14 @@
 import json
 import zipfile
+
 import pytest
 
+from core.extension_downloader import (
+    SecurityError,
+    _safe_extract_zip,
+    install_from_local_path,
+)
 from core.extensions import ExtensionManager
-from core.extension_downloader import _safe_extract_zip, SecurityError, install_from_local_path
 from Rems_Dl import app
 
 
@@ -44,7 +49,7 @@ def test_zip_slip_security_prevention(tmp_path):
     with zipfile.ZipFile(str(evil_zip), "w") as zf:
         zf.writestr("../../evil.txt", "malicious payload")
 
-    with pytest.raises(SecurityError, match="Malicious archive member detected"):
+    with pytest.raises(SecurityError, match="Unsafe archive path"):
         _safe_extract_zip(str(evil_zip), str(extract_target))
 
 

@@ -1,7 +1,6 @@
 """Category repair: entries frozen at download time with wrong/missing
 categories are re-sorted from the worker tag caches (healed by later runs)."""
-from core.shared import recategorize_tags, load_tag_caches
-
+from core.shared import load_tag_caches, recategorize_tags
 
 CACHES = {
     "gelbooru": {"old_hag": "character", "chan1": "artist",
@@ -35,14 +34,20 @@ def test_recategorize_demotes_and_is_site_scoped():
     assert not recategorize_tags(None, "gelbooru", CACHES)
 
 
-def test_load_tag_caches_returns_normalized_strings():
+def test_load_tag_caches_returns_normalized_strings(tmp_path, monkeypatch):
+    from core import shared
+
+    db = tmp_path / "database"
+    db.mkdir()
+    (db / "gelbooru_tag_types.json").write_text('{"rem": "character", "blue_hair": 0}')
+    monkeypatch.setattr(shared, "BASE_DIR", str(tmp_path))
     caches = load_tag_caches()
     assert "gelbooru" in caches
     assert all(isinstance(c, str) for c in caches["gelbooru"].values())
 
 
 def test_tag_caches_fingerprint_tracks_changes(tmp_path, monkeypatch):
-    import core.shared as shared
+    from core import shared
 
     db = tmp_path / "database"
     db.mkdir()
@@ -57,7 +62,7 @@ def test_tag_caches_fingerprint_tracks_changes(tmp_path, monkeypatch):
 
 def test_recategorize_all_skips_when_caches_unchanged(tmp_path, monkeypatch):
     """The post-job heal must cost nothing when no worker fetched anything new."""
-    import core.shared as shared
+    from core import shared
 
     db = tmp_path / "database"
     db.mkdir()
