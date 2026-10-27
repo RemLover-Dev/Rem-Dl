@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -7,9 +8,13 @@ import pytest
 import Rems_Dl
 
 H = {"User-Agent": "RemsDlDesktopApp/1.0"}
+HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+requires_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg and ffprobe are required")
 
 
 def _make_mp4(path, audio=True):
+    if not HAVE_FFMPEG:
+        pytest.skip("ffmpeg and ffprobe are required")
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error",
            "-f", "lavfi", "-i", "testsrc2=duration=0.3:size=64x64:rate=10"]
     if audio:
@@ -36,6 +41,7 @@ def client():
         yield c
 
 
+@requires_ffmpeg
 def test_preview_strips_audio(tmp_path):
     from core.preview_cache import preview_path
     src = tmp_path / "with_audio.mp4"
@@ -53,6 +59,7 @@ def test_preview_strips_audio(tmp_path):
     assert len(os.listdir(cache)) == 1
 
 
+@requires_ffmpeg
 def test_evict_removes_cached_preview(tmp_path):
     from core.preview_cache import evict, preview_path
     src = tmp_path / "with_audio.mp4"
@@ -66,6 +73,7 @@ def test_evict_removes_cached_preview(tmp_path):
     assert evict(str(src), str(cache)) is False
 
 
+@requires_ffmpeg
 def test_evict_caches_drops_thumb_and_preview(tmp_path, monkeypatch):
     import Rems_Dl
     from core.preview_cache import preview_path
@@ -85,6 +93,7 @@ def test_evict_caches_drops_thumb_and_preview(tmp_path, monkeypatch):
     assert not os.listdir(pcache)
 
 
+@requires_ffmpeg
 def test_preview_no_audio_returns_original(tmp_path):
     from core.preview_cache import preview_path
     src = tmp_path / "silent.mp4"
@@ -95,6 +104,7 @@ def test_preview_no_audio_returns_original(tmp_path):
     assert not os.path.exists(cache) or not os.listdir(cache)
 
 
+@requires_ffmpeg
 def test_preview_route_range_206(client, tmp_path, monkeypatch):
     import time
 

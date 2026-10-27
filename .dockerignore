@@ -17,10 +17,8 @@ test/
 Rem Dl/
 Rems Dl/
 installer/
-icon/
 hooks/
 *.spec
-requirements.docker.txt
 requirements.txt
 *.db
 *.sqlite3
