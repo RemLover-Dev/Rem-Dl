@@ -252,10 +252,9 @@ async function deletePlanEntry(id) {
     }
 }
 
-// arrow button: APPEND the entry to the matching site tab's queue pills
-// (same flow as typing the tags into that tab's box and pressing Add) —
-// jumpToSite-style replace is wrong for planning, it wipes existing pills;
-// sites without a pill queue fall back to jumpToSite (input prefill)
+// arrow button: queue the entry on the matching site's worker (same as
+// typing the tags there and pressing "Add to queue") — pills are only the
+// staging step; addWorkerToQueue does the emit
 const PLAN_QUEUE_ADD = {
     gelbooru: "addGelbooruTag", dan: "addDanTag", gsbooru: "addGsbooruTag",
     kona: "addKonaTag", yande: "addYandeTag", safe: "addSafeTag", sankaku: "addSankakuTag",
@@ -280,7 +279,7 @@ function queuePlanEntry(id) {
     let tags = String(entry.tags || "").trim();
     const addFn = PLAN_QUEUE_ADD[site];
     const inputId = PLAN_QUEUE_INPUT[site];
-    if (!addFn || !inputId) { jumpToSite(site, tags, entry.rating || ""); return; }
+    if (!addFn || !inputId) { jumpToSite(site, tags, entry.rating || ""); addWorkerToQueue(site); return; }
     // saved AI exclusion lives in the tab's checkbox, never as a pill
     if (site === "gelbooru" || site === "sankaku") {
         const re = site === "gelbooru" ? /-ai[_ ]generated\b/gi : /-ai-created\b/gi;
@@ -292,13 +291,14 @@ function queuePlanEntry(id) {
         renderRule34Tags();
     } else {
         const input = document.getElementById(inputId);
-        if (!input) { jumpToSite(site, tags, entry.rating || ""); return; }
+        if (!input) { jumpToSite(site, tags, entry.rating || ""); addWorkerToQueue(site); return; }
         input.value = tags;
         window[addFn]();
     }
     const rid = RATING_INPUT_BY_WORKER[site];
     if (rid && entry.rating) setSelectValue(document.getElementById(rid), entry.rating);
     _planOpenTab(site);
+    addWorkerToQueue(site);
 }
 
 async function clearPlanningList(mode, msg) {
