@@ -258,6 +258,15 @@ input[type="number"].queue-pos {
 .tab-btn:active { transform: scale(0.98); }
 .notif-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff4757; margin-left: 3px; vertical-align: top; box-shadow: 0 0 4px rgba(255, 71, 87, 0.85); }
 .notif-list { display: flex; flex-direction: column; gap: 10px; }
+/* history ('.hist-item') and planning ('.plan-item') rows hide their
+   compact action buttons until the row is hovered */
+.hist-actions, .plan-actions { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.hist-time { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.hist-item:hover .hist-actions, .plan-item:hover .plan-actions { visibility: visible; opacity: 1; }
+.hist-item:hover .hist-time { visibility: visible; opacity: 0.5; }
+/* archive cards: delete/favourite buttons appear on card hover only */
+.image-card-log .img-card-btn { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.image-card-log:hover .img-card-btn { visibility: visible; opacity: 1; }
 
 /* ===== MAIN CONTENT AREA ===== */
 .tab-container { flex: 1; min-height: 0; overflow: hidden; height: 100%; padding: 2px; }
@@ -795,6 +804,18 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-dropdown-menu .dd-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: #ccc; cursor: pointer; user-select: none; }
 .gallery-dropdown-menu .dd-item:hover { background: rgba(45, 212, 191, 0.12); color: #fff; }
 .gallery-dropdown-menu .dd-item input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; accent-color: #2dd4bf; }
+/* light theme: same panel as the light inputs instead of the hardcoded darks */
+[data-theme="light"] .gallery-dropdown-btn {
+    color: #1a1a2e;
+    background: rgba(255, 255, 255, 0.8);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+[data-theme="light"] .gallery-dropdown-menu {
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+[data-theme="light"] .gallery-dropdown-menu .dd-item { color: #1a1a2e; }
+[data-theme="light"] .gallery-dropdown-menu .dd-item:hover { background: rgba(0, 210, 211, 0.15); color: #000; }
 /* excluded waifu tag: the X lives INSIDE the checkbox, which turns red —
    the row text stays normal so the list doesn't read as one red block */
 .gallery-dropdown-menu .dd-item.dd-excl input[type="checkbox"] {
@@ -1338,8 +1359,8 @@ body { transition: color 0.3s ease; }
 /* ===== SMART HOVER META PANEL ===== */
 .gallery-viewer-meta { position: absolute; bottom: 30px; left: 0; right: 0; width: fit-content; min-width: 320px; max-width: 80%; margin: 0 auto; transform: none; background: rgba(15, 18, 25, 0.92); /* no backdrop-filter: WebKitGTK re-rasterizes the blur surface on the hover height change and everything painted into it blinks */ border: 1px solid transparent; border-radius: 24px; padding: 10px 20px; display: flex; flex-direction: column; z-index: 10010; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.15); /* height only: animating `all` repaints the shadow/background every frame — the expansion crawled on WebKitGTK; opacity keeps focus-mode's fade */ transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease; overflow: hidden; height: 44px; }
 .gallery-viewer-meta:hover { height: 300px; border-radius: 16px; background: rgba(15, 18, 25, 0.98); box-shadow: 0 10px 40px rgba(0, 210, 211, 0.2), 0 0 0 1px var(--title-color); transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
-.g-meta-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 24px; }
-.g-meta-title { font-weight: 600; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; max-width: 480px; }
+.g-meta-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 24px; flex-shrink: 0; line-height: 1; }
+.g-meta-title { font-weight: 600; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; max-width: 480px; display: flex; align-items: center; }
 .g-meta-badges { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .g-meta-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 15px; padding: 15px 4px 4px; border-top: 1px dashed rgba(255,255,255,0.15); overflow-y: auto; height: calc(100% - 40px); opacity: 0; align-content: flex-start; /* no fade: WebKitGTK blinks the fade while the panel's backdrop-filter layer re-rasterizes during the height expansion; the panel's own animation is the entrance */ will-change: opacity; transform: translateZ(0); backface-visibility: hidden; }
 .gallery-viewer-meta:hover .g-meta-tags { opacity: 1; }
@@ -1386,7 +1407,7 @@ body { transition: color 0.3s ease; }
 .tag-eyes { background: rgba(251, 191, 36, 0.15); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4); color: #fbbf24; }
 .tag-eyes:hover { background: #fbbf24; color: #000; box-shadow: 0 0 0 1px #fbbf24; }
 
-.g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-block;}
+.g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-flex; align-items: center; line-height: 1.4; }
 .gallery-viewer-meta:hover .g-expand-hint { display: none; }
 @keyframes gPulse { 0% {opacity: 0.4;} 50% {opacity: 1;} 100% {opacity: 0.4;} }
 
@@ -1795,3 +1816,13 @@ input[type="number"]:focus::-webkit-outer-spin-button {
 .ux-connection { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 29000; display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 40px); width: max-content; box-sizing: border-box; padding: 12px 16px; border-radius: 10px; border: 1px solid #c79847; background: #292215; color: #fff0d2; box-shadow: 0 4px 16px #0004; font-size: 13px; }
 .ux-connection[hidden], .ux-connection button[hidden], #settingsDirtyMark[hidden] { display: none !important; }
 @media (max-width: 600px) { .ux-connection { flex-wrap: wrap; } }
+
+/* extra gallery roots (HDD folders read by the gallery) */
+.gallery-roots-menu { left: auto; right: 0; width: min(420px, 90vw); padding: 10px; }
+.gallery-roots-add { display: flex; gap: 6px; margin-bottom: 8px; }
+.gallery-roots-add input { flex: 1; min-width: 0; background: #0d1117; border: 1px solid rgba(45,212,191,.35); color: #e6e6e6; border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+.gallery-root-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; font-size: 13px; color: #e6e6e6; overflow-wrap: anywhere; }
+.gallery-root-item .gallery-root-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.gallery-root-item button { flex: none; }
+.gallery-root-badge { flex: none; font-size: 11px; font-style: normal; color: #2dd4bf; border: 1px solid rgba(45,212,191,.35); border-radius: 4px; padding: 1px 6px; }
+.gallery-roots-empty { padding: 6px 8px; font-size: 12px; opacity: .75; }

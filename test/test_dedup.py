@@ -94,7 +94,9 @@ class TestDedupStore:
         store.remove_by_filepath(p)
         assert store.count() == 0
 
-    def test_remove_missing_files(self, dedup_env):
+    def test_missing_files_keep_records(self, dedup_env):
+        # moved/deleted files RETAIN their hash records (user request): a
+        # re-added image must keep dedup identity instead of restarting from 0
         store, tmp_dir = dedup_env
         p1 = os.path.join(tmp_dir, "keep.png")
         p2 = os.path.join(tmp_dir, "remove.png")
@@ -105,11 +107,26 @@ class TestDedupStore:
         store.check_and_add(p2)
         assert store.count() == 2
         os.remove(p2)
-        swept = store.remove_missing_files()
-        assert swept == 1
-        assert store.count() == 1
-        # Second run is idempotent
-        assert store.remove_missing_files() == 0
+        missing = store.count_missing_files()
+        assert missing == 1
+        assert store.count() == 2
+        # second sweep is a pure re-comment: same count, rows untouched
+        assert store.count_missing_files() == 1
+        assert store.count() == 2
+
+    def test_retained_record_pruned_when_same_image_readd(self, dedup_env):
+        store, tmp_dir = dedup_env
+        p = os.path.join(tmp_dir, "img.png")
+        img = Image.new("RGB", (220, 220), color=(90, 120, 160))
+        img.save(p)
+        assert not store.check_and_add(p).is_duplicate
+        os.remove(p)
+        same = os.path.join(tmp_dir, "moved_back.png")
+        Image.new("RGB", (220, 220), color=(90, 120, 160)).save(same)
+        # the identical image returns as a NEW file; ghost record pruned so
+        # the re-add is accepted as its own current-path record
+        res = store.check_and_add(same)
+        assert not res.is_duplicate
 
     def test_settings_toggle(self, tmp_path, monkeypatch):
         store = DedupStore(os.path.join(tmp_path, "toggle.sqlite3"))

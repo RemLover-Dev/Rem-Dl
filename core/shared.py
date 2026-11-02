@@ -9,7 +9,6 @@ import zlib
 
 import aiohttp
 
-
 from core.runtime_paths import app_base_dir as _app_base_dir
 
 BASE_DIR = _app_base_dir()
@@ -87,10 +86,28 @@ SITE_CANONICAL = {
     "neko": "nekos.life", "nekos.life": "nekos.life", "nekos_life": "nekos.life",
     "nekos.best": "nekos.best", "nekos_best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
     "anime_dl": "anime_dl", "animepictures": "anime_dl",
+    "x": "twitter", "twitter": "twitter",
 }
 
 def normalize_site(site):
     return SITE_CANONICAL.get(site.lower().strip(), site.lower().strip())
+
+
+# tags on a post that name a site (crosspost source markers like "twitter"/
+# "pixiv") — embedded as extra `site:` lines so the origin chain survives
+# folder moves
+SITE_TAG_NAMES = ({v for v in SITE_CANONICAL.values()} | set(SITE_CANONICAL)
+                  | {"twitter", "fanbox", "patreon"})
+
+
+def extract_site_tags(tags_list, metadata_tags=None, exclude=""):
+    exclude_l = str(exclude or "").strip().lower()
+    out = []
+    for t in list(tags_list or []) + list(metadata_tags or []):
+        tl = str(t).strip().lower()
+        if tl in SITE_TAG_NAMES and tl != exclude_l and t not in out:
+            out.append(t)
+    return out
 
 def sort_tags_by_category(tags_dict):
     """Sort a tags dict by category order. Returns new ordered dict."""
@@ -828,10 +845,13 @@ def _ebml_find_rems(data):
 EMBEDDABLE = (".jxl", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm", ".mov", ".avi", ".mkv")
 
 
-def write_image_metadata(filepath, tags_list, artists, site, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, *, raw_metadata=None):
+def write_image_metadata(filepath, tags_list, artists, site, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, *, extra_sites=None, raw_metadata=None):
     ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''
     tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-    meta_lines = [f"site:{site}"]
+    # one `site:` line per name: primary (download site) first, then extras
+    # the post itself tagged (crosspost sources) — parse order must match
+    sites = [str(s).strip() for s in [site] + list(extra_sites or []) if s and str(s).strip()]
+    meta_lines = [f"site:{s}" for s in dict.fromkeys(sites)]
     for cat in TAG_CATEGORIES:
         for t in tags_dict.get(cat, []):
             meta_lines.append(f"{cat}:{t}")
@@ -1104,6 +1124,96 @@ def read_image_metadata(filepath):
             return _ebml_find_rems(data)
     except Exception as e:
         print(f"Metadata read error on {filepath}: {e}")
+    return None
+
+
+def read_image_metadata_bounded(filepath, window=131072):
+    """Quick-lookup variant of read_image_metadata: reads only the bytes where
+    our metadata lives instead of the whole file — JPEG COM / PNG tEXt / GIF
+    comment are injected near the head, RIFF `Rems` / MP4 `rems` / MKV Tags
+    are appended at the tail, and JXL already streams. Returns the meta text
+    or None. A file whose metadata falls outside the window reads as None
+    (the caller keeps whatever the stored row says) — never a wrong parse."""
+    try:
+        if str(filepath).lower().endswith('.jxl'):
+            from core.jxl_metadata import read_record
+            return (read_record(filepath) or {}).get('text')
+        size = os.path.getsize(filepath)
+        with open(filepath, "rb") as f:
+            head = f.read(min(size, window))
+            if head[:2] == b"\xff\xd8":
+                i, n = 2, len(head)
+                while i + 4 <= n:
+                    if head[i] != 0xFF:
+                        break
+                    marker = head[i + 1]
+                    if marker in (0xD8, 0xD9):
+                        i += 2
+                        continue
+                    seglen = int.from_bytes(head[i + 2:i + 4], "big")
+                    if seglen < 2:
+                        break
+                    if marker == 0xFE:
+                        payload = head[i + 4:i + 2 + seglen]
+                        if payload.startswith(b"Rems_Dl\n"):
+                            return payload[8:].decode("utf-8", "ignore")
+                    if marker == 0xDA:  # SOS — entropy data, no segments after
+                        break
+                    i += 2 + seglen
+                return None
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                i = 8
+                while i + 12 <= len(head):
+                    ln = int.from_bytes(head[i:i + 4], "big")
+                    kind = head[i + 4:i + 8]
+                    body = head[i + 8:i + 8 + ln]
+                    if kind == b"tEXt" and body.startswith(b"Rems_Dl\x00"):
+                        return body[8:].decode("latin-1", "ignore")
+                    if kind == b"iTXt" and body.startswith(b"Rems_Dl\x00"):
+                        parts = body[8:].split(b"\x00", 4)
+                        if len(parts) == 5:
+                            return parts[4].decode("utf-8", "ignore")
+                    if kind == b"IEND":
+                        break
+                    i += 12 + ln
+                return None
+            if head[:4] == b"GIF8":
+                parsed = _gif_blocks(head)
+                if parsed:
+                    for s, e, label in parsed[1]:
+                        if label == 0xFE:
+                            body = _gif_subblocks(head[s + 2:e - 1])
+                            if body.startswith(b"Rems_Dl\n"):
+                                return body[8:].decode("utf-8", "ignore")
+                return None
+            if head[:4] == b"RIFF" or head[4:8] == b"ftyp" or head[:4] == b"\x1a\x45\xdf\xa3":
+                f.seek(max(0, size - window))
+                tail = f.read()
+            else:
+                return None
+    except OSError:
+        return None
+    if head[:4] == b"RIFF" and head[8:12] in (b"WEBP", b"AVI "):
+        k = tail.rfind(b"Rems")
+        while k != -1:
+            ln = int.from_bytes(tail[k + 4:k + 8], "little")
+            body = tail[k + 8:k + 8 + ln]
+            if body.startswith(b"Rems_Dl\n") and 0 < ln <= len(tail) - 8:
+                return body[8:].decode("utf-8", "ignore")
+            k = tail.rfind(b"Rems", 0, k)
+        return None
+    if head[4:8] == b"ftyp":
+        k = tail.rfind(b"rems")
+        while k != -1:
+            start = k - 4
+            if start >= 0:
+                sz = int.from_bytes(tail[start:k], "big")
+                if sz >= 16 and start + sz <= len(tail) and tail[k + 4:k + 12] == b"Rems_Dl\n":
+                    return tail[k + 12:start + sz].decode("utf-8", "ignore")
+            k = tail.rfind(b"rems", 0, k)
+        return None
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return _ebml_find_rems(tail)
     return None
 
 # --- HISTORY SYSTEM ---
@@ -1496,7 +1606,8 @@ class BaseDownloader:
                         # seed the incremental hashes with the bytes already on disk
                         await asyncio.to_thread(
                             _seed_hash_state, part_path, (h_md5, h_sha1, h_sha256))
-                    with open(part_path, 'ab' if resumed else 'wb') as f:
+                    f = await asyncio.to_thread(open, part_path, 'ab' if resumed else 'wb')
+                    try:
                         async for chunk in resp.content.iter_chunked(65536):
                             if self.stop_event.is_set(): break
                             f.write(chunk)
@@ -1510,6 +1621,8 @@ class BaseDownloader:
                                 self._last_progress_emit = now
                                 self._inflight[filepath] = downloaded / total_expected
                                 self._emit_progress()
+                    finally:
+                        await asyncio.to_thread(f.close)
 
                     # ponytail: proxies can drop the tail silently; verify against
                     # Content-Length, or against the enqueue-time HEAD size when the
@@ -1590,7 +1703,7 @@ class BaseDownloader:
                 await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 # ponytail: metadata + gallery publish BEFORE the SUCCESS log — the log card
                 # requests its thumb instantly and would otherwise read a half-written file
-                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, extra_sites=extract_site_tags(tags_list, metadata_tags, self.name))
                 await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
                 self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
                 if post_download_callback is not None:

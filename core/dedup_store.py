@@ -48,9 +48,7 @@ from dataclasses import dataclass
 from PIL import Image, ImageChops, ImageOps
 
 # --- paths, following the same convention as core/database.py -------------
-
 from core.runtime_paths import app_base_dir as _app_base_dir
-
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 DEDUP_DB_FILE = os.path.join(DATABASE_DIR, "dedup.sqlite3")
@@ -382,10 +380,32 @@ def _content_bbox(rgb: Image.Image):
     return diff.point([0] * (BORDER_TOL + 1) + [255] * (255 - BORDER_TOL)).getbbox()
 
 
+# optional callback (path, PIL.Image) executed inside the decode worker while
+# the image is still open — lets the thumbnail pipeline share the dedup decode
+_thumb_hook = None
+
+
+def set_rescan_thumb_hook(fn) -> None:
+    """Register/clear (None) the shared-decode thumbnail builder."""
+    global _thumb_hook
+    _thumb_hook = fn
+
+
 def _load_content(path: str) -> Image.Image:
     """RGB image of just the picture: EXIF-rotated, flattened on white, margins trimmed."""
+
+    hook = _thumb_hook
     with Image.open(path) as img:
         img.load()
+        # one decode, several products: the backfill pass hands the freshly
+        # decoded source to a registered callback (thumbnail builder) so a
+        # cold cache doesn't decode the same 33MP image twice — the signature
+        # job decodes it once, the thumbnail reuses that decode
+        if hook is not None:
+            try:
+                hook(path, img)
+            except Exception:
+                pass
         try:
             if img.getexif().get(0x0112, 1) != 1:
                 img = ImageOps.exif_transpose(img)
@@ -575,9 +595,7 @@ def _is_full_duplicate(sig_a: Signature, sig_b: Signature) -> bool:
     if _hist_corr(sig_a.color_hist, sig_b.color_hist) < COLOR_SIM_THRESHOLD:
         return False
     local_sims = [_hist_corr(a, b) for a, b in zip(sig_a.grid_hists, sig_b.grid_hists)]
-    if local_sims and min(local_sims) < LOCAL_COLOR_SIM_THRESHOLD:
-        return False
-    return True
+    return not (local_sims and min(local_sims) < LOCAL_COLOR_SIM_THRESHOLD)
 
 
 # --- (de)serialization helpers for storing a Signature in SQLite ----------
@@ -623,7 +641,7 @@ class DedupStore:
     and safely purges ghost records if an original file was removed by the user.
     """
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         # resolved here, not in the signature: def-arg defaults are bound at
         # import time, so a later redirect of DEDUP_DB_FILE would be ignored
         # and a test would write into the app's real dedup db
@@ -795,8 +813,8 @@ class DedupStore:
 
         return matched_row
 
-    def add(self, filepath: str, sig: Signature, site: str = None, post_id: str = None,
-            source_md5: str = None, generated_hashes: dict = None) -> int:
+    def add(self, filepath: str, sig: Signature, site: str | None = None, post_id: str | None = None,
+            source_md5: str | None = None, generated_hashes: dict | None = None) -> int:
         src = normalize_any_source_hash(source_md5)
         extras = normalize_generated_hashes(generated_hashes)
         data = _sig_to_row(sig)
@@ -914,8 +932,8 @@ class DedupStore:
             return (w * h, size)
         return image_quality(path)
 
-    def check_and_add(self, filepath: str, site: str = None, post_id: str = None,
-                      source_md5: str = None, generated_hashes: dict = None,
+    def check_and_add(self, filepath: str, site: str | None = None, post_id: str | None = None,
+                      source_md5: str | None = None, generated_hashes: dict | None = None,
                       signature=None) -> DedupResult:
         """
         Check the candidate against source hashes (when provided) and perceptual
@@ -1187,7 +1205,12 @@ class DedupStore:
         added = 0
         gen = iter_signatures([fp for fp, _ in todo], workers)
         try:
-            for (fp, site), (_p, sig, err) in zip(todo, gen):
+            # pace the backfill: sleep between signatures hands cores back to
+            # thumbnail decodes — the user's first gallery view must not wait
+            # minutes behind 100MB of perceptual hashing (startup only)
+            for i, ((fp, site), (_p, sig, err)) in enumerate(zip(todo, gen)):
+                if i and i % 4 == 0:
+                    time.sleep(0.03)
                 if sig is None:
                     print(f"[DEDUP] backfill failed for {fp}: {err}")
                     continue
@@ -1278,25 +1301,14 @@ class DedupStore:
             except Exception as e:
                 print(f"[DEDUP] Error removing filepath: {e}")
 
-    def remove_missing_files(self) -> int:
-        """Delete records whose file no longer exists on disk. Returns count removed."""
+    def count_missing_files(self) -> int:
+        """Count records whose file is gone from disk. On request they are
+        KEPT: a moved or re-added image must retain its hash/name identity
+        (its thumb cache, dedup match and tags). A matching re-add prunes a
+        ghost record on lookup instead. Returns the missing count."""
         with self._lock:
             rows = self._conn.execute("SELECT id, filepath FROM image_hashes").fetchall()
-        # stat outside the lock
-        missing = [r["id"] for r in rows if not os.path.isfile(r["filepath"])]
-        if not missing:
-            return 0
-        with self._lock:
-            for start in range(0, len(missing), 500):
-                batch = missing[start:start + 500]
-                placeholders = ",".join("?" * len(batch))
-                self._conn.execute(f"DELETE FROM image_hashes WHERE id IN ({placeholders})", batch)
-                self._conn.execute(
-                    f"DELETE FROM source_hashes WHERE image_id IN ({placeholders})", batch)
-            self._conn.commit()
-            for i in missing:
-                self._phash_index.pop(i, None)
-        return len(missing)
+        return sum(1 for r in rows if not os.path.isfile(r["filepath"]))
 
     def count(self) -> int:
         with self._lock:

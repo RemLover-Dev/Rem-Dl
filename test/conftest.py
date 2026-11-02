@@ -7,6 +7,22 @@ import pytest
 
 import core.shared
 
+# Snapshot the process env BEFORE any test module is imported (collection
+# order makes some module import Rems_Dl, whose load_dotenv() spills .env
+# values into os.environ and breaks test_settings' env-derived defaults).
+# Every test starts and ends with this pristine env.
+_ENV_SNAPSHOT = dict(os.environ)
+
+
+@pytest.fixture(autouse=True)
+def _restore_env():
+    yield
+    # diff-restore: clear() would also drop pytest's own runtime env vars
+    for k in [k for k in os.environ
+              if k not in _ENV_SNAPSHOT and not k.startswith("PYTEST")]:
+        os.environ.pop(k, None)
+    os.environ.update(_ENV_SNAPSHOT)
+
 
 @pytest.fixture(autouse=True)
 def _reset_rate_pace():

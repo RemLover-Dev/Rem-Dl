@@ -15,3 +15,6 @@ curl_cffi
 rule34Py
 gallery-dl
 pinterest-dl
+# X (Twitter) worker: twscrape runs on httpx; socks extra for socks5:// proxies
+twscrape
+httpx[socks]

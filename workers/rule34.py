@@ -135,14 +135,14 @@ class Rule34Worker(BaseWorker):
                         results = []
                         break
                     else:
-                        raise e
+                        raise
                 except Exception as e:
                     error_msg = str(e)
                     if "timeout" in error_msg.lower() or "read timed out" in error_msg.lower():
                         self.log(f"Network Timeout (Attempt {attempt+1}/{max_retries}). Retrying in 3s...")
                         await asyncio.sleep(3)
                     else:
-                        raise e
+                        raise
 
             if results is None:
                 self.log("Failed to connect to Rule34 after 5 attempts. Check your VPN/Proxy.")

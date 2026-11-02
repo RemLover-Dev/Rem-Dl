@@ -249,7 +249,7 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
             enqueued = await dl.enqueue_download("http://example.com/img.png", unsafe_filepath, unsafe_filename, ["re:zero"])
             assert enqueued is True
             item = dl.download_queue.get_nowait()
-            q_url, q_filepath, q_filename, q_tags, *_ = item
+            _q_url, q_filepath, q_filename, _q_tags, *_ = item
 
             assert ":" not in q_filename
             assert "*" not in q_filename

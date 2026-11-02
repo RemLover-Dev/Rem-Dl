@@ -54,7 +54,7 @@ def test_zip_slip_security_prevention(tmp_path):
 
 
 def test_install_from_local_archive_and_lifecycle(temp_ext_dir, tmp_path):
-    ext_dir, manager = temp_ext_dir
+    _ext_dir, manager = temp_ext_dir
 
     # Create a valid test extension archive
     ext_src = tmp_path / "mock_ext"
@@ -99,7 +99,7 @@ def setup(app, socketio, context):
         zf.writestr("mock-addon-1.2.0/plugin.py", plugin_code)
 
     # Install the extension
-    ok, msg = install_from_local_path(str(mock_zip), "mock-addon")
+    ok, _msg = install_from_local_path(str(mock_zip), "mock-addon")
     assert ok is True
 
     # Verify discovery

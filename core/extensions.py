@@ -2,8 +2,8 @@ import importlib.util
 import json
 import logging
 import os
-import shutil
 import re
+import shutil
 from typing import Any
 
 from core.database import DATABASE_DIR, DatabaseManager, _app_base_dir

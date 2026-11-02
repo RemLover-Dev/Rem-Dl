@@ -1,12 +1,13 @@
 """Authenticated JXL tools and browser-compatible comparison/gallery images."""
 import hashlib
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 from flask import jsonify, request, send_file
+
 from core.jxl_service import JxlService
 
 _view_lock = threading.Lock()
@@ -33,8 +34,9 @@ def browser_png(path, cache, difference_with=None):
             cost += estimate_memory(difference_with, 'display', budget)
         if cost > budget:
             raise ValueError('Comparison exceeds the current available-memory budget; converted image is unchanged')
-        from core.jxl_codec import normalize
         from PIL import Image, ImageChops
+
+        from core.jxl_codec import normalize
         image = normalize(source)
         if difference_with:
             other = normalize(difference_with)

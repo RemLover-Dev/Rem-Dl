@@ -179,7 +179,13 @@ function displayTagList(raw, site) {
     const parts = NOSPACE_SPLIT_SITES.includes(String(site || "")) ? s.split(/,/) : s.split(/[\s,]+/);
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
-function siteLabel(site) { const s = site || "unknown"; return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
+// canonical keys -> the exact names the worker tab buttons use (index.html)
+const SITE_DISPLAY_NAMES = { anime_dl: "Anime DL", dan: "Danbooru", eshuushuu: "E-Shuushuu", gelbooru: "Gelbooru", gsbooru: "Gsbooru", kona: "Konachan", neko: "Nekos", nekos_life: "Nekos.life", nekosapi: "NekosAPI", nekosia: "Nekosia", pinterest: "Pinterest", pixiv: "Pixiv", rule34: "Rule34", safe: "Safebooru", sankaku: "Sankaku", x: "X (Twitter)", yande: "Yande.re", zero: "Zerochan" };
+function siteLabel(site) {
+    const s = site || "unknown";
+    if (SITE_DISPLAY_NAMES[s]) return SITE_DISPLAY_NAMES[s];
+    return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase());
+}
 function escJs(s) {
     return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
 }
@@ -606,11 +612,11 @@ const WORKER_TO_TAB = {
     "neko": "neko", "nekos_life": "nekos_life", "zero": "zero",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
-    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
+    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia", "x": "x"
 };
 
 // worker name -> sidebar tab target + primary tag input (history jumps, nav icons)
-const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
+const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" }, "x": { tab: "X", input: "xTag" } };
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
@@ -691,7 +697,7 @@ function capConsole(cb, max) {
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia", "x": "consoleLog_x" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -718,6 +724,36 @@ function appendLogCard(cb, card) {
     // a new card may have joined the box the open viewer walks — update now so
     // the next/prev arrows appear without reopening the image
     refreshViewerSingleList();
+}
+// a fresh card's thumb can fail while a viewer session mutes thumb decodes
+// (503) or during the JXL conversion swap — retry on a ladder; a card must
+// heal once the viewer closes, not settle for the placeholder forever
+const _thumbPending = [];
+function thumbRetry(img) {
+    if (_thumbPending.length < 64 && !_thumbPending.includes(img)) _thumbPending.push(img);
+    const n = +(img.dataset.rt || 0);
+    if (n >= 4) { img.onerror = null; img.src = img.dataset.fb; return; }
+    img.dataset.rt = n + 1;
+    img.dataset.ob = img.dataset.ob || img.src;
+    setTimeout(() => { img.src = img.dataset.ob.split('?')[0] + '?r=' + Date.now(); }, [2000, 6000, 15000, 30000][n]);
+}
+function thumbLoaded(img) {
+    const i = _thumbPending.indexOf(img);
+    if (i >= 0) _thumbPending.splice(i, 1);
+}
+// viewer close: the mute just lifted — make the server start generating the
+// thumbs that 503'd, then refetch them right away instead of waiting on the
+// retry ladder
+function flushPendingThumbs() {
+    if (!_thumbPending.length) return;
+    const list = _thumbPending.splice(0);
+    const fps = [...new Set(list.map(i => i.dataset.ofi).filter(Boolean))];
+    if (fps.length) fetch("/api/gallery/warm_thumbs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filepaths: fps }) }).catch(() => {});
+    list.forEach(i => {
+        if (!i.isConnected || !i.dataset.ob) return;
+        i.onerror = () => thumbRetry(i);
+        i.src = i.dataset.ob.split('?')[0] + '?r=' + Date.now();
+    });
 }
 function logToConsole(tabID, msg) {
     let boxMap = CONSOLE_BOX_MAP;
@@ -830,7 +866,7 @@ function logToConsole(tabID, msg) {
         card.innerHTML = `
         <div class="img-card-left"${logHoverAttr}>
         <!-- استفاده از Date.now برای جلوگیری از باگ لود شدن -->
-        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">${isVideo ? '<span class="gallery-card-play"></span>' : ''}
+        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="thumbRetry(this)" onload="thumbLoaded(this)" style="cursor: pointer;">${isVideo ? '<span class="gallery-card-play"></span>' : ''}
         </div>
         <div class="img-card-right">
         <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
@@ -2250,7 +2286,21 @@ function enhanceSelect(select) {
         if (label.textContent === '') label.textContent = select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : '';
     }
     renderItems();
-    trigger.onclick = (e) => { e.stopPropagation(); wrap.classList.toggle('open'); };
+    // fixed-position open: an absolute menu inside a scrolling panel
+    // (modals list boxes) gets clipped — the trigger rect pins the menu to
+    // the viewport at the exact spot absolute positioning gives, minus clipping
+    trigger.onclick = (e) => {
+        e.stopPropagation();
+        if (!wrap.classList.contains('open')) {
+            const r = trigger.getBoundingClientRect();
+            menu.style.position = 'fixed';
+            menu.style.top = r.bottom + 'px'; // .cs-menu margin-top:4 keeps the gap
+            menu.style.left = r.left + 'px';
+            menu.style.minWidth = Math.max(r.width, 150) + 'px';
+        }
+        wrap.classList.toggle('open');
+    };
+    document.addEventListener('scroll', e => { if (!wrap.contains(e.target)) wrap.classList.remove('open'); }, true);
     document.addEventListener('click', () => wrap.classList.remove('open'));
     if (window.MutationObserver) {
         const mo = new MutationObserver(renderItems);
@@ -2484,12 +2534,39 @@ socket.on("update_history", function () {
     }, 1500);
 });
 
+socket.on("scan_progress", function (data) {
+    // live image count while a scan walks a new folder: patch the pill text
+    // in place; the rescan_done reload brings the pages themselves up to date
+    const pill = document.querySelector(".gallery-count-pill");
+    if (pill && data && typeof data.total === "number") pill.lastChild.textContent = data.total;
+});
+
 socket.on("gallery_rescan_done", function (data) {
+    const silent = !!(data && (data.startup || data.skipped));
     if (data && data.success) {
-        showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" });
-        loadGallery(1);
+        if (!silent) showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" });
+        // a pending jump against the pre-scan page count retries here, so it
+        // can only be discarded by the finished dataset itself (server clamp)
+        loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage);
         populateGallerySiteFilter(true);
     } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" });
+});
+
+// images deleted server-side (delete buttons, dedup kill, auto-cull) must not
+// keep living as dead log cards with broken thumbnails
+socket.on("image_deleted", function (data) {
+    const fn = (data && data.filename) || "";
+    if (!fn) return;
+    const enc = encodeURIComponent(fn).replace(/'/g, "%27");
+    document.querySelectorAll(".image-card-log img[data-ofi]").forEach(function (img) {
+        const tail = (img.dataset.ofi || "").split("/").pop();
+        let hit = tail === enc;
+        if (!hit) { try { hit = decodeURIComponent(tail) === fn; } catch (e) { hit = false; } }
+        if (hit) {
+            const card = img.closest(".image-card-log");
+            if (card) card.remove();
+        }
+    });
 });
 
 socket.on("pinterest_progress", function (data) {
@@ -2981,6 +3058,7 @@ function openTab(tabName, btn) {
         loadTagsData();
     }
     if (tabName === "Notifications") loadNotifications();
+    if (tabName === "Planning") loadPlanning();
 }
 
 // --- Multi-source notifications ---
@@ -3346,6 +3424,7 @@ function buildWorkerPayload(workerName) {
         payload.limit = document.getElementById('nekosapiLimit').value;
         payload.rating = document.getElementById('nekosapiRating').value;
     }
+    else if (workerName === 'x') { payload.tag = document.getElementById('xTag').value; payload.limit = document.getElementById('xLimit').value; }
     else if (workerName === 'nekosia') {
         payload.tag = currentNekosiaTags.join(' ');
         payload.limit = document.getElementById('nekosiaLimit').value;
@@ -3354,7 +3433,7 @@ function buildWorkerPayload(workerName) {
 
     // ponytail: don't fire a worker with no query — it scans nothing and
     // the empty limit box (now possible) already defaults server-side
-    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia'];
+    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia', 'x'];
     if (TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
         logToConsole(workerName, "Error: tag is empty — nothing to search");
@@ -3386,6 +3465,7 @@ function clearSubmittedTags(workerName) {
     // plain-text boxes (no tag-chip state): empty the field that was queued
     if (workerName === 'pixiv') document.getElementById('pixivTag').value = '';
     if (workerName === 'pinterest') document.getElementById('pinterestTag').value = '';
+    if (workerName === 'x') document.getElementById('xTag').value = '';
 }
 
 function startWorker(workerName) {
@@ -3461,6 +3541,11 @@ async function loadApiSettings() {
     document.getElementById("pinterestPassword").value = settings.pinterest_password || "";
     document.getElementById("pixivToken").value = settings.pixiv_refresh_token || "";
     document.getElementById("pixivCookie").value = settings.pixiv_cookie || "";
+    document.getElementById("xCookies").value = settings.x_cookies || "";
+    document.getElementById("xUsername").value = settings.x_username || "";
+    document.getElementById("xPassword").value = settings.x_password || "";
+    document.getElementById("xEmail").value = settings.x_email || "";
+    document.getElementById("xEmailPassword").value = settings.x_email_password || "";
 }
 
 async function saveApiSettings() {
@@ -3482,11 +3567,51 @@ async function saveApiSettings() {
         pinterest_email: document.getElementById("pinterestEmail").value.trim(),
         pixiv_refresh_token: document.getElementById("pixivToken").value.trim(),
         pixiv_cookie: document.getElementById("pixivCookie").value.trim(),
-        pinterest_password: document.getElementById("pinterestPassword").value.trim()
+        pinterest_password: document.getElementById("pinterestPassword").value.trim(),
+        x_cookies: document.getElementById("xCookies").value.trim(),
+        x_username: document.getElementById("xUsername").value.trim(),
+        x_password: document.getElementById("xPassword").value.trim(),
+        x_email: document.getElementById("xEmail").value.trim(),
+        x_email_password: document.getElementById("xEmailPassword").value.trim()
     };
     let resp = await fetch("/api/api-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     let result = await resp.json();
     return resp.ok && result.success ? "Saved!" : "Could not save API settings.";
+}
+
+// X cookie import: native picker on KDE (webview file input opens the file
+// manager there), hidden file-input fallback elsewhere. Both routes end
+// with a PATH in the xCookies field — the worker reads the file itself.
+function _fillXCookie(path) {
+    const field = document.getElementById("xCookies");
+    field.value = path;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    showToast("Cookie file imported — press Save Settings");
+}
+
+async function importXCookie() {
+    try {
+        let resp = await fetch("/api/file/browse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "cookies" }) });
+        if (resp.ok) {
+            let data = await resp.json();
+            if (data.cancelled) return;
+            if (data.path) { _fillXCookie(data.path); return; }
+        }
+    } catch (e) {}
+    document.getElementById("xCookieFile").click();
+}
+
+async function xCookieFileChosen(fileInput) {
+    if (!fileInput.files || fileInput.files.length === 0) return;
+    let formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+    try {
+        let resp = await fetch("/api/import-x-cookies", { method: "POST", body: formData });
+        let data = await resp.json();
+        if (data.success && data.path) _fillXCookie(data.path);
+        else showToast(data.error || "Could not import cookie file");
+    } catch (e) { showToast("Cookie import failed: " + e); }
+    fileInput.value = "";
 }
 
 async function startPixivLogin() {
@@ -3926,9 +4051,9 @@ function renderHistory() {
             if (item.searched_at) {
                 const d = new Date(item.searched_at * 1000);
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-                timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
+                timeSpan = `<span class="hist-time" title="${when}" style="font-size: 11px; color: var(--text-color); margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div class="hist-actions" style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -4163,8 +4288,8 @@ function historyRowHtml(img) {
     const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${hHoverSrc}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
     return `
     <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}${_histAnimated.has(histRowKey(img)) ? ' no-anim' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
-    <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
-    <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
+    <button onclick="removeImageHistory('${safeFn}')" class="img-card-btn" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
+    <button onclick="toggleImageHistoryFav('${safeFn}', this)" class="img-card-btn" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
     <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">${hHoverKind === 'video' ? '<span class="gallery-card-play"></span>' : ''}
     </div>
@@ -4787,8 +4912,39 @@ function warmGalleryThumbnails(images) {
     }
     pumpGalleryThumbnails();
 }
-function pumpGalleryThumbnails() {
-    if (document.hidden) return;
+// While a viewer session mutes the server, card thumbs that 503 are hidden
+// by the card's one-shot onerror — remember those cards and revive them
+// when the session closes (error doesn't bubble, so capture phase catches it)
+document.addEventListener('error', e => {
+    const im = e.target;
+    if (!im || !im.classList || !im.closest) return;
+    const card = im.closest('.gallery-card');
+    if (!card || !(im.getAttribute('src') || '').includes('/api/gallery/thumb/')) return;
+    // hide first — no broken-image glyph while we decide what to do
+    im.style.display = 'none';
+    if (typeof _viewerLease !== 'undefined' && _viewerLease) {
+        card.classList.add('thumb-muted');   // viewing: try again on close
+        return;
+    }
+    // not viewing: a stray close-race 503 — bounded self-retries
+    const n = (+card.dataset.thumbRetry || 0) + 1;
+    if (n > 4) return;
+    card.dataset.thumbRetry = n;
+    setTimeout(() => {
+        if (card.classList.contains('thumb-muted')) return;
+        card.dataset.thumbRetry = 0;
+        if (_viewerLease) { card.classList.add('thumb-muted'); return; }
+        // restore a hiding onerror: the inline one was consumed on the first
+        // failure, so without this a failed retry paints the ?-glyph
+        im.onerror = function(){ this.style.display = 'none'; };
+        const u = im.getAttribute('src');
+        im.style.display = '';
+        im.removeAttribute('src');
+        im.setAttribute('src', u);
+    }, n * 3000);
+}, true);
+
+function pumpGalleryThumbnails() {    if (document.hidden) return;
     while (galleryThumbActive < (typeof lightweightUI === 'function' && lightweightUI() ? 2 : 4) && galleryThumbQueue.length) {
         const url = galleryThumbQueue.shift();
         galleryThumbActive++;
@@ -4800,6 +4956,16 @@ function pumpGalleryThumbnails() {
             if (ok) {
                 galleryThumbCache.set(url, image);
                 while (galleryThumbCache.size > (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 96)) galleryThumbCache.delete(galleryThumbCache.keys().next().value);
+            } else if (_viewerLease && !_thumbDeferred.has(url)) {
+                _thumbDeferred.add(url);  // 503 while viewing: try again on close
+            } else if (!_viewerLease && (!_thumbRetryN.has(url) || _thumbRetryN.get(url) < 8)) {
+                // race: the close requeue lands before the server's lease
+                // revocation, the thumb 503s once, nobody re-requests it and
+                // the card never gets a thumbnail — retry a few times; the
+                // server's background-mute hold can last ~60s past close
+                const n = (_thumbRetryN.get(url) || 0) + 1;
+                _thumbRetryN.set(url, n);
+                setTimeout(() => { if (!galleryThumbQueued.has(url) && !_viewerLease) { galleryThumbQueued.add(url); galleryThumbQueue.push(url); pumpGalleryThumbnails(); } else _thumbRetryN.delete(url); }, n * 2000);
             }
             galleryThumbQueued.delete(url);
             galleryThumbActive--;
@@ -4819,7 +4985,7 @@ function preloadGalleryPage(params) {
     // Fixed-size blocks let a 24-item windowed page supply a 45-item maximized
     // page without changing offsets or showing unrelated page contents.
     const blockSize = 128;
-    const first = Math.floor(start / blockSize), last = Math.floor((start + perPage - 1) / blockSize);
+    const first = Math.floor(start / blockSize), last = Math.floor((start + perPage - 1) / blockSize) + 1;
     for (let block = first; block <= last; block++) {
         const query = new URLSearchParams(params);
         query.set('page', block + 1); query.set('per_page', blockSize);
@@ -4868,6 +5034,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let galleryReqId = 0;
+// page number a jump asked for while the dataset was still too small (server
+// clamped to last). Retained across rescan/import completions; a grown scan
+// retries it. Cleared on any OTHER explicit numeric navigation.
+let galleryPendingPage = 0;
 // one in-flight data fetch per gallery view: a rapid page flip aborts the
 // older query instead of leaving stacked fetches fighting for the browser's
 // connection pool while each abandoned result is already discarded anyway
@@ -4883,6 +5053,8 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
     if (!reuseBuffered) invalidateGalleryBuffer();
     const reqId = ++galleryReqId;
     if (page) currentGalleryPage = page;
+    // any deliberate numeric navigation other than the pending target retires it
+    if (typeof page === "number" && page !== galleryPendingPage) galleryPendingPage = 0;
     const layout = measureGalleryLayout();
     const perPage = layout.perPage;
     galleryLastPerPage = perPage;
@@ -4915,6 +5087,11 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
         if (ms > 1500) showToast(`Gallery request took ${ms} ms`, { warn: true, key: "galtime" });
         // server clamps page to total_pages — trust its answer, not our guess
         if (data.page) currentGalleryPage = data.page;
+        if (galleryPendingPage) {
+            // resolved only when the dataset really offers it; a smaller
+            // response means the scan hadn't grown yet — keep the target
+            if (currentGalleryPage === galleryPendingPage) galleryPendingPage = 0;
+        }
         reanchorGalleryViewer(prevViewId);
         renderGallery();
         // layout may have settled after we measured (maximize, workload) —
@@ -4927,6 +5104,8 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
 }
 async function loadGalleryPage(page, callback) {
     const reqId = ++galleryReqId;
+    // viewer page flips are deliberate navigation — retire a pending jump
+    if (typeof page === "number" && page !== galleryPendingPage) galleryPendingPage = 0;
     const search = document.getElementById("gallerySearch").value;
     const site = getMultiSelectValues('sourceDropdown');
     const sort = document.getElementById("sortDropdown").dataset.sort || 'newest';
@@ -4952,6 +5131,7 @@ async function loadGalleryPage(page, callback) {
         galleryState = data;
         galleryState.layout = liveLayout;
         if (data.page) currentGalleryPage = data.page;
+        if (galleryPendingPage && currentGalleryPage === galleryPendingPage) galleryPendingPage = 0;
         reanchorGalleryViewer(prevViewId);
         if (callback) callback();
     } catch (e) { if (e && e.name !== "AbortError") console.error("loadGalleryPage failed:", e); }
@@ -5173,15 +5353,17 @@ function renderGallery() {
     const countPill = `<span class="gallery-count-pill"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg>${total}</span>`;
     if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; updateSelectBar(); return; }
     let pHtml = '';
-    if (page > 2) pHtml += '<button onclick="loadGallery(1)">«</button>';
-    if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+')">‹</button>';
+    // ponytail: reuseBuffered — page turns render the prefetched block
+    // instantly instead of wiping it first; filters/search still invalidate
+    if (page > 2) pHtml += '<button onclick="loadGallery(1, false, true)">«</button>';
+    if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+', false, true)">‹</button>';
     const range = paginationRange(page, total_pages);
     range.forEach(p => {
         if (p === 0 || p === -1) { pHtml += `<button onclick="pageJumpInput(this)" title="Go to page…">…</button>`; return; }
-        pHtml += `<button onclick="loadGallery(${p})" ${p===page?'class="active"':''}>${p}</button>`;
+        pHtml += `<button onclick="loadGallery(${p}, false, true)" ${p===page?'class="active"':''}>${p}</button>`;
     });
-    if (page < total_pages) pHtml += '<button onclick="loadGallery('+(page+1)+')">›</button>';
-    if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+')">»</button>';
+    if (page < total_pages) pHtml += '<button onclick="loadGallery('+(page+1)+', false, true)">›</button>';
+    if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+', false, true)">»</button>';
     pHtml += countPill;
     if (!jumpFocused) pagination.innerHTML = pHtml;
     updateSelectBar();
@@ -5212,8 +5394,16 @@ function pageJumpInput(btn) {
         // blur first: renderGallery skips its rebuild while the jump input is
         // focused, so let go of it before reloading
         input.blur();
-        if (!isNaN(n)) loadGallery(Math.min(Math.max(n, 1), total));
-        else renderGallery();
+        // no local top clamp: within the first seconds galleryState.total_pages
+        // is still unloaded and every number clamped down to 1 — the server
+        // clamps out-of-range pages anyway
+        if (!isNaN(n)) {
+            const target = Math.max(n, 1);
+            // the dataset may still be small; keep the true target so a grown
+            // startup rescan can retry it without the user re-entering it
+            galleryPendingPage = target;
+            loadGallery(target);
+        } else renderGallery();
     }
     input.addEventListener('input', () => { input.value = faToEnDigits(input.value).replace(/\D/g, ''); });
     input.addEventListener('keydown', e => {
@@ -5590,6 +5780,9 @@ function openGalleryViewer(id, force) {
     }
     viewerIndex = galleryState.images.findIndex(i => i.id === id);
     if (viewerIndex < 0) return;
+    // ponytail: while an image is open, server-side thumb/preview generation
+    // holds — paused before this fetch can even race the display request
+    _viewerOpen();
     viewerZoom = 1;
     // the viewer may page forward while browsing (boundary → next page);
     // on close we restore the page the user actually opened the viewer on,
@@ -5740,10 +5933,10 @@ function galleryPageNav(page) {
         _galNavTimer = null;
         if (galleryPagingFast) {
             galleryPagingFast = false;
-            loadGallery(currentGalleryPage);   // settled: real thumbnails for this page
+            loadGallery(currentGalleryPage, false, true);   // settled: real thumbnails for this page
         }
     }, 200);
-    loadGallery(page);
+    loadGallery(page, false, true);
 }
 // viewer close may leave an arrow key auto-repeating (it was still held for
 // viewer ←/→); those repeats must not silently page the gallery beneath a
@@ -5901,7 +6094,7 @@ function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once
     let clean = filepath || "";
     try { clean = decodeURIComponent(clean); } catch (e) {}
-    return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
+    return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
 }
 // viewer-open fast path: the server's fit-to-screen copy (display cache),
 // or '' when the URL isn't a gallery file (fallback thumbs etc.)
@@ -5911,7 +6104,7 @@ function displayImageUrl(fullUrl) {
         : '';
 }
 function galleryThumbUrl(fp) {
-    return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : '';
+    return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : '';
 }
 // deleted this session: the browser may still hold a day-fresh cached copy of
 // the old max-age responses, so a 200 from cache must not reopen them
@@ -6121,6 +6314,7 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
     closeGalleryViewer();
+    _viewerOpen();  // single-log opens own the decode cores too
     viewerSingle = true;
     viewerSingleBoxId = boxId || null;
     viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
@@ -6150,10 +6344,17 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     if (metaPanel) {
         const emptyEntry = { filename: filename, filepath: "", site: "", tags: {} };
         const fillMeta = (entry) => {
-            metaPanel.innerHTML = viewerMetaHtml(entry, true);
-            document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
+            renderViewerMeta(entry, galleryPathFromUrl(viewerSingleUrl));
         };
-        const lookup = () => (typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === filename) : null);
+        const lookup = () => {
+            if (typeof imageHistory === "undefined") return null;
+            const hit = imageHistory.find(i => i.filename === filename);
+            if (hit) return hit;
+            // auto-JXL renames the file (and its history row) right after the
+            // log card carried the original extension — match the twin by stem
+            const stem = (filename || "").replace(/\.[^.]+$/, "");
+            return stem && stem !== filename ? imageHistory.find(i => (i.filename || "").replace(/\.[^.]+$/, "") === stem) || null : null;
+        };
         const found = lookup();
         if (found) fillMeta(found);
         else if (viewerMetaMisses.has(filename)) fillMeta(emptyEntry);
@@ -6219,6 +6420,27 @@ function toggleSourceBox(el) {
     el.textContent = open ? el.dataset.collapsed : el.dataset.list;
     el.dataset.open = open ? "0" : "1";
 }
+let _metaFillSeq = 0;
+function renderViewerMeta(entry, filepath) {
+    // one paint only: the file's embedded site is read BEFORE the panel
+    // renders, so the badge never flashes from a folder-derived site to the
+    // real one. Files without metadata (or videos) keep the stored row's site.
+    const mp = document.getElementById("galleryViewerMeta");
+    const fav = document.getElementById("galleryViewerFav");
+    if (!mp) return;
+    const seq = ++_metaFillSeq;
+    const paint = (site) => {
+        if (seq !== _metaFillSeq) return;
+        mp.innerHTML = viewerMetaHtml(Object.assign({}, entry, { site: site }), true);
+        if (fav) fav.innerHTML = heartIcon(!!entry.favourite);
+    };
+    const ext = ((filepath || "").split('.').pop() || "").toLowerCase();
+    if (!filepath || ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) return paint(entry.site);
+    fetch("/api/gallery/embedded_site?filepath=" + encodeURIComponent(filepath))
+        .then(r => r.ok ? r.json() : null)
+        .then(d => paint(d && d.site ? d.site : entry.site))
+        .catch(() => paint(entry.site));
+}
 function showViewerImage() {
     const viewer = document.getElementById("galleryViewer");
     viewer.classList.remove("single");
@@ -6229,7 +6451,7 @@ function showViewerImage() {
     let vw = document.querySelector('.gallery-video-wrap');
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
-    const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
+    const fullSrc = safeFp ? `/api/gallery/file/${safeFp.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : '';
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
@@ -6368,14 +6590,75 @@ function showViewerImage() {
     // === پنل اطلاعات و تگ‌ها پایین صفحه ===
     const metaPanel = document.getElementById("galleryViewerMeta");
     if(metaPanel) {
-        metaPanel.innerHTML = viewerMetaHtml(img, true);
+        renderViewerMeta(img, img.filepath);
     }
 
     viewer.style.display = 'flex';
     updateViewerNav();
     prefetchViewerNeighbors();
 }
+let _viewerLease = null, _viewerLeaseTimer = null, _viewerClosing = false;
+const _thumbDeferred = new Set();  // thumbs that 503'd while viewing, retried on close
+const _thumbRetryN = new Map();   // post-close 503 races: bounded second chances
+function _viewerOpen() {
+    // the server mutes background thumb/preview generation for this image:
+    // the request owns the cores until close or lease expiry
+    _viewerClosing = false;
+    fetch('/api/gallery/viewing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 1 }) }).then(r => r.ok ? r.json() : null).then(d => {
+        // the open can resolve after a quick exit: a lease born then is orphaned —
+        // the server already cleared leases, so never adopt or heartbeat it
+        if (_viewerClosing) return;
+        if (d && d.ok && d.lease) {
+            _viewerLease = d.lease;
+            clearInterval(_viewerLeaseTimer);
+            _viewerLeaseTimer = setInterval(() => {
+                if (!_viewerLease) return;
+                fetch('/api/gallery/viewing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ state: 1, lease: _viewerLease }), keepalive: true }).catch(() => {});
+            }, 15000);
+        }
+    }).catch(() => {});
+}
+function _viewerClose() {
+    _viewerClosing = true;
+    clearInterval(_viewerLeaseTimer); _viewerLeaseTimer = null;
+    const lease = _viewerLease; _viewerLease = null;
+    if (lease) fetch('/api/gallery/viewing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 0, lease: lease }), keepalive: true }).catch(() => {});
+    // 503-held thumbs can generate now: requeue the deferred ones once
+    for (const url of _thumbDeferred) {
+        if (!galleryThumbQueued.has(url) && galleryThumbQueue.length < 128) {
+            galleryThumbQueued.add(url);
+            galleryThumbQueue.push(url);
+        }
+    }
+    _thumbDeferred.clear();
+    pumpGalleryThumbnails();
+    revokeMutedThumbs();
+}
+
+// grid cards hidden by 503s during the session: unhide them and re-request —
+// the server just unmuted, the thumb either regenerates or retries below
+function revokeMutedThumbs() {
+    document.querySelectorAll('.gallery-card').forEach(card => {
+        const im = card.querySelector('img');
+        if (!im || im.style.display !== 'none') return;
+        const u = im.getAttribute('src');
+        if (!u || !u.includes('/api/gallery/thumb/')) return;
+        card.classList.remove('thumb-muted');
+        card.dataset.thumbRetry = 0;
+        // failed thumbs must hide, not paint the ?-glyph: the card's inline
+        // onerror was consumed by the first failure, restore a hiding one
+        im.onerror = function(){ this.style.display = 'none'; };
+        im.style.display = '';
+        im.removeAttribute('src');
+        im.setAttribute('src', u);
+    });
+}
+
 function closeGalleryViewer() {
+    _viewerClose();
     // a paging key still held when the viewer was closed (its ←/→ repeats)
     // must not page the gallery until the key is released
     _viewerKeyCooldown = true;
@@ -6389,7 +6672,7 @@ function closeGalleryViewer() {
         loadGalleryPage(currentGalleryPage);
     }
     _viewerOpenedPage = null;
-    clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
+    clearViewerResource(); flushPendingThumbs(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
 function updateViewerNav() {
     // boundary buttons: no prev on the first image, no next on the last one
     const v = document.getElementById("galleryViewer");
@@ -6472,7 +6755,9 @@ function toggleViewerFav() {
         }
     }
     function clipboardRelPath(url, filename) {
-        if (url && url.startsWith("/api/gallery/file/")) return decodeURIComponent(url.slice("/api/gallery/file/".length));
+        for (const pre of ["/api/gallery/file/", "/api/gallery/display/"]) {
+            if (url && url.startsWith(pre)) return decodeURIComponent(url.slice(pre.length).split("?")[0]);
+        }
         if (url && url.startsWith("/api/thumb_by_name/")) return decodeURIComponent(url.slice("/api/thumb_by_name/".length));
         return filename || "";
     }
@@ -6521,7 +6806,7 @@ function toggleViewerFav() {
                 const img = galleryState.images[viewerIndex];
                 if (!img) return;
                 const rel = (img.filepath || "").replace(/\\/g, '/');
-                url = rel ? `/api/gallery/file/${rel.split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(img.filename || '')}`;
+                url = rel ? `/api/gallery/file/${rel.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(img.filename || '')}`;
                 filename = img.filename;
             }
             if (/\.(mp4|webm|mov|avi|mkv)$/i.test(filename || "") || (!viewerResource.blob && !viewerResource.loadPromise)) {
@@ -6539,7 +6824,7 @@ function toggleViewerFav() {
                 }
             }
             if (generation !== viewerResource.generation) { showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON }); return; }
-            await copyToClipboard(viewerResource.url || url, viewerResource.filename || filename);
+            await copyToClipboard(url, filename);
         } catch (e) { showToast("Copy failed: " + (e && e.message || e), { warn: true, icon: WARN_ICON }); }
         finally { _copyBusy = false; }
     }
@@ -6968,8 +7253,12 @@ function toggleViewerFav() {
     document.getElementById("galleryViewerCanvas").addEventListener('mousedown', function(e) { if (viewerZoom <= 1.001 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(true); } } catch (e) { console.error("gallery import failed:", e); } }
-    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" }); loadGallery(1); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } } catch (e) { console.error("gallery import failed:", e); } }
+// --- extra gallery roots (folders outside the download folder) ---
+async function loadGalleryRoots() { try { const resp = await fetch('/api/gallery/roots'); const data = await resp.json(); const list = document.getElementById('galleryRootList'); if (!list) return; list.innerHTML = ''; const mkRow = (path, removable, badge) => { const row = document.createElement('div'); row.className = 'gallery-root-item'; const span = document.createElement('span'); span.className = 'gallery-root-path'; span.textContent = path; span.title = path; row.appendChild(span); if (badge) { const b = document.createElement('em'); b.className = 'gallery-root-badge'; b.textContent = badge; row.appendChild(b); } if (removable) { const del = document.createElement('button'); del.className = 'action-btn'; del.textContent = '\u2715'; del.title = 'Stop reading this folder (image records + hashes are kept)'; del.onclick = () => removeGalleryRoot(path); row.appendChild(del); } list.appendChild(row); }; if (data.master) mkRow(data.master, false, 'main'); if (!data.roots || !data.roots.length) { if (!data.master) list.innerHTML = '<div class="gallery-roots-empty">No extra folders yet. Add an HDD path; rescan then reads its images.</div>'; else list.appendChild(Object.assign(document.createElement('div'), { className: 'gallery-roots-empty', textContent: 'No extra folders yet. Add an HDD path; rescan then reads its images.' })); return; } data.roots.forEach(p => mkRow(p, true)); } catch (e) { showToast('Could not load gallery folders: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function addGalleryRoot() { const input = document.getElementById('galleryRootInput'); const path = input.value.trim(); if (!path) return; try { const resp = await fetch('/api/gallery/roots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not add the folder', { warn: true, icon: WARN_ICON }); return; } input.value = ''; showToast('Folder added — scanning it now', { key: 'rescan' }); loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not add the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function removeGalleryRoot(path) { try { const resp = await fetch('/api/gallery/roots', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not remove the folder', { warn: true, icon: WARN_ICON }); return; } loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not remove the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" }); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
     let _siteFilterSeq = 0;
     let _lastSourceFilterKey = null;
     async function populateGallerySiteFilter(force) {
@@ -7151,7 +7440,7 @@ function toggleViewerFav() {
             danTag: 'dan', konaTag: 'kona', sankakuTag: 'sankaku',
             animeDlTag: 'anime_dl', pinterestTag: 'pinterest', pixivTag: 'pixiv',
             eshuushuuTag: 'eshuushuu', eshuushuuUser: 'eshuushuu',
-            nekosapiTag: 'nekosapi', nekosiaTag: 'nekosia'
+            nekosapiTag: 'nekosapi', nekosiaTag: 'nekosia', xTag: 'x'
         };
         document.addEventListener("keydown", function(e) {
             if (e.key !== "Enter") return;

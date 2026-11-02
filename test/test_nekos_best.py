@@ -96,6 +96,6 @@ def test_multi_category_round_robin(tmp_path, monkeypatch):
 
 
 def test_empty_category_falls_back_to_neko(tmp_path, monkeypatch):
-    w, calls = _worker(tmp_path, monkeypatch, {"results": [
+    w, _calls = _worker(tmp_path, monkeypatch, {"results": [
         {"url": "https://nekos.best/api/v2/neko/abc.png"}]}, category="")
     assert w.categories == ["neko"]

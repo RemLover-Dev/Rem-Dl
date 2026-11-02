@@ -6,7 +6,6 @@ from urllib.parse import quote, urlsplit
 
 from werkzeug.wrappers import Request, Response
 
-
 LOGIN_PAGE = '''<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Rems Dl — Sign in</title>
 <style>body{background:#17191f;color:#eee;font:16px system-ui;max-width:420px;margin:12vh auto;padding:24px}input,button{font:inherit;padding:12px;box-sizing:border-box;width:100%;margin:8px 0}button{cursor:pointer}p{line-height:1.5}</style>

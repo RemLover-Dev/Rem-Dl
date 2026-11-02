@@ -84,7 +84,7 @@ def test_browse_non_kde_gets_error(client, monkeypatch):
 def test_browse_kde_cancelled(client, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
-    monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda: None)
+    monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda kind="images": None)
     r = client.post("/api/file/browse")
     assert r.status_code == 200 and r.get_json() == {"cancelled": True}
 
@@ -92,7 +92,7 @@ def test_browse_kde_cancelled(client, monkeypatch):
 def test_browse_kde_no_picker(client, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
-    monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda: False)
+    monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda kind="images": False)
     r = client.post("/api/file/browse")
     assert r.status_code == 500
 
@@ -100,7 +100,7 @@ def test_browse_kde_no_picker(client, monkeypatch):
 def test_browse_kde_returns_path(client, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
-    monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda: "/tmp/x.png")
+    monkeypatch.setattr("Rems_Dl._pick_image_file_desktop", lambda kind="images": "/tmp/x.png")
     r = client.post("/api/file/browse")
     assert r.status_code == 200 and r.get_json() == {"path": "/tmp/x.png"}
 

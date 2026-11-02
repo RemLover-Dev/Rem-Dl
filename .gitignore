@@ -145,3 +145,16 @@ database/ui_config.json
 database/image_history.db
 database/display_cache/
 database/jxl_display_cache/
+
+# X (Twitter) account sessions from twscrape — contain login tokens
+x_accounts.db*
+
+# ========================
+# User-private runtime data (NEVER UPLOAD)
+# ========================
+database/*.bak
+database/instance.lock
+database/x_cookies_import.txt
+database/planning_list.json
+database/notifications.json
+database/watchers.json

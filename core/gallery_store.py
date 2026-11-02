@@ -39,7 +39,6 @@ ENTRY_FIELDS = (
 
 from core.runtime_paths import app_base_dir as _app_base_dir
 
-
 BASE_DIR = _app_base_dir()
 DATABASE_DIR = os.path.join(BASE_DIR, "database")
 GALLERY_DB_FILE = os.path.join(DATABASE_DIR, "gallery.db")
@@ -320,7 +319,7 @@ class GalleryStore:
         conn = self._connect()
         cols = ", ".join(ENTRY_FIELDS)
         out = []
-        for row in conn.execute("SELECT %s FROM gallery" % cols):
+        for row in conn.execute(f"SELECT {cols} FROM gallery"):
             out.append(_entry_from_row(row))
         return out
 
@@ -331,10 +330,9 @@ class GalleryStore:
         chunk at a time and never hold more than `limit` entries' tags.
         """
         conn = self._connect()
-        cols = ", ".join("g.%s" % c for c in ENTRY_FIELDS)
+        cols = ", ".join(f"g.{c}" for c in ENTRY_FIELDS)
         rows = conn.execute(
-            "SELECT %s FROM gallery g ORDER BY g.rowid LIMIT ? OFFSET ?"
-            % cols, (limit, offset)).fetchall()
+            f"SELECT {cols} FROM gallery g ORDER BY g.rowid LIMIT ? OFFSET ?", (limit, offset)).fetchall()
         if not rows:
             return []
         ids = [r["id"] for r in rows]
@@ -357,8 +355,7 @@ class GalleryStore:
             batch = ids[offset:offset + 500]
             marks = ",".join("?" * len(batch))
             cur = conn.execute(
-                "SELECT gallery_id, bucket, tag FROM gallery_tags WHERE gallery_id IN (%s)"
-                % marks, batch)
+                f"SELECT gallery_id, bucket, tag FROM gallery_tags WHERE gallery_id IN ({marks})", batch)
             for row in cur:
                 out.setdefault(row["gallery_id"], []).append((row["bucket"], row["tag"]))
         return {k: _tags_from_row(v) for k, v in out.items()}
@@ -397,7 +394,7 @@ class GalleryStore:
         """One full entry (tags included) by id."""
         conn = self._connect()
         cols = ", ".join(ENTRY_FIELDS)
-        row = conn.execute("SELECT %s FROM gallery WHERE id = ?" % cols, (gid,)).fetchone()
+        row = conn.execute(f"SELECT {cols} FROM gallery WHERE id = ?", (gid,)).fetchone()
         if row is None:
             return None
         d = _entry_from_row(row)
@@ -423,7 +420,7 @@ class GalleryStore:
         """Full entries — offline scripts only; this is the resident-RAM path."""
         conn = self._connect()
         cols = ", ".join(ENTRY_FIELDS)
-        rows = conn.execute("SELECT %s FROM gallery ORDER BY rowid" % cols).fetchall()
+        rows = conn.execute(f"SELECT {cols} FROM gallery ORDER BY rowid").fetchall()
         tagmap = self._tags_for_ids(conn, [r["id"] for r in rows])
         out = []
         for r in rows:
@@ -558,8 +555,7 @@ class GalleryStore:
             vals = [json.dumps(fields[c]) if c == "sources" and fields[c] is not None
                     else fields[c] for c in cols]
             conn.execute(
-                "UPDATE gallery SET %s WHERE id = ?"
-                % ", ".join("%s = ?" % c for c in cols),
+                "UPDATE gallery SET {} WHERE id = ?".format(", ".join(f"{c} = ?" for c in cols)),
                 vals + [gid])
             conn.commit()
 
@@ -579,7 +575,7 @@ class GalleryStore:
             conn = self._connect()
             marks = ",".join("?" * len(ids))
             cur = conn.execute(
-                "UPDATE gallery SET favourite = ? WHERE id IN (%s)" % marks,
+                f"UPDATE gallery SET favourite = ? WHERE id IN ({marks})",
                 [1 if value else 0] + ids)
             conn.commit()
             return cur.rowcount

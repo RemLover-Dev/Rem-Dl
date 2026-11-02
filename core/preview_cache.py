@@ -97,7 +97,7 @@ def preview_path(src: str, cache_dir: str) -> str:
         os.close(fd)
         try:
             subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", src,
+                ["ffmpeg", "-nostdin", "-y", "-v", "error", "-threads", "1", "-i", src,
                  "-map", "0:v:0", "-an", "-c:v", "copy",
                  "-movflags", "+faststart", tmp],
                 check=True, timeout=120)

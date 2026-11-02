@@ -341,7 +341,7 @@ class ZerochanWorker(BaseDownloader):
             return False
         try:
             self.log("Authenticating with Zerochan...")
-            status, text, resp = await self._curl_get_text(
+            _status, text, _resp = await self._curl_get_text(
                 "https://www.zerochan.net/login", timeout=30)
             token = None
             try:
@@ -758,7 +758,7 @@ class ZerochanWorker(BaseDownloader):
                 safe_ensure_dir(os.path.dirname(filepath))
                 with open(part_path, 'wb') as f:
                     f.write(content)
-                downloaded = len(content)
+                len(content)
 
                 if self.stop_event.is_set():
                     if os.path.exists(part_path):

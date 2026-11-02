@@ -291,10 +291,10 @@ class PixivWorker(BaseDownloader):
             if not nxt:
                 break
             qs = nxt.rpartition("?")[2]
-            params = dict(
-                (k, unquote(v)) for part in qs.split("&") if "=" in part
+            params = {
+                k: unquote(v) for part in qs.split("&") if "=" in part
                 for k, v in [part.split("=", 1)]
-            )
+            }
             page += 1
             if not self.stop_event.is_set():
                 await asyncio.sleep(self.anti_ban_pause)

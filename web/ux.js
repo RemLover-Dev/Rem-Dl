@@ -7,6 +7,7 @@
     const savedFields = new Set(['r34Key','r34Uid','danLogin','danApiKey','gelKey','gelUid','gsApiKey',
         'konaLogin','konaPassword','sankaLogin','sankaPassword','zeroLogin','zeroPassword',
         'pinterestCookies','pinterestEmail','pinterestPassword','pixivToken','pixivCookie',
+        'xCookies','xUsername','xPassword','xEmail','xEmailPassword',
         'verifyTls','apiTimeout','retryWait','antiBanPause','downloadRetries','reqRateLimit','dedupEnabled']);
     function setDirty(value) {
         dirty = value;

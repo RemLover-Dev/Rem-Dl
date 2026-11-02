@@ -187,6 +187,14 @@ def test_timer_counts_while_closed(store, monkeypatch):
     assert pn.seconds_until_due() == 0
 
 
+def test_official_pixiv_account_not_notified(store):
+    fresh = pn.ingest([_work(1, name="pixiv事務局"), _work(2, name="Rem"),
+                       _work(3, name="Pixiv")])
+    assert [e["work_id"] for e in fresh] == ["2"]
+    # skipped works stay unknown-but-unrecorded: no notification on rescans either
+    assert pn.ingest([_work(1, name="pixiv事務局")]) == []
+
+
 def test_navigation_payload_artist_id(store):
     (e,) = pn.ingest([_work(12345678, user=12345678, name="Rem")])
     # this is the value the ⚡ button fills into the Pixiv downloader

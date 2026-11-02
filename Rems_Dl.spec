@@ -39,6 +39,8 @@ hidden_imports = [
     'gallery_dl',
     'rule34Py',
     'pinterest_dl',
+    'twscrape',
+    'loguru',
     'webview',
     'core',
     'core.database',

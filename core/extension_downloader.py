@@ -1,14 +1,14 @@
 import json
-import stat
-import threading
-from urllib.parse import urlsplit, urljoin
 import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
+import threading
 import zipfile
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
