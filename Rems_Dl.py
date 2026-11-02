@@ -4149,6 +4149,7 @@ except (ValueError, OSError, AttributeError, RuntimeError):
 # sites; requests within one site stay strictly serialized
 ACTIVE_JOBS = {}      # site -> running job
 DOWNLOAD_QUEUES = {}  # site -> [waiting jobs]
+RUN_BUDGETS = {}      # site -> images left in the current queue run (set by START's limit)
 QUEUE_LOCK = threading.Lock()
 # finish_report needs to know whether a site's queue continues (shared can't
 # import us — attribute callback avoids the circular import)
@@ -4175,8 +4176,35 @@ def _start_job_thread(job):
 
 def _run_job(job):
     site = job.get("worker")
+    skip = False
     try:
-        _dispatch_worker(job)
+        # run-budget: START's limit caps the WHOLE queue drain, not each tag
+        # (limit 2 + 3 queued tags = 2 images total, spent by actual
+        # download counts). 0-limit snapshots mean "unlimited" for some
+        # workers — those are never clamped or gated.
+        with QUEUE_LOCK:
+            budget = RUN_BUDGETS.get(site)
+            snap = _safe_int(job.get("limit"), 0)
+            if budget is not None and 0 < budget < snap:
+                job["limit"] = budget
+        pre = shared._BATCH_STATS.get(site, {}).get("downloaded", 0)
+        skip = budget is not None and budget <= 0 and snap > 0
+        if skip:
+            # only a queue_bump can reach here (the chain never pops into a
+            # spent budget) — give the job back its queue slot and stop
+            with QUEUE_LOCK:
+                q = DOWNLOAD_QUEUES.setdefault(site, [])
+                if not q or q[0] is not job:
+                    q.insert(0, job)
+                RUN_BUDGETS.pop(site, None)
+            entry = _queue_entry(job)
+            shared.log_msg(entry["site"], f">>> Run limit reached — '{entry['tag']}' NOT auto-started, still queued <<<")
+        else:
+            _dispatch_worker(job)
+            with QUEUE_LOCK:
+                b = RUN_BUDGETS.get(site)
+                if b is not None:
+                    RUN_BUDGETS[site] = b - (shared._BATCH_STATS.get(site, {}).get("downloaded", 0) - pre)
     except Exception as e:
         print(f"Worker error ({job.get('worker')}): {e}", flush=True)
     finally:
@@ -4194,11 +4222,18 @@ def _run_job(job):
             # queue_bump may have superseded us (we're back on the queue)
             if ACTIVE_JOBS.get(site) is job:
                 q = DOWNLOAD_QUEUES.get(site)
-                if q:
+                remaining = RUN_BUDGETS.get(site)
+                head_snap = _safe_int(q[0].get("limit"), 0) if q else 0
+                blocked = q and remaining is not None and remaining <= 0 and head_snap > 0
+                if q and not blocked:
                     nxt = q.pop(0)
                     ACTIVE_JOBS[site] = nxt
                 else:
+                    if q:
+                        e2 = _queue_entry(q[0])
+                        shared.log_msg(e2["site"], f">>> Run limit reached — '{e2['tag']}' NOT auto-started, still queued <<<")
                     ACTIVE_JOBS.pop(site, None)
+                    RUN_BUDGETS.pop(site, None)
         if nxt is not None:
             entry = _queue_entry(nxt)
             shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")
@@ -4286,6 +4321,15 @@ def handle_get_queue():
 def handle_start_worker(data):
     site = data.get("worker")
     has_payload = any(data.get(k) for k in ("tag", "category", "user_id"))
+    # START's limit is the budget for the whole queue drain this kick begins
+    # (each queued tag obeys the shared remainder instead of its own limit)
+    if has_payload:
+        lim = _safe_int(data.get("limit"), 0)
+        with QUEUE_LOCK:
+            if lim > 0:
+                RUN_BUDGETS[site] = lim
+            else:
+                RUN_BUDGETS.pop(site, None)
     with QUEUE_LOCK:
         if ACTIVE_JOBS.get(site) is None:
             q = DOWNLOAD_QUEUES.get(site)
@@ -4335,6 +4379,7 @@ def handle_stop_worker(data):
         if DOWNLOAD_QUEUES.get(name):
             DOWNLOAD_QUEUES[name] = []
             shared.log_msg(name, ">>> Notice: queued request cancelled <<<")
+        RUN_BUDGETS.pop(name, None)
     _emit_queue_state()
 
 @socketio.on("queue_move")
