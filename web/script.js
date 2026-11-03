@@ -6332,8 +6332,15 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     if (dp && deletedPaths.has(dp)) { showToast("Image was deleted", { warn: true, icon: WARN_ICON }); return; }
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
-    closeGalleryViewer();
-    _viewerOpen();  // single-log opens own the decode cores too
+    // switching inside an already-open single viewer must hold the current
+    // frame and the ±1 preload cache — full teardown would blank the canvas
+    // and drop the neighbor warm right before it's needed. Gallery mode has
+    // always switched without tearing down (showViewerImage); this matches it.
+    const reSwitch = viewerSingle && viewer.style.display !== 'none';
+    if (!reSwitch) {
+        closeGalleryViewer();
+        _viewerOpen();  // single-log opens own the decode cores too
+    }
     viewerSingle = true;
     viewerSingleBoxId = boxId || null;
     viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
@@ -6342,9 +6349,20 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     viewerSingleFilename = filename || "image";
     viewer.classList.add("single");
     viewer.classList.toggle("has-list", viewerSingleList.length > 1);
+    // leftovers a skipped teardown would strand (same as showViewerImage)
+    const oldWrap = viewer.querySelector('.gallery-video-wrap');
+    if (oldWrap) oldWrap.remove();
+    viewerDrag.active = false;
+    viewerZoom = 1;
     const ext = ((filename || "").split('.').pop() || "").toLowerCase();
     if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) {
+        // abort any in-flight raster load — its late reveal would paint the
+        // canvas over the video (gallery's video path clears too, at 6495)
+        clearViewerResource();
         viewerImg.style.display = 'none';
+        // the canvas holds the previous raster — hide it so the video owns the stage
+        const cv = document.getElementById("galleryViewerCanvas");
+        if (cv) cv.style.display = 'none';
         const wrap = document.createElement('div');
         wrap.className = 'gallery-video-wrap';
         const video = document.createElement('video');
