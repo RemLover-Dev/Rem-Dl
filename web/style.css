@@ -777,6 +777,8 @@ select option:hover, select option:checked { background: var(--title-color); col
 
 /* ===== GALLERY TAB ===== */
 .gallery-tab {
+    /* anchor for the floating .gallery-select-bar */
+    position: relative;
     background: #0f1420;
     border: 1px solid transparent;
     box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.3);
@@ -934,16 +936,28 @@ select option:hover, select option:checked { background: var(--title-color); col
     pointer-events: auto;
 }
 
+/* floating pill over the grid's bottom edge, out of the toolbar flow:
+   as a toolbar item it wrapped onto its own row, the toolbar grew, the
+   flex:1 grid shrank, and the grid's ResizeObserver re-measured row height
+   + per-page — every preview resized, jumped and repainted on select.
+   Out of flow it can appear/disappear with zero layout change anywhere. */
 .gallery-select-bar {
+    position: absolute;
+    left: 50%;
+    bottom: 64px;
+    transform: translateX(-50%);
+    z-index: 80;
     display: flex;
     flex-wrap: wrap;
+    justify-content: center;
     gap: 6px;
     align-items: center;
-    padding: 3px 8px;
-    margin-left: auto;
-    background: rgba(45, 212, 191, 0.08);
-    border: 1px solid rgba(45, 212, 191, 0.25);
-    border-radius: 8px;
+    padding: 6px 10px;
+    max-width: calc(100% - 24px);
+    background: rgba(10, 22, 26, 0.96);
+    border: 1px solid rgba(45, 212, 191, 0.45);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
     flex-shrink: 0;
 }
 .gallery-select-bar .action-btn { padding: 3px 10px; font-size: 12px; border-radius: 6px; }
@@ -954,14 +968,10 @@ select option:hover, select option:checked { background: var(--title-color); col
     margin-right: 6px;
 }
 
-/* edit mode: top bar compacts so the select bar costs no grid height */
-.gallery-tab.select-active .gallery-toolbar { padding-bottom: 4px; gap: 6px; }
-.gallery-tab.select-active .gallery-toolbar .gallery-dropdown-btn,
-.gallery-tab.select-active .gallery-toolbar input { padding: 3px 8px; font-size: 12px; }
-#Gallery.select-active .gallery-toolbar input#gallerySearch { padding: 3px 8px !important; font-size: 12px !important; min-width: 0 !important; }
-.gallery-tab.select-active .gallery-toolbar .gallery-blur-btn,
-.gallery-tab.select-active .gallery-toolbar .gallery-fav-btn,
-.gallery-tab.select-active .gallery-toolbar .action-btn { padding: 3px 8px; font-size: 12px; }
+/* no select-mode toolbar compaction: shrinking the toolbar controls in
+   edit mode changed the toolbar's height itself, which is the same grid
+   resize/flash through the other door — the floating select bar above
+   makes it unnecessary */
 
 .gallery-card img {
     position: absolute;

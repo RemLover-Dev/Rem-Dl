@@ -5829,18 +5829,9 @@ function galleryCardSelectClick(id, on) {
 }
 
 function updateSelectBar() {
-    // pin toolbar height to its normal-mode height BEFORE the select bar is
-    // shown below — capture after that and the wrapped select bar inflates it
-    {
-        const tab = document.getElementById("Gallery");
-        if (tab) {
-            const wasActive = tab.classList.contains("select-active");
-            if (gallerySelectMode !== wasActive) {
-                const tb = tab.querySelector(".gallery-toolbar");
-                if (tb) tb.style.minHeight = gallerySelectMode ? tb.offsetHeight + "px" : "";
-            }
-        }
-    }
+    // the select bar is a floating overlay (see .gallery-select-bar in
+    // style.css), not a toolbar item — showing/hiding it changes no layout,
+    // so the grid never re-measures, resizes or repaints on select
     const bar = document.getElementById("gallerySelectBar");
     if (bar) bar.style.display = gallerySelectMode ? "flex" : "none";
     const countEl = document.getElementById("gallerySelectCount");
@@ -5856,9 +5847,6 @@ function updateSelectBar() {
     if (favBtn) favBtn.title = gallerySelectMode ? "Favorite selected" : "Favorites only";
     const grid = document.getElementById("galleryGrid");
     if (grid) grid.classList.toggle("select-mode", gallerySelectMode);
-    // top bar compacts while the select bar is out (height pinned at entry above)
-    const tab = document.getElementById("Gallery");
-    if (tab) tab.classList.toggle("select-active", gallerySelectMode);
 }
 
 function setGallerySelected(id, on) {
