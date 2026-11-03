@@ -919,9 +919,11 @@ let currentRule34Tags = [];
 function addRule34Tag() {
     let input = document.getElementById("rule34TagInput");
     if (!input) return;
-    let val = input.value.trim().toLowerCase();
-    if (val && !currentRule34Tags.includes(val)) {
-        currentRule34Tags.push(val);
+    let added = false;
+    chipsFromTyped(input.value).forEach(function(val) {
+        if (!currentRule34Tags.includes(val)) { currentRule34Tags.push(val); added = true; }
+    });
+    if (added) {
         input.value = "";
         renderRule34Tags();
     }
@@ -963,7 +965,7 @@ function addGelbooruTag() {
     // ponytail: read via danTagForRequest, not input.value — the box shows
     // pretty text ("reze (chainsaw man)") while dataset.raw holds the real
     // tag ("reze_(chainsaw_man)"); splitting pretty text shreds it into chips
-    danTagForRequest('gelbooruTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('gelbooruTag')).forEach(function(val) {
         if (!currentGelbooruTags.includes(val)) {
             currentGelbooruTags.push(val);
             if (val === raw) gelbooruSubTags.add(val);
@@ -1038,7 +1040,7 @@ function addWatcherTag() {
     let input = document.getElementById("watcherTag");
     if (!input) return;
     let added = false;
-    danTagForRequest('watcherTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('watcherTag')).forEach(function(val) {
         if (!watcherTags.includes(val)) { watcherTags.push(val); added = true; }
     });
     if (added) { input.value = ""; delete input.dataset.raw; renderWatcherTags(); }
@@ -1233,7 +1235,7 @@ function addGsbooruTag() {
     let added = false;
     let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
     // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('gsbooruTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('gsbooruTag')).forEach(function(val) {
         if (!currentGsbooruTags.includes(val)) {
             currentGsbooruTags.push(val);
             if (val === raw) gsbooruSubTags.add(val);
@@ -1269,7 +1271,7 @@ function addKonaTag() {
     let added = false;
     let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
     // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('konaTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('konaTag')).forEach(function(val) {
         if (!currentKonaTags.includes(val)) {
             currentKonaTags.push(val);
             if (val === raw) konaSubTags.add(val);
@@ -1305,7 +1307,7 @@ function addNekosiaTag() {
     let added = false;
     let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
     // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('nekosiaTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('nekosiaTag')).forEach(function(val) {
         if (!currentNekosiaTags.includes(val)) {
             currentNekosiaTags.push(val);
             if (val === raw) nekosiaSubTags.add(val);
@@ -1341,7 +1343,7 @@ function addSafeTag() {
     let added = false;
     let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
     // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('safeTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('safeTag')).forEach(function(val) {
         if (!currentSafeTags.includes(val)) {
             currentSafeTags.push(val);
             if (val === raw) safeSubTags.add(val);
@@ -1377,7 +1379,7 @@ function addSankakuTag() {
     let added = false;
     let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
     // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('sankakuTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('sankakuTag')).forEach(function(val) {
         if (!currentSankakuTags.includes(val)) {
             currentSankakuTags.push(val);
             if (val === raw) sankakuSubTags.add(val);
@@ -1413,7 +1415,7 @@ function addYandeTag() {
     let added = false;
     let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
     // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('yandeTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('yandeTag')).forEach(function(val) {
         if (!currentYandeTags.includes(val)) {
             currentYandeTags.push(val);
             if (val === raw) yandeSubTags.add(val);
@@ -2053,12 +2055,15 @@ let currentDanTags = [];
 let danSubtagCache = {};
 let danSubTags = new Set();
 function addDanTagName(name, viaSubtag) {
-    let val = (name || "").trim().toLowerCase();
-    if (val && !currentDanTags.includes(val)) {
-        currentDanTags.push(val);
-        if (viaSubtag) danSubTags.add(val);
-        renderDanTags();
-    }
+    let added = false;
+    chipsFromTyped(name).forEach(function(val) {
+        if (!currentDanTags.includes(val)) {
+            currentDanTags.push(val);
+            if (viaSubtag) danSubTags.add(val);
+            added = true;
+        }
+    });
+    if (added) renderDanTags();
 }
 function addDanTag() {
     let input = document.getElementById("danTag");
@@ -2453,6 +2458,15 @@ function danTagForRequest(inputId) {
         if (val.startsWith(pretty)) return raw + val.slice(pretty.length);
     }
     return val;
+}
+
+// underscore-native boorus (dan/rule34/gelbooru/...): free-typed spaces are
+// part of the tag name ("hiiragi yuuko" = hiiragi_yuuko), commas separate
+// tags — same rule the e-shuushuu adder already uses for its space tags
+function chipsFromTyped(str) {
+    return String(str || "").trim().toLowerCase().split(',')
+        .map(function(s) { return s.trim().replace(/\s+/g, '_'); })
+        .filter(Boolean);
 }
 
 document.addEventListener("DOMContentLoaded", function() {
@@ -3377,7 +3391,7 @@ function toggleWorker(workerName) {
     if (workerRunning[workerName]) stopWorker(workerName);
     else startWorker(workerName);
 }
-function buildWorkerPayload(workerName) {
+function buildWorkerPayload(workerName, allowEmpty) {
     let payload = { worker: workerName, net_config: { ...globalNetConfig } };
     payload.net_config.api_timeout = document.getElementById("apiTimeout").value;
     payload.net_config.retry_wait = document.getElementById("retryWait").value;
@@ -3404,8 +3418,8 @@ function buildWorkerPayload(workerName) {
             payload.tag = 'ranking:' + ranking;
         } else {
             let val = document.getElementById('pixivTag').value.trim();
-            if (!val) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return null; }
-            payload.tag = mode + ':' + val;
+            if (!val && !allowEmpty) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return null; }
+            payload.tag = val ? (mode + ':' + val) : '';
         }
 
         payload.limit = document.getElementById('pixivLimit').value;
@@ -3433,13 +3447,15 @@ function buildWorkerPayload(workerName) {
 
     // ponytail: don't fire a worker with no query — it scans nothing and
     // the empty limit box (now possible) already defaults server-side
+    // (allowEmpty = settings-only START with a waiting queue: the chips were
+    // cleared at enqueue, only limit/rating/... travel with this payload)
     const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia', 'x'];
-    if (TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
+    if (!allowEmpty && TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
         logToConsole(workerName, "Error: tag is empty — nothing to search");
         return null;
     }
-    if (workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
+    if (!allowEmpty && workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
         showToast("Enter a tag or user ID first");
         logToConsole('eshuushuu', "Error: tag and user ID are both empty — nothing to search");
         return null;
@@ -3471,8 +3487,16 @@ function clearSubmittedTags(workerName) {
 function startWorker(workerName) {
     delete stoppedWorker[workerName];
     if (queuedCounts[workerName]) {
-        // jobs are already waiting — START kicks off the head of the queue
-        socket.emit("start_worker", { worker: workerName });
+        // jobs are already waiting — START kicks the head and stamps this
+        // form's limit/rating/... onto every waiting job (settings_only: the
+        // chips were cleared at enqueue, so no new job is appended)
+        const payload = buildWorkerPayload(workerName, true);
+        if (payload) {
+            payload.settings_only = true;
+            socket.emit("start_worker", payload);
+        } else {
+            socket.emit("start_worker", { worker: workerName });
+        }
     } else {
         const payload = buildWorkerPayload(workerName);
         if (!payload) return false;

@@ -4291,14 +4291,18 @@ def handle_get_queue():
 
 @socketio.on("start_worker")
 def handle_start_worker(data):
+    data = data or {}
     site = data.get("worker")
     has_payload = any(data.get(k) for k in ("tag", "category", "user_id"))
+    # settings_only: client's START with a waiting queue carries only the
+    # form's settings — stamp them, kick the head, append nothing
+    settings_only = bool(data.get("settings_only"))
     with QUEUE_LOCK:
         # queue entries snapshot settings at enqueue time — at START, the
         # form's current limit/rating override every waiting job of this site
         # (limit 2 then START = 2 images from each queued tag, not the old
         # per-enqueue snapshot)
-        if has_payload and DOWNLOAD_QUEUES.get(site):
+        if DOWNLOAD_QUEUES.get(site) and any(k in data for k in _QUEUE_SETTING_KEYS):
             for job in DOWNLOAD_QUEUES[site]:
                 for k in _QUEUE_SETTING_KEYS:
                     if k in data:
@@ -4308,7 +4312,7 @@ def handle_start_worker(data):
             if q:
                 # START with jobs already waiting runs the head of the queue;
                 # a fresh form payload joins the back instead of jumping the line
-                if has_payload:
+                if has_payload and not settings_only:
                     q.append(data)
                     entry = _queue_entry(data)
                     shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
@@ -4318,7 +4322,7 @@ def handle_start_worker(data):
             elif has_payload:
                 ACTIVE_JOBS[site] = data
                 _start_job_thread(data)
-        elif has_payload:
+        elif has_payload and not settings_only:
             q = DOWNLOAD_QUEUES.setdefault(site, [])
             q.append(data)
             entry = _queue_entry(data)

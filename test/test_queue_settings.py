@@ -101,3 +101,34 @@ def test_net_config_stays_per_job(queue_env):
     # queued job's own net_config survives; limit still propagates
     assert dispatches[0]["net_config"] == {"api_timeout": "7"}
     assert dispatches[0]["limit"] == "5"
+
+
+def test_settings_only_start_stamps_without_appending(queue_env):
+    # the real client's START with a waiting queue: chips were cleared at
+    # enqueue, so the payload carries only settings + settings_only — no tag,
+    # no new job appended, just stamp + kick the head
+    dispatches = queue_env
+    Rems_Dl.handle_queue_add({"worker": "gelbooru", "tag": "a", "limit": "50", "rating": "g",
+                              "net_config": {"api_timeout": "7"}})
+    Rems_Dl.handle_queue_add({"worker": "gelbooru", "tag": "b", "limit": "50", "rating": "g"})
+    Rems_Dl.handle_start_worker({
+        "worker": "gelbooru", "settings_only": True,
+        "limit": "3", "rating": "explicit",
+        "net_config": {"api_timeout": "9"},
+    })
+    assert _wait(lambda: len(dispatches) == 2 and _settled()), "run never settled"
+    assert [d["tag"] for d in dispatches] == ["a", "b"]
+    assert [d["limit"] for d in dispatches] == ["3", "3"]
+    assert [d["rating"] for d in dispatches] == ["explicit", "explicit"]
+    # net_config is not a _QUEUE_SETTING_KEY — per-job wins over the form
+    assert dispatches[0]["net_config"] == {"api_timeout": "7"}
+
+
+def test_bare_start_without_settings_leaves_queue_snapshots(queue_env):
+    # legacy {worker}-only START (no setting keys present): no stamping
+    dispatches = queue_env
+    Rems_Dl.handle_queue_add({"worker": "gelbooru", "tag": "a", "limit": "50", "rating": "g"})
+    Rems_Dl.handle_start_worker({"worker": "gelbooru"})
+    assert _wait(lambda: len(dispatches) == 1 and _settled()), "run never settled"
+    assert dispatches[0]["limit"] == "50"
+    assert dispatches[0]["rating"] == "g"
