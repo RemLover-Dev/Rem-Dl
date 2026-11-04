@@ -2571,12 +2571,16 @@ socket.on("gallery_rescan_done", function (data) {
 socket.on("image_deleted", function (data) {
     const fn = (data && data.filename) || "";
     if (!fn) return;
+    // register the name (and paths as log-card hits resolve) so every open
+    // guard toasts "deleted" instead of a 404 on browser-cached thumbs
+    markDeleted(null, fn);
     const enc = encodeURIComponent(fn).replace(/'/g, "%27");
     document.querySelectorAll(".image-card-log img[data-ofi]").forEach(function (img) {
         const tail = (img.dataset.ofi || "").split("/").pop();
         let hit = tail === enc;
         if (!hit) { try { hit = decodeURIComponent(tail) === fn; } catch (e) { hit = false; } }
         if (hit) {
+            markDeleted(img.dataset.ofi, fn);
             const card = img.closest(".image-card-log");
             if (card) card.remove();
         }

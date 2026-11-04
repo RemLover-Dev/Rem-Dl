@@ -3023,6 +3023,38 @@ def _evict_caches(full):
         pass
 
 
+def _dedup_replaced_cleanup(old_path):
+    """A keep-larger dedup replace removed old_path from disk after it had
+    already been published (gallery row, history row, log card) — drop its
+    rows, evict caches and notify clients, mirroring the manual delete route.
+    Wired into core.shared.dedup_replaced_hook; runs in a worker thread."""
+    fn = os.path.basename(old_path)
+    _invalidate_fp_cache()
+    try:
+        _evict_caches(old_path)
+    except Exception as e:
+        print("Dedup replace cache-evict error:", e)
+    removed = False
+    try:
+        with shared._GALLERY_LOCK:
+            gallery = shared.load_gallery()
+            removed = any(i.get("filename") == fn for i in gallery["images"])
+            if removed:
+                gallery["images"] = [i for i in gallery["images"] if i.get("filename") != fn]
+                shared._store().delete_by_filename(fn)
+    except Exception as e:
+        print("Dedup replace gallery cleanup error:", e)
+    try:
+        DatabaseManager.remove_image_history(fn)
+    except Exception as e:
+        print("Dedup replace history cleanup error:", e)
+    if removed:
+        socketio.emit("image_deleted", {"filename": fn})
+
+
+shared.dedup_replaced_hook = _dedup_replaced_cleanup
+
+
 def _thumb_alpha_hint(full):
     """Cheap alpha probe: 'A' band or palette transparency. The plugin decodes
     the whole file on open, so every hint probe quietly repeated a full decode

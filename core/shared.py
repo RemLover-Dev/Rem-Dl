@@ -325,6 +325,20 @@ def default_emit(event, data): pass
 emit_callback = default_emit
 def socketio_emit(event, data): emit_callback(event, data)
 
+# set by Rems_Dl: drops gallery/history rows + caches for a file the dedup
+# keep-larger replace deleted after it was already published, and emits
+# image_deleted so clients stop showing it
+dedup_replaced_hook = None
+
+def cleanup_replaced(old_path):
+    hook = dedup_replaced_hook
+    if not hook:
+        return
+    try:
+        hook(old_path)
+    except Exception as e:
+        print("Dedup replace cleanup error:", e)
+
 TAG_TYPE_MAP = {0: "tag", 1: "artist", 3: "copyright", 4: "character", 5: "metadata"}
 
 def load_gallery():
@@ -1671,6 +1685,13 @@ class BaseDownloader:
                                             artists, characters, copyrights, metadata_tags,
                                             outfits, groups, hair, eyes)
                     return False
+
+                # keep-larger replace: dedup kept the fresh download and already
+                # deleted the older published file — drop its rows/caches and
+                # stop clients from showing it (file check guards a failed remove)
+                replaced = getattr(dup, "replaced_path", None)
+                if replaced and not os.path.exists(replaced):
+                    await asyncio.to_thread(cleanup_replaced, replaced)
 
                 self.downloaded_count += 1
                 self.dl_history.add(filename)
