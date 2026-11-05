@@ -68,6 +68,28 @@ def test_untrusted_host_origin_and_cross_site_requests_are_rejected():
     assert client.get("/api/private", headers={**headers, "Sec-Fetch-Site": "cross-site"}).status_code == 403
 
 
+def test_auth_works_behind_tls_terminating_proxy():
+    """The app sees http while the browser origin is https — same site.
+
+    This was the 'valid token rejected' bug when running headless behind a
+    reverse proxy: every login POST got 403 and the page said invalid token.
+    """
+    token = "T" * 40
+    _, client = _client(token=token, hosts={"example.com"})
+
+    r = client.post("/auth", data=json.dumps({"token": token}),
+                    content_type="application/json",
+                    headers={"Host": "example.com", "Origin": "https://example.com"})
+    assert r.status_code == 204
+    assert "Secure" in r.headers.get("Set-Cookie", "")
+
+    # a different site with the same scheme is still cross-site
+    r = client.post("/auth", data=json.dumps({"token": token}),
+                    content_type="application/json",
+                    headers={"Host": "example.com", "Origin": "https://evil.example"})
+    assert r.status_code == 403
+
+
 def test_generated_token_is_marked_but_explicit_token_is_not(monkeypatch):
     monkeypatch.delenv("REMS_ACCESS_TOKEN", raising=False)
     generated = AccessGuard(_app)

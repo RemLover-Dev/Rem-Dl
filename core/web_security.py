@@ -24,7 +24,7 @@ async function login(value) {
   try {
     const r = await fetch('/auth', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token:value})});
     if (r.ok) location.replace('/');
-    else showForm('Invalid access token.');
+    else showForm(r.status === 401 ? 'Invalid access token.' : 'Request blocked — check REMS_ALLOWED_HOSTS and the reverse-proxy Host header.');
   } catch (_) { showForm('Unable to connect. Try again.'); }
 }
 document.querySelector('form').onsubmit = e => {e.preventDefault(); login(document.querySelector('input').value);};
@@ -76,8 +76,15 @@ class AccessGuard:
             if not host or host.lower() not in self.hosts:
                 return respond(Response('Untrusted host', status=403))
             origin = req.headers.get('Origin')
-            if origin and origin != req.host_url.rstrip('/'):
-                return respond(Response('Cross-origin requests are forbidden', status=403))
+            if origin:
+                # Behind a TLS-terminating proxy the app sees http while the
+                # browser origin is https — same site, not cross-site. Compare
+                # host only; the host allowlist above already gates trust.
+                o = urlsplit(origin)
+                origin_netloc = (o.netloc or '').lower()
+                origin_host = (o.hostname or '').lower()
+                if origin_netloc != req.host.lower() and origin_host not in self.hosts:
+                    return respond(Response('Cross-origin requests are forbidden', status=403))
             if req.headers.get('Sec-Fetch-Site') == 'cross-site':
                 return respond(Response('Cross-site requests are forbidden', status=403))
         except ValueError:
@@ -96,8 +103,11 @@ class AccessGuard:
             if not self._valid(candidate, self.token):
                 return respond(Response('Unauthorized', status=401))
             response = Response(status=204)
+            # req.scheme is http behind a TLS-terminating proxy — the browser
+            # Origin tells us whether the cookie will actually travel over https.
+            secure = req.scheme == 'https' or (req.headers.get('Origin') or '').startswith('https://')
             response.set_cookie(self.cookie_name, self.cookie_value, httponly=True,
-                                samesite='Strict', secure=req.scheme == 'https', path='/')
+                                samesite='Strict', secure=secure, path='/')
             return respond(response)
 
         authenticated = self._valid(req.cookies.get(self.cookie_name), self.cookie_value)
