@@ -336,7 +336,7 @@ python Rems_Dl.py
     REMS_ACCESS_TOKEN='replace-with-a-random-32-plus-character-secret' \
     REMS_ALLOWED_HOSTS='rems.example.com,192.0.2.10' python Rems_Dl.py
   ```
-  Do not put the access token in shell history or logs. If omitted, a generated token is saved to `database/rems_access_token` with mode `0600`; read it locally with `cat database/rems_access_token` and enter it on the login page. The value itself is never printed to service logs.
+  Behind a reverse proxy, the proxy must pass the original `Host` header (nginx: `proxy_set_header Host $host;`) — see the Docker section for a full nginx example. Do not put the access token in shell history or logs. If omitted, a generated token is saved to `database/rems_access_token` with mode `0600`; read it locally with `cat database/rems_access_token` and enter it on the login page. The value itself is never printed to service logs.
 
 ### 6. Running with Docker (Zero Host Dependencies)
 Pull and run the official image:
@@ -350,7 +350,41 @@ docker run -d -p 127.0.0.1:5000:5000 \
   -v "$(pwd)/database:/app/database" \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
-The container listens internally on all interfaces, but Docker publishes it only on the host loopback address. Reach it remotely through `ssh -L 5000:127.0.0.1:5000 user@server`, then open `http://localhost:5000`. The container persists across browser-tab disconnects. For public/LAN binding, use a strong configured token, a narrow `REMS_ALLOWED_HOSTS` list, and a firewall rule.
+The container listens internally on all interfaces, but Docker publishes it only on the host loopback address. Reach it remotely through `ssh -L 5000:127.0.0.1:5000 user@server`, then open `http://localhost:5000`. The container persists across browser-tab disconnects.
+
+#### Public website behind a reverse proxy
+
+Keep the loopback publish and put nginx in front; allowlist the public hostname and pass the original `Host` header:
+
+```bash
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=rems.example.com \
+  -v "$(pwd)/Rems Dl:/app/Rems Dl" \
+  -v "$(pwd)/database:/app/database" \
+  --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
+```
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name rems.example.com;
+  # ssl_certificate     /etc/letsencrypt/live/rems.example.com/fullchain.pem;
+  # ssl_certificate_key /etc/letsencrypt/live/rems.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;              # the app allowlists this host
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;   # socket.io websocket
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 60s;
+  }
+}
+```
+
+Open `https://rems.example.com` and enter the `REMS_ACCESS_TOKEN` value on the login page once. The session cookie is `HttpOnly` + `SameSite=Strict` and becomes `Secure` on HTTPS. Do not publish port 5000 on `0.0.0.0` directly, and pass the token via `--env-file` rather than the shell if you want it out of your history.
 
 ---
 

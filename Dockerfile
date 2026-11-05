@@ -30,4 +30,8 @@ EXPOSE 5000
 #     -e REMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
 #     -v "$(pwd)/Rems Dl:/app/Rems Dl" -v "$(pwd)/database:/app/database" \
 #     ghcr.io/remlover-dev/rems-dl:latest
+# Public site: keep the loopback publish, front it with a reverse proxy that
+# passes the original Host header (nginx: proxy_set_header Host $host), and
+# set REMS_ALLOWED_HOSTS to the public hostname. See README "Running with
+# Docker" for a full nginx example.
 CMD ["python", "Rems_Dl.py"]

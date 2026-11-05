@@ -306,7 +306,7 @@ update-desktop-database ~/.local/share/applications/
   ```
   سپس در مرورگر محلی `http://127.0.0.1:5000` را باز کنید. با بستن تب مرورگر سرور متوقف **نمی‌شود**.
 
-  اتصال مستقیم شبکه فقط با تنظیم صریح `REMS_HOST=0.0.0.0`، توکن ۳۲ کاراکتری یا بیشتر در `REMS_ACCESS_TOKEN` و فهرست میزبان‌های مجاز در `REMS_ALLOWED_HOSTS` فعال می‌شود. توکن در لاگ چاپ نمی‌شود؛ اگر توکن را تنظیم نکرده باشید، توکن خودکار در `database/rems_access_token` با مجوز `0600` ذخیره می‌شود. برای ورود، آن را به‌صورت محلی با `cat database/rems_access_token` بخوانید.
+  اتصال مستقیم شبکه فقط با تنظیم صریح `REMS_HOST=0.0.0.0`، توکن ۳۲ کاراکتری یا بیشتر در `REMS_ACCESS_TOKEN` و فهرست میزبان‌های مجاز در `REMS_ALLOWED_HOSTS` فعال می‌شود. اگر برنامه پشت یک ریورس پروکسی باشد، پروکسی باید هدر `Host` اصلی را منتقل کند (nginx: `proxy_set_header Host $host;`) — نمونهٔ کامل nginx در بخش داکر آمده است. توکن در لاگ چاپ نمی‌شود؛ اگر توکن را تنظیم نکرده باشید، توکن خودکار در `database/rems_access_token` با مجوز `0600` ذخیره می‌شود. برای ورود، آن را به‌صورت محلی با `cat database/rems_access_token` بخوانید.
 
 ### ۵. اجرا با داکر (Docker)
 ```bash
@@ -320,6 +320,40 @@ docker run -d -p 127.0.0.1:5000:5000 \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
 کانتینر داخل شبکهٔ خودش روی همهٔ رابط‌ها گوش می‌دهد، اما پورت میزبان فقط روی loopback منتشر می‌شود. برای دسترسی از راه دور از تونل SSH استفاده کنید: `ssh -L 5000:127.0.0.1:5000 user@server`؛ سپس `http://localhost:5000` را باز کنید. برای انتشار مستقیم روی LAN یا اینترنت، توکن قوی، فهرست دقیق میزبان‌های مجاز و فایروال الزامی است.
+
+#### وب‌سایت عمومی پشت ریورس پروکسی
+
+انتشار روی loopback را نگه دارید و nginx را جلو بگذارید؛ میزبان عمومی را در allowlist بنویسید و هدر `Host` اصلی را منتقل کنید:
+
+```bash
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=rems.example.com \
+  -v "$(pwd)/Rems Dl:/app/Rems Dl" \
+  -v "$(pwd)/database:/app/database" \
+  --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
+```
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name rems.example.com;
+  # ssl_certificate     /etc/letsencrypt/live/rems.example.com/fullchain.pem;
+  # ssl_certificate_key /etc/letsencrypt/live/rems.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;              # اپلیکیشن همین هاست را allowlist می‌کند
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;   # وب‌سوکت socket.io
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 60s;
+  }
+}
+```
+
+`https://rems.example.com` را باز کنید و یک بار مقدار `REMS_ACCESS_TOKEN` را در صفحهٔ ورود وارد کنید. کوکی نشست `HttpOnly` و `SameSite=Strict` است و روی HTTPS پرچم `Secure` می‌گیرد. پورت 5000 را مستقیم روی `0.0.0.0` منتشر نکنید و برای خارج کردن توکن از تاریخچهٔ شل، به‌جای دستور مستقیم از `--env-file` استفاده کنید.
 
 ---
 
