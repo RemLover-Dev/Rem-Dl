@@ -155,6 +155,28 @@ def test_keep_larger_cleanup_without_gallery_row_does_not_emit_delete(gallery_ap
     assert DatabaseManager.load_image_history() == []
 
 
+def test_delete_purges_name_indexes_without_ghosts(gallery_app_env):
+    root, client, _events = gallery_app_env
+    _add_same_name_pair(root)
+    cache = shared._gallery_cache
+    assert len(cache["by_fn_paths"]["same.jpg"]) == 2
+
+    response = client.post("/api/gallery/delete_by_name", json={
+        "filename": "same.jpg", "filepath": "Danbooru/tag-a/same.jpg",
+    })
+    assert response.status_code == 200
+    rows = cache["by_fn_paths"]["same.jpg"]
+    assert len(rows) == 1 and rows[0]["filepath"] == "Pixiv/tag-b/same.jpg"
+    assert cache["by_fn"]["same.jpg"] is rows[0]
+    assert "same.jpg" in cache["filenames"]
+
+    # re-download appends exactly one live row — ghosts never accumulate
+    shared.add_to_gallery("danbooru", "same.jpg", "Danbooru/tag-a/same.jpg",
+                          ["again"], [])
+    assert len(cache["by_fn_paths"]["same.jpg"]) == 2
+    assert cache["by_fn"]["same.jpg"]["filepath"] == "Danbooru/tag-a/same.jpg"
+
+
 def test_history_favourite_endpoint_accepts_filepath_without_filename(gallery_app_env):
     root, client, _events = gallery_app_env
     _add_same_name_pair(root)

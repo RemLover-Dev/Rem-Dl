@@ -511,21 +511,37 @@ def _reindex_gallery_locked(g):
     _gallery_cache["by_fn_paths"] = by_fn_paths
 
 def drop_gallery_path_index(entry):
-    """Pop one removed entry's by_path key without a full reindex.
+    """Pop one removed entry's index keys without a full reindex.
 
     _reindex_gallery_locked realpaths every row (~300ms at 30k images) while
-    callers hold _GALLERY_LOCK; delete paths know exactly which key leaves.
+    callers hold _GALLERY_LOCK; delete paths know exactly which keys leave.
     A stale by_path ghost would make add_to_gallery "update" a removed row
-    instead of inserting the new file. by_fn/by_fn_paths may keep the ghost:
-    entries carrying a filepath are never adopted as pathless placeholders.
+    instead of inserting the new file. The name indexes are purged for the
+    same reason plus memory: by_fn_paths ghosts pin the dead row dict once
+    per delete/re-download cycle until the next cold-load reindex.
     """
     fp = entry.get("filepath")
-    if not fp:
+    fn = entry.get("filename")
+    if fp:
+        key = gallery_path_key(fp)
+        by_path = _gallery_cache.get("by_path")
+        if key and isinstance(by_path, dict) and by_path.get(key) is entry:
+            by_path.pop(key, None)
+    if not fn:
         return
-    key = gallery_path_key(fp)
-    by_path = _gallery_cache.get("by_path")
-    if key and isinstance(by_path, dict) and by_path.get(key) is entry:
-        by_path.pop(key, None)
+    rows = _gallery_cache.get("by_fn_paths")
+    if isinstance(rows, dict) and fn in rows:
+        kept = [r for r in rows[fn] if r is not entry]
+        if kept:
+            rows[fn] = kept
+        else:
+            rows.pop(fn, None)
+            names = _gallery_cache.get("filenames")
+            if isinstance(names, set):
+                names.discard(fn)
+    by_fn = _gallery_cache.get("by_fn")
+    if isinstance(by_fn, dict) and by_fn.get(fn) is entry:
+        by_fn.pop(fn, None)
 
 # --- tag-category repair: downloads freeze categories at fetch time, so a
 # tag that failed its lookup (or hit the v1 [:150] fetch cap) stays in the

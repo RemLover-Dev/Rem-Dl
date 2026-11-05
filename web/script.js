@@ -4932,6 +4932,7 @@ function invalidateGalleryBuffer() {
     galleryBufferRequests.clear();
     // A new search/filter supersedes speculative thumbnail work too.
     while (galleryThumbQueue.length) galleryThumbQueued.delete(galleryThumbQueue.shift());
+    _thumbRetryN.clear();
 }
 function rememberGalleryPage(params, data) {
     const key = galleryBufferKey(params);
@@ -5020,6 +5021,7 @@ function pumpGalleryThumbnails() {    if (document.hidden) return;
             image.onload = image.onerror = null;
             if (ok) {
                 galleryThumbCache.set(url, image);
+                _thumbRetryN.delete(url);  // retry bookkeeping must not outlive success
                 while (galleryThumbCache.size > (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 96)) galleryThumbCache.delete(galleryThumbCache.keys().next().value);
             } else if (_viewerLease && !_thumbDeferred.has(url)) {
                 _thumbDeferred.add(url);  // 503 while viewing: try again on close
