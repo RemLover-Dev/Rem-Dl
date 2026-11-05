@@ -619,7 +619,7 @@ class GalleryStore:
         conn = self._connect()
         out = []
         for row in conn.execute(
-                "SELECT site, filename, filepath, tags, downloaded_at "
+                "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
                 "FROM image_history ORDER BY seq DESC"):
             d = dict(row)
             try:
@@ -642,9 +642,54 @@ class GalleryStore:
             return cur.lastrowid
 
     def history_delete(self, filename):
+        """Legacy basename delete; callers should prefer ID/path methods."""
         with self._lock:
             conn = self._connect()
             cur = conn.execute("DELETE FROM image_history WHERE filename = ?", (filename,))
+            conn.commit()
+            return cur.rowcount
+
+    def history_delete_by_id(self, history_id):
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute("DELETE FROM image_history WHERE seq = ?", (int(history_id),))
+            conn.commit()
+            return cur.rowcount
+
+    def history_count_by_filename(self, filename):
+        with self._reader() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM image_history WHERE filename = ?", (filename,)
+            ).fetchone()[0]
+
+    def history_delete_by_filepath(self, filepath):
+        """Delete only history rows for this exact stored filepath."""
+        path = str(filepath or "")
+        if not path:
+            return 0
+        normalized = path.replace("\\", "/")
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM image_history WHERE filepath = ? "
+                "OR REPLACE(filepath, '\\', '/') = ?",
+                (path, normalized),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def history_delete_by_site_filepath(self, site, filepath):
+        path = str(filepath or "")
+        if not path:
+            return 0
+        normalized = path.replace("\\", "/")
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM image_history WHERE site = ? AND (filepath = ? "
+                "OR REPLACE(filepath, '\\', '/') = ?)",
+                (site, path, normalized),
+            )
             conn.commit()
             return cur.rowcount
 

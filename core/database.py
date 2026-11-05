@@ -329,8 +329,26 @@ class DatabaseManager:
 
     @staticmethod
     def remove_image_history(filename):
+        """Legacy basename removal; use the exact ID/path helpers in routes."""
         with _DB_LOCK:
-            _store().history_delete(filename)
+            return _store().history_delete(filename)
+
+    @staticmethod
+    def remove_image_history_by_id(history_id):
+        with _DB_LOCK:
+            return _store().history_delete_by_id(history_id)
+
+    @staticmethod
+    def remove_image_history_by_filepath(filepath, site=None):
+        with _DB_LOCK:
+            if site is not None:
+                return _store().history_delete_by_site_filepath(site, filepath)
+            return _store().history_delete_by_filepath(filepath)
+
+    @staticmethod
+    def count_image_history_by_filename(filename):
+        with _DB_LOCK:
+            return _store().history_count_by_filename(filename)
 
     @staticmethod
     def clear_image_history():

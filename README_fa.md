@@ -82,11 +82,13 @@ RULE34_API_KEY=your_api_key_here
 RULE34_USER_ID=your_user_id_here
 USE_PROXY=false
 PROXY_URL=http://127.0.0.1:10808
-VERIFY_TLS=false
+VERIFY_TLS=true
 API_TIMEOUT=10
 RETRY_WAIT=5
 ANTI_BAN_PAUSE=3.0
 ```
+
+اعتبارسنجی گواهی TLS را در حالت عادی روشن نگه دارید. اگر پراکسی محلی HTTPS را رهگیری می‌کند، گواهی CA همان پراکسی را به سیستم اضافه کنید؛ غیرفعال‌کردن `VERIFY_TLS` فقط باید برای عیب‌یابی موقت باشد.
 
 ### ۴. اجرا
 
@@ -294,20 +296,30 @@ update-desktop-database ~/.local/share/applications/
 - **اگر WebKitGTK نصب نبود چه می‌شود؟** برنامه کرش نمی‌کند! Rems Dl به صورت خودکار پیام راهنمایی را نمایش داده و رابط کاربری را در مرورگر پیش‌فرض سیستم با آدرس `http://127.0.0.1:<port>` باز می‌کند.
 - **اجرا روی سرور راه دور یا بدون مانیتور:**
   ```bash
-  REMS_HEADLESS=1 python Rems_Dl.py
+  REMS_HEADLESS=1 PORT=5000 python Rems_Dl.py
   # یا
-  python Rems_Dl.py --headless
+  PORT=5000 python Rems_Dl.py --headless
   ```
-  در این حالت برنامه روی `0.0.0.0:5000` اجرا شده و با بستن تب مرورگر سرور متوقف **نمی‌شود**.
+  به‌صورت پیش‌فرض برنامه فقط روی `127.0.0.1:5000` گوش می‌دهد. برای دسترسی از راه دور، تونل SSH بسازید:
+  ```bash
+  ssh -L 5000:127.0.0.1:5000 user@server
+  ```
+  سپس در مرورگر محلی `http://127.0.0.1:5000` را باز کنید. با بستن تب مرورگر سرور متوقف **نمی‌شود**.
+
+  اتصال مستقیم شبکه فقط با تنظیم صریح `REMS_HOST=0.0.0.0`، توکن ۳۲ کاراکتری یا بیشتر در `REMS_ACCESS_TOKEN` و فهرست میزبان‌های مجاز در `REMS_ALLOWED_HOSTS` فعال می‌شود. توکن در لاگ چاپ نمی‌شود؛ اگر توکن را تنظیم نکرده باشید، توکن خودکار در `database/rems_access_token` با مجوز `0600` ذخیره می‌شود. برای ورود، آن را به‌صورت محلی با `cat database/rems_access_token` بخوانید.
 
 ### ۵. اجرا با داکر (Docker)
 ```bash
 docker pull ghcr.io/remlover-dev/rems-dl:latest
-docker run -d -p 5000:5000 \
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_HOST=0.0.0.0 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
   -v "$(pwd)/Rems Dl:/app/Rems Dl" \
   -v "$(pwd)/database:/app/database" \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
+کانتینر داخل شبکهٔ خودش روی همهٔ رابط‌ها گوش می‌دهد، اما پورت میزبان فقط روی loopback منتشر می‌شود. برای دسترسی از راه دور از تونل SSH استفاده کنید: `ssh -L 5000:127.0.0.1:5000 user@server`؛ سپس `http://localhost:5000` را باز کنید. برای انتشار مستقیم روی LAN یا اینترنت، توکن قوی، فهرست دقیق میزبان‌های مجاز و فایروال الزامی است.
 
 ---
 

@@ -3,6 +3,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # Rems_Dl's load_dotenv() pollutes os.environ, which SettingsManager reads for
 # its defaults — snapshot and restore (same dance as test_download_queue).
 _ENV_KEYS = [

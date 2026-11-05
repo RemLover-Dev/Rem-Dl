@@ -42,21 +42,28 @@ def _has_audio(src: str) -> bool:
     return audio
 
 
-def _key(src: str) -> str:
-    st = os.stat(src)
+def _key(src: str, stat_info=None) -> str:
+    if stat_info is None:
+        st = os.stat(src)
+        mtime_ns, size = st.st_mtime_ns, st.st_size
+    else:
+        mtime_ns, size = stat_info
     return hashlib.sha1(
-        f"{os.path.abspath(src)}:{st.st_mtime_ns}:{st.st_size}".encode()).hexdigest()
+        f"{os.path.abspath(src)}:{mtime_ns}:{size}".encode()).hexdigest()
 
 
-def _cache_path(src: str, cache_dir: str) -> str:
-    return os.path.join(cache_dir, f"{_key(src)}.mp4")
+def _cache_path(src: str, cache_dir: str, stat_info=None) -> str:
+    return os.path.join(cache_dir, f"{_key(src, stat_info)}.mp4")
 
 
-def evict(src: str, cache_dir: str) -> bool:
-    """Drop the cached remux for src. Call while src still exists — the key
-    derives from its mtime/size. Returns True if a cache file was removed."""
+def evict(src: str, cache_dir: str, stat_info=None) -> bool:
+    """Drop the cached remux for src.
+
+    Normally call before unlink. A dedup keep-larger hook may call after the
+    old file was removed and supply its pre-unlink ``(mtime_ns, size)`` pair.
+    """
     try:
-        os.remove(_cache_path(src, cache_dir))
+        os.remove(_cache_path(src, cache_dir, stat_info))
         return True
     except OSError:
         return False

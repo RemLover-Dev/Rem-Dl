@@ -3,6 +3,8 @@ moved/deleted images keep their gallery + hash records."""
 import os
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 from PIL import Image
 
 import Rems_Dl
@@ -181,3 +183,53 @@ def test_slash_merged_abs_url_recovers(client, roots_env, monkeypatch):
     # and the thumbnails/display routes recover the same way
     r2 = client.get(f"/api/gallery/thumb{merged[len('/api/gallery/file'):]}", headers=H)
     assert r2.status_code == 200
+
+
+def test_same_basename_inside_master_uses_distinct_path_ids(client, roots_env, monkeypatch):
+    Rems_Dl, master, _hdd_root, _roots = roots_env
+    first = master / "Danbooru" / "tag-a" / "same.jpg"
+    second = master / "Pixiv" / "tag-b" / "same.jpg"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    Image.new("RGB", (64, 64), color=(220, 20, 20)).save(first)
+    Image.new("RGB", (64, 64), color=(20, 20, 220)).save(second)
+
+    gallery = {"images": []}
+    monkeypatch.setattr(Rems_Dl.shared, "MASTER_FOLDER", str(master))
+    monkeypatch.setattr(Rems_Dl.shared, "load_gallery", lambda: gallery)
+    scanned, added, _fixed, _checked = Rems_Dl._scan_and_merge_gallery()
+    # a.png from the fixture joins too; the two same.jpg rows are the subject
+    assert added == 3
+    assert len(scanned["images"]) == 3
+    same = [row for row in scanned["images"] if row["filename"] == "same.jpg"]
+    assert {row["filepath"] for row in same} == {
+        "Danbooru/tag-a/same.jpg", "Pixiv/tag-b/same.jpg",
+    }
+    ids = {row["filepath"]: row["id"] for row in same}
+    assert len(set(ids.values())) == 2
+
+    # Live-download registration for a scanned file must find the same
+    # canonical path and retain the scan-generated ID.
+    monkeypatch.setattr(Rems_Dl.shared, "_gallery_cache", {
+        "data": scanned, "filenames": set(), "by_fn": {},
+        "by_path": {}, "by_fn_paths": {},
+    })
+    Rems_Dl.shared._reindex_gallery_locked(scanned)
+    Rems_Dl.shared.add_to_gallery("danbooru", "same.jpg", "Danbooru/tag-a/same.jpg",
+                                  ["later-tag"], [])
+    assert next(row for row in scanned["images"]
+                if row["filepath"] == "Danbooru/tag-a/same.jpg")["id"] == ids["Danbooru/tag-a/same.jpg"]
+    # registration reused the scanned row: no duplicate appended (3 = a.png + 2)
+    assert len(scanned["images"]) == 3
+
+
+def test_filepath_cache_resolves_each_same_named_row_by_path(client, roots_env):
+    Rems_Dl, master, _hdd_root, _roots = roots_env
+    first = "Danbooru/tag-a/same.jpg"
+    second = "Pixiv/tag-b/same.jpg"
+    fp_cache = {"__by_name__": {"same.jpg": [first, second]}}
+    fp_cache["__path__:" + Rems_Dl.shared.gallery_path_key(first, master_root=str(master))] = first
+    fp_cache["__path__:" + Rems_Dl.shared.gallery_path_key(second, master_root=str(master))] = second
+    assert Rems_Dl._filepath_cache_lookup(fp_cache, {"filename": "same.jpg", "filepath": first}) == first
+    assert Rems_Dl._filepath_cache_lookup(fp_cache, {"filename": "same.jpg", "filepath": second}) == second
+    assert Rems_Dl._filepath_cache_lookup(fp_cache, {"filename": "same.jpg", "filepath": ""}) is None

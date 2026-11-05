@@ -5,6 +5,8 @@ import os
 import time
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 from PIL import Image
 
 import Rems_Dl
@@ -40,7 +42,7 @@ def test_prune_dead_entries_keeps_offline_root(tmp_path, monkeypatch):
     names = [i["filename"] for i in gallery["images"]]
     # the real file stays; the deleted file and the empty row go; the
     # offline-root row (link itself missing) is kept
-    assert sorted(removed_names) == ["empty.png", "gone.png"]
+    assert sorted(r["filename"] for r in removed_names) == ["empty.png", "gone.png"]
     assert names == ["a.png", "hdd.png"]
 
 
@@ -70,7 +72,7 @@ def test_manual_rescan_prunes_dead_entries(client, tmp_path, monkeypatch):
     assert [i["filename"] for i in saved["images"]] == ["a.png"]
     # the console-log cards for pruned files must be told to vanish too
     deleted = [d for e, d in emitted if e == "image_deleted"]
-    assert ({"filename": "gone.png"} in deleted)
+    assert any(d.get("filename") == "gone.png" for d in deleted)
 
 
 def test_auto_cull_emits_image_deleted(tmp_path, monkeypatch):
@@ -91,7 +93,8 @@ def test_auto_cull_emits_image_deleted(tmp_path, monkeypatch):
     Rems_Dl._auto_cull_gallery()
     assert [i["filename"] for i in saved["images"]] == ["a.png"]
     deleted = [d for e, d in emitted if e == "image_deleted"]
-    assert deleted == [{"filename": "gone.png"}]
+    assert deleted == [{"id": None, "filename": "gone.png",
+                        "filepath": "Zerochan/gone.png"}]
     done = [d for e, d in emitted if e == "gallery_rescan_done"]
     assert done and done[-1]["removed_entries"] == 1 and done[-1]["startup"]
 
@@ -110,7 +113,11 @@ def test_import_skips_files_that_are_gone(client, tmp_path, monkeypatch):
                             {"site": "zero", "filename": "a.png", "tags": {}, "filepath": "Zerochan/a.png"},
                             {"site": "zero", "filename": "deleted.png", "tags": {}, "filepath": "Zerochan/deleted.png"},
                         ]))
-    monkeypatch.setattr(Rems_Dl, "_build_filepath_cache", lambda: {"a.png": "Zerochan/a.png"})
+    monkeypatch.setattr(Rems_Dl, "_build_filepath_cache", lambda: {
+        "a.png": "Zerochan/a.png",
+        "__by_name__": {"a.png": ["Zerochan/a.png"]},
+        "__paths__": {"Zerochan/a.png"},
+    })
     gallery = {"images": []}
     saved = {}
     monkeypatch.setattr(Rems_Dl.shared, "load_gallery", lambda: gallery)

@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 import Rems_Dl
 from Rems_Dl import _remember_wp_pick, _wp_recent_picks, app
 

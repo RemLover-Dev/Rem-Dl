@@ -92,9 +92,12 @@ class PinterestWorker(BaseWorker):
 
         cleaned = url_or_query.strip().lower().replace("https://", "").replace("http://", "").replace("/", "_")
         safe_name = folder_component(cleaned[:60], fallback="pinterest_query")
-        self.site_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
-        safe_ensure_dir(self.site_root)
-        self.tag_dir = self.site_root
+        # BaseWorker already points site_root at the worker-wide Pinterest
+        # folder and loads its download_history.json there. Keep query-specific
+        # media directories separate so searches share one history across runs.
+        self.query_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
+        safe_ensure_dir(self.query_root)
+        self.tag_dir = self.query_root
 
     async def _create_session(self):
         """Pinterest uses its own library, not aiohttp – return None."""
@@ -254,7 +257,7 @@ class PinterestWorker(BaseWorker):
                 continue
 
             try:
-                path = await asyncio.to_thread(downloader.download, media, Path(self.site_root), download_streams=True)
+                path = await asyncio.to_thread(downloader.download, media, Path(self.tag_dir), download_streams=True)
                 filename = os.path.basename(path)
 
                 # media.alt is the pin's written description — an explanation,

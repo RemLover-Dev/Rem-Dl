@@ -2,6 +2,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 from workers.x_twitter import XWorker
 
 NET_CONFIG = {"anti_ban_pause": 0}

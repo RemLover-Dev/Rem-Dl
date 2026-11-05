@@ -3,6 +3,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # import Rems_Dl with the same env snapshot/restore dance as
 # test_download_queue, so load_dotenv side effects don't leak into test_settings
 _ENV_KEYS = [

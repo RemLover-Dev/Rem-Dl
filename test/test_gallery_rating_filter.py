@@ -7,6 +7,9 @@ Safe filter showed blurred NSFW images. These pin the three fixes: stored
 per-image rating answers first, legacy path matching is segment-exact, and
 single-label folders / tag-based ratings keep working.
 """
+import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 import os
 
 # Rems_Dl's load_dotenv() pollutes os.environ, which SettingsManager reads for

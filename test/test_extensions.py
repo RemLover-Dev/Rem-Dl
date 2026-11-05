@@ -3,6 +3,8 @@ import zipfile
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 from core.extension_downloader import (
     SecurityError,
     _safe_extract_zip,

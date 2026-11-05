@@ -4,6 +4,8 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 import Rems_Dl
 
 

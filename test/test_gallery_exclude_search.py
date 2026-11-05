@@ -22,6 +22,8 @@ _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 import Rems_Dl
 from core.gallery_store import get_store, use_store_path
 

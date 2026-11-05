@@ -491,6 +491,52 @@ def _invalidate_fp_cache():
     _fp_cache["data"] = None
     _fp_cache["at"] = 0.0
 
+def _forget_fp_cache_path(full):
+    """Drop one file's filepath-cache entries instead of nuking the cache.
+
+    A full invalidate makes the next /api/gallery re-walk the whole tree
+    whenever any legacy row lacks a filepath — during active downloads that
+    turned every gallery request into a multi-second disk walk."""
+    data = _fp_cache["data"]
+    if not data:
+        return
+    try:
+        key = shared.gallery_path_key(full)
+    except Exception:
+        return
+    if not key:
+        return
+    fn = os.path.basename(str(full))
+    stored = data.pop("__path__:" + key, None)
+    by_name = data.get("__by_name__")
+    if isinstance(by_name, dict):
+        hits = by_name.get(fn)
+        if hits:
+            keep = []
+            for s in hits:
+                try:
+                    same = shared.gallery_path_key(s) == key
+                except Exception:
+                    same = False
+                if same:
+                    stored = stored or s
+                else:
+                    keep.append(s)
+            if keep:
+                by_name[fn] = keep
+            else:
+                by_name.pop(fn, None)
+    if stored is not None:
+        if data.get(fn) == stored:
+            data.pop(fn, None)
+        paths = data.get("__paths__")
+        if isinstance(paths, set):
+            # Stale leftovers here are harmless: the fix-up loop only uses
+            # this set to SKIP rows the walk just confirmed; a string no row
+            # holds anymore can never match, and a moved file's old string
+            # drops out of the set on the next walk.
+            paths.discard(stored)
+
 @app.route("/api/folder", methods=["GET", "POST"])
 def folder_manager():
     global MASTER_FOLDER
@@ -1850,8 +1896,11 @@ def import_planning_rows():
 def get_image_history():
     hist = DatabaseManager.load_image_history()
     try:
-        favs = {i.get("filename") for i in shared.load_gallery().get("images", []) if i.get("favourite")}
-        hist = [{**h, "favourite": h.get("filename") in favs} for h in hist]
+        fav_paths = {shared.gallery_path_key(i.get("filepath"), master_root=MASTER_FOLDER)
+                     for i in shared.load_gallery().get("images", [])
+                     if i.get("favourite") and i.get("filepath")}
+        hist = [{**h, "favourite": bool(shared.gallery_path_key(h.get("filepath"), master_root=MASTER_FOLDER) in fav_paths)}
+                for h in hist]
     except Exception:
         pass
     # old entries predate downloaded_at — approximate with the file's mtime
@@ -1880,10 +1929,26 @@ def clear_image_history():
 @app.route("/api/image_history/remove", methods=["POST"])
 def remove_image_history():
     data = request.json or {}
-    if not data.get("filename"):
-        return jsonify({"error": "filename required"}), 400
-    DatabaseManager.remove_image_history(data["filename"])
-    return jsonify({"success": True})
+    history_id = data.get("history_id")
+    filepath = data.get("filepath")
+    filename = data.get("filename")
+    if history_id is not None:
+        try:
+            removed = DatabaseManager.remove_image_history_by_id(int(history_id))
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "invalid history_id"}), 400
+    elif filepath:
+        removed = DatabaseManager.remove_image_history_by_filepath(filepath)
+    elif filename:
+        # A basename is not a stable identity. Keep the legacy API usable only
+        # when it resolves to exactly one history row.
+        if DatabaseManager.count_image_history_by_filename(filename) > 1:
+            return jsonify({"success": False,
+                            "error": "filename is ambiguous; history_id or filepath required"}), 409
+        removed = DatabaseManager.remove_image_history(filename)
+    else:
+        return jsonify({"success": False, "error": "history_id or filepath required"}), 400
+    return jsonify({"success": bool(removed), "removed": removed})
 
 @app.route("/api/favorites", methods=["GET", "POST"])
 def manage_favorites():
@@ -1899,23 +1964,59 @@ EXTENSIONS_VIDEO = {'.mp4','.webm','.mov','.avi','.mkv'}
 
 def _walk_filepaths():
     cache = {}
-    # master first: extra roots must never shadow it; extra-root files store
-    # their absolute path so joins downstream stay correct
-    for walk_root in [os.path.realpath(MASTER_FOLDER)] + _gallery_roots():
+    by_name = {}
+    paths = set()   # exact stored strings seen this walk — see get_gallery
+    # Master first; path keys are authoritative, while bare-name entries are
+    # retained only as compatibility hints for old rows without a filepath.
+    roots = [os.path.realpath(MASTER_FOLDER)] + _gallery_roots()
+    for root_index, walk_root in enumerate(roots):
         for root, _, files in os.walk(walk_root):
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
                 if ext not in EXTENSIONS_IMAGE and ext not in EXTENSIONS_VIDEO:
                     continue
                 full = os.path.join(root, fn)
-                if walk_root == MASTER_FOLDER:
+                if root_index == 0:
                     stored = os.path.relpath(full, MASTER_FOLDER)
                 else:
+                    # Preserve the historical absolute-path form for external
+                    # roots in this cache; the scan writes .gallery_roots URLs.
                     stored = full
+                    # rows store the symlink-alias form — seed it too so the
+                    # fix-up set-membership skip also covers external rows
+                    paths.add("/".join([
+                        _ROOTS_LINK_DIR, _root_key(walk_root),
+                        os.path.relpath(full, walk_root).replace("\\", "/")]))
+                key = shared.gallery_path_key(full)
+                cache["__path__:" + key] = stored
+                paths.add(stored)
+                by_name.setdefault(fn, []).append(stored)
                 cache.setdefault(fn, stored)
+    cache["__by_name__"] = by_name
+    cache["__paths__"] = paths
     _fp_cache["data"] = cache
     _fp_cache["at"] = time.time()
     return cache
+
+
+def _filepath_cache_lookup(fp_cache, img):
+    """Resolve by canonical path first; only use basename for legacy rows."""
+    if not fp_cache:
+        return None
+    filepath = img.get("filepath")
+    key = shared.gallery_path_key(filepath, master_root=MASTER_FOLDER) if filepath else None
+    if key:
+        cached = fp_cache.get("__path__:" + key)
+        if cached:
+            return cached
+    candidates = fp_cache.get("__by_name__", {}).get(img.get("filename"), [])
+    # A moved legacy row can be adopted by basename only when exactly one
+    # candidate exists. Multiple equal names are intentionally ambiguous.
+    if len(candidates) == 1:
+        return candidates[0]
+    if not filepath:
+        return fp_cache.get(img.get("filename", ""))
+    return None
 
 _fp_refreshing = False
 
@@ -1954,9 +2055,12 @@ def _auto_cull_gallery():
         return
     if not removed_names:
         return
-    _invalidate_fp_cache()
-    for fn in removed_names:
-        socketio.emit("image_deleted", {"filename": fn})
+    # no _invalidate_fp_cache() here: the piggyback _bg run just rebuilt the
+    # cache via _walk_filepaths(), and pruning rows never moves files —
+    # invalidating threw away the fresh data and forced the next request
+    # into a synchronous full-tree walk
+    for item in removed_names:
+        socketio.emit("image_deleted", item)
     socketio.emit("gallery_rescan_done", {
         "success": True, "startup": True, "added": 0,
         "removed_entries": len(removed_names), "removed_records": 0})
@@ -2205,9 +2309,15 @@ def get_gallery():
         fp_cache = _fp_cache['data']
     # in-memory fix-up only: a GET must not rewrite gallery.json (2.5MB per
     # page view), and deleting filepath on a cache miss drops live entries —
-    # the cache is keyed by bare filename, so a walk miss/collision is wrong
+    # the cache is keyed by bare filename, so a walk miss/collision is wrong.
+    # Rows whose exact stored string the walk just confirmed are skipped in
+    # O(1); only moved/legacy rows pay for a canonical path lookup (a
+    # realpath per row cost ~300ms+ per request at 30k images).
+    walk_paths = fp_cache.get("__paths__")
     for img in images:
-        cached = fp_cache.get(img.get("filename", ""))
+        if walk_paths is not None and img.get("filepath") in walk_paths:
+            continue
+        cached = _filepath_cache_lookup(fp_cache, img)
         if cached and img.get("filepath") != cached:
             img["filepath"] = cached
     images = [i for i in images if i.get("filepath")]
@@ -2362,45 +2472,119 @@ def check_extension_update():
 
 @app.route("/api/gallery/favourite_by_name", methods=["POST"])
 def toggle_gallery_fav_by_name():
-    fn = (request.json or {}).get("filename", "")
+    data = request.json or {}
+    fn = str(data.get("filename") or "")
+    filepath = data.get("filepath")
+    wanted_path = shared.gallery_path_key(filepath, master_root=MASTER_FOLDER) if filepath else None
     with shared._GALLERY_LOCK:
         gallery = shared.load_gallery()
-        for img in gallery["images"]:
-            if img.get("filename") == fn:
-                img["favourite"] = not img.get("favourite", False)
-                shared._store().set_favourite(img.get("id") or fn, img["favourite"])
-                return jsonify({"success": True, "favourite": img["favourite"]})
-    return jsonify({"success": False, "error": "not found"}), 404
-
-@app.route("/api/gallery/delete_by_name", methods=["POST"])
-def delete_gallery_image_by_name():
-    fn = (request.json or {}).get("filename", "")
-    # lock the whole find+pop+delete: a download finishing in between mutates
-    # the same live gallery dict
-    with shared._GALLERY_LOCK:
-        gallery = shared.load_gallery()
-        for i, img in enumerate(gallery["images"]):
-            if img.get("filename") == fn:
-                full_path = os.path.realpath(os.path.join(shared.MASTER_FOLDER, img.get("filepath", "")))
-                if not full_path.startswith(os.path.realpath(shared.MASTER_FOLDER) + os.sep):
-                    return jsonify({"success": False, "error": "Invalid gallery path"}), 403
-                gallery["images"].pop(i)
-                # delete one row (and its tags) — a full save would rewrite
-                # every other row just to drop this one
-                shared._store().delete_by_filename(fn)
-                break
+        if wanted_path:
+            # filename first: a realpath per gallery row just to compare
+            # against the wanted path made every toggle O(library)
+            matches = [img for img in gallery["images"]
+                       if (not fn or img.get("filename") == fn)
+                       and shared.gallery_path_key(img.get("filepath"), master_root=MASTER_FOLDER) == wanted_path]
         else:
+            matches = [img for img in gallery["images"]
+                       if img.get("filename") == fn and fn]
+        if not matches:
             return jsonify({"success": False, "error": "not found"}), 404
-    _invalidate_fp_cache()
+        if len(matches) > 1:
+            return jsonify({"success": False, "error": "filename is ambiguous; filepath required"}), 409
+        img = matches[0]
+        img["favourite"] = not img.get("favourite", False)
+        shared._store().set_favourite(img.get("id") or fn, img["favourite"])
+        return jsonify({"success": True, "favourite": img["favourite"]})
+
+
+def _delete_gallery_item(img_id=None, filename=None, filepath=None):
+    """Delete one gallery occurrence, never every row sharing its basename."""
+    wanted_path = shared.gallery_path_key(filepath, master_root=MASTER_FOLDER) if filepath else None
+    full_path = None
+    stored_path = None
+    fn = str(filename or "")
+    gid = None
+    with shared._GALLERY_LOCK:
+        gallery = shared.load_gallery()
+        matches = []
+        for index, img in enumerate(gallery.get("images", [])):
+            if img_id is not None and img.get("id") != img_id:
+                continue
+            if img_id is None and fn and img.get("filename") != fn:
+                continue
+            if img_id is None and not fn and not wanted_path:
+                continue
+            if wanted_path and shared.gallery_path_key(img.get("filepath"), master_root=MASTER_FOLDER) != wanted_path:
+                continue
+            matches.append((index, img))
+        if not matches:
+            return jsonify({"success": False, "error": "not found"}), 404
+        if len(matches) > 1:
+            return jsonify({"success": False,
+                            "error": "filename is ambiguous; send gallery id or filepath"}), 409
+
+        index, img = matches[0]
+        stored_path = str(img.get("filepath") or "")
+        fn = img.get("filename") or fn
+        gid = img.get("id") or fn
+        if not stored_path:
+            return jsonify({"success": False, "error": "gallery path missing"}), 409
+
+        # Absolute external-root paths are supported for legacy entries;
+        # newer external paths resolve through the master .gallery_roots link.
+        if os.path.isabs(stored_path):
+            full_path = os.path.realpath(stored_path)
+            lexical_master_path = None
+        else:
+            lexical_master_path = os.path.abspath(os.path.join(MASTER_FOLDER, stored_path))
+            full_path = os.path.realpath(lexical_master_path)
+
+        exists = os.path.exists(full_path)
+        allowed = _allowed_image_dir(full_path) if exists else False
+        if not exists and lexical_master_path:
+            try:
+                master_abs = os.path.abspath(MASTER_FOLDER)
+                allowed = os.path.commonpath((master_abs, lexical_master_path)) == master_abs
+            except (OSError, ValueError):
+                allowed = False
+        if not allowed:
+            return jsonify({"success": False, "error": "Invalid gallery path"}), 403
+
+        # Physical deletion must succeed (or already be absent) before the DB
+        # row is removed. Previously an OSError still returned success after
+        # deleting every same-basename database entry.
+        if exists:
+            try:
+                _evict_caches(full_path)
+                os.remove(full_path)
+            except OSError as e:
+                return jsonify({"success": False, "error": f"Could not delete file: {e}"}), 500
+
+        try:
+            # Commit the exact persistent row before mutating the resident
+            # list. If SQLite fails, retain the index entry so a rescan or
+            # retry can reconcile the already-removed physical file.
+            shared._store().delete(gid)
+        except Exception as e:
+            return jsonify({"success": False,
+                            "error": f"File removed but gallery index update failed: {e}"}), 500
+        gallery["images"].pop(index)
+        shared.drop_gallery_path_index(img)
+
+    # targeted forget: a full fp-cache invalidate made the next gallery
+    # request re-walk the tree; the sort-key cache drops only this path
+    _forget_fp_cache_path(full_path)
     try:
-        if os.path.exists(full_path):
-            _evict_caches(full_path)  # thumb + preview remux (preview needs the stat)
-            os.remove(full_path)
-    except Exception as e:
-        print("Error deleting file:", e)
+        for k in list(_TS_CACHE):
+            if isinstance(k, tuple) and k and k[0] in (stored_path, full_path):
+                _TS_CACHE.pop(k, None)
+    except Exception:
+        pass
+    history_warning = False
     try:
-        DatabaseManager.remove_image_history(fn)
+        DatabaseManager.remove_image_history_by_filepath(stored_path)
     except Exception as e:
+        history_warning = True
         print("History delete error:", e)
     dedup_warning = False
     try:
@@ -2409,8 +2593,19 @@ def delete_gallery_image_by_name():
     except Exception as e:
         dedup_warning = True
         print("Dedup cleanup error:", e)
-    socketio.emit("image_deleted", {"filename": fn})
-    return jsonify({"success": True, "dedup_warning": dedup_warning})
+    socketio.emit("image_deleted", {
+        "id": gid, "filename": fn, "filepath": stored_path,
+    })
+    return jsonify({"success": True, "dedup_warning": dedup_warning,
+                    "history_warning": history_warning})
+
+
+@app.route("/api/gallery/delete_by_name", methods=["POST"])
+def delete_gallery_image_by_name():
+    data = request.json or {}
+    fn = str(data.get("filename") or "")
+    filepath = data.get("filepath")
+    return _delete_gallery_item(filename=fn, filepath=filepath)
 
 # extra library roots: user-added folders (e.g. images parked on an HDD)
 # whose files join the gallery. Master always scans first and wins filename
@@ -2977,11 +3172,14 @@ os.makedirs(DISPLAY_CACHE_DIR, exist_ok=True)
 VIEWER_DISPLAY_LONG_EDGE = 2560
 
 
-def _display_cache_path_raw(full, suffix):
-    """Suffix-specified cache name without the alpha probe: evicting or
-    probing-for-eviction must never decode the source itself."""
-    st = os.stat(full)
-    identity = f"display-v2:{os.path.realpath(full)}:{st.st_size}:{st.st_mtime_ns}"
+def _display_cache_path_raw(full, suffix, stat_info=None):
+    """Suffix-specified display key; accepts pre-unlink stat identity."""
+    if stat_info is None:
+        st = os.stat(full)
+        size, mtime_ns = st.st_size, st.st_mtime_ns
+    else:
+        mtime_ns, size = stat_info
+    identity = f"display-v2:{os.path.realpath(full)}:{size}:{mtime_ns}"
     return os.path.join(DISPLAY_CACHE_DIR, hashlib.sha256(identity.encode()).hexdigest()[:24] + suffix)
 
 
@@ -3000,12 +3198,21 @@ def _thumb_cache_path(full, thumb_ext=".jpg"):
     return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + thumb_ext)
 
 
-def _evict_caches(full):
-    """Drop the thumb + preview-remux cache entries for a file being deleted.
-    The preview key derives from the file's stat, so this must run before
-    os.remove; missing entries are fine (both are best-effort)."""
+def _evict_caches(full, stat_info=None):
+    """Drop thumb, preview-remux and display cache entries for a file.
+
+    ``stat_info`` is the old ``(mtime_ns, size)`` identity captured before a
+    dedup replacement unlinks the file. Manual delete paths call this before
+    unlink and can leave it unset.
+    """
     try:
-        evict_preview(full, PREVIEW_CACHE_DIR)
+        evict_preview(full, PREVIEW_CACHE_DIR, stat_info=stat_info)
+    except TypeError:
+        # Keep compatibility with preview-cache adapters from older bundles.
+        try:
+            evict_preview(full, PREVIEW_CACHE_DIR)
+        except Exception:
+            pass
     except Exception:
         pass
     for thumb_ext in (".png", ".jpg", ".json"):
@@ -3014,42 +3221,77 @@ def _evict_caches(full):
         except OSError:
             pass
     try:
-        os.remove(_display_cache_path_raw(full, ".png"))
+        os.remove(_display_cache_path_raw(full, ".png", stat_info))
     except OSError:
         pass
     try:
-        os.remove(_display_cache_path_raw(full, ".jpg"))
+        os.remove(_display_cache_path_raw(full, ".jpg", stat_info))
     except OSError:
         pass
 
 
-def _dedup_replaced_cleanup(old_path):
-    """A keep-larger dedup replace removed old_path from disk after it had
-    already been published (gallery row, history row, log card) — drop its
-    rows, evict caches and notify clients, mirroring the manual delete route.
-    Wired into core.shared.dedup_replaced_hook; runs in a worker thread."""
+def _dedup_replaced_cleanup(old_path, stat_info=None):
+    """Remove stale gallery/history rows and caches after a keep-larger swap.
+
+    This runs from a download worker thread after the dedup store confirms
+    the old physical file was unlinked. Exact canonical path identity is used;
+    a same-named file in another folder is never removed.
+    """
     fn = os.path.basename(old_path)
-    _invalidate_fp_cache()
+    _forget_fp_cache_path(old_path)
     try:
-        _evict_caches(old_path)
+        _evict_caches(old_path, stat_info=stat_info)
     except Exception as e:
         print("Dedup replace cache-evict error:", e)
+
     removed = False
+    removed_id = None
+    stored_path = None
     try:
+        old_key = shared.gallery_path_key(old_path)
         with shared._GALLERY_LOCK:
             gallery = shared.load_gallery()
-            removed = any(i.get("filename") == fn for i in gallery["images"])
-            if removed:
-                gallery["images"] = [i for i in gallery["images"] if i.get("filename") != fn]
-                shared._store().delete_by_filename(fn)
+            for index, item in enumerate(gallery.get("images", [])):
+                # a row at old_path must carry its basename — prefilter by
+                # name so one replacement doesn't realpath the whole library
+                if item.get("filename") != fn:
+                    continue
+                if shared.gallery_path_key(item.get("filepath"), master_root=MASTER_FOLDER) == old_key:
+                    removed_id = item.get("id")
+                    stored_path = item.get("filepath")
+                    if removed_id:
+                        shared._store().delete(removed_id)
+                    gallery["images"].pop(index)
+                    removed = True
+                    shared.drop_gallery_path_index(item)
+                    break
     except Exception as e:
         print("Dedup replace gallery cleanup error:", e)
+
     try:
-        DatabaseManager.remove_image_history(fn)
+        for k in list(_TS_CACHE):
+            if isinstance(k, tuple) and k and k[0] in (stored_path, old_path):
+                _TS_CACHE.pop(k, None)
+    except Exception:
+        pass
+
+    try:
+        target = stored_path or old_path
+        removed_h = DatabaseManager.remove_image_history_by_filepath(target)
+        if not removed_h and not stored_path:
+            # no gallery row — history may store the master-relative form
+            # while old_path is absolute (exact-match delete can't see it)
+            rel = os.path.relpath(old_path, MASTER_FOLDER).replace("\\", "/")
+            if not rel.startswith(".."):
+                DatabaseManager.remove_image_history_by_filepath(rel)
     except Exception as e:
         print("Dedup replace history cleanup error:", e)
+
     if removed:
-        socketio.emit("image_deleted", {"filename": fn})
+        socketio.emit("image_deleted", {
+            "id": removed_id, "filename": fn,
+            "filepath": stored_path or old_path,
+        })
 
 
 shared.dedup_replaced_hook = _dedup_replaced_cleanup
@@ -3550,44 +3792,10 @@ def get_gallery_sources():
 def delete_gallery_image():
     data = request.json or {}
     img_id = data.get("id")
-    # find+pop+save atomically — a download finishing in between would have
-    # its new entry clobbered by our stale save (see delete_by_name)
-    with shared._GALLERY_LOCK:
-        gallery = shared.load_gallery()
-        for i, img in enumerate(gallery["images"]):
-            if img.get("id") == img_id:
-                full_path = os.path.realpath(os.path.join(shared.MASTER_FOLDER, img.get("filepath", "")))
-                if not full_path.startswith(os.path.realpath(shared.MASTER_FOLDER) + os.sep):
-                    return jsonify({"success": False, "error": "Invalid gallery path"}), 403
-                fn = img.get("filename", "")
-                gallery["images"].pop(i)
-                # one row (and its tags) — a full save would rewrite every
-                # other row just to drop this one
-                shared._store().delete_by_filename(fn)
-                break
-        else:
-            return jsonify({"success": False, "error": "Not found"}), 404
-    # پاک کردن فیزیکی فایل از روی هارد
-    try:
-        if os.path.exists(full_path):
-            _evict_caches(full_path)  # thumb + preview remux (preview needs the stat)
-            os.remove(full_path)
-    except Exception as e:
-        print("Error deleting file:", e)
-    _invalidate_fp_cache()
-    try:
-        DatabaseManager.remove_image_history(fn)
-    except Exception as e:
-        print("History delete error:", e)
-    dedup_warning = False
-    try:
-        from core.dedup_store import get_store
-        get_store().remove_by_filepath(full_path)
-    except Exception as e:
-        dedup_warning = True
-        print("Dedup cleanup error:", e)
-    socketio.emit("image_deleted", {"filename": fn})
-    return jsonify({"success": True, "dedup_warning": dedup_warning})
+    if not img_id:
+        return jsonify({"success": False, "error": "id required"}), 400
+    return _delete_gallery_item(img_id=img_id)
+
 
 def _tags_from_file(full):
     """The tags the file itself carries (embedded when it was downloaded).
@@ -3612,47 +3820,60 @@ def _tags_from_file(full):
 
 
 def _scan_and_merge_gallery():
-    """Walk MASTER_FOLDER (first) and each extra gallery root (ui_config
-    gallery_roots), merging files into the gallery.
+    """Walk configured roots and merge by canonical file path, not basename.
 
-    Shared by the /rescan endpoint and startup_rescan. Returns
-    (gallery, count_added, count_fixed, count_checked): count_checked is
-    files whose embedded tags we read this pass — the caller must save when
-    it is non-zero, or every launch pays for the same reads again.
+    The master tree is scanned first. A same-name file under an extra root is
+    not treated as a move when the master copy still exists (legacy root
+    precedence). Different paths inside the master tree remain separate rows.
+    A unique stale row can still be adopted when its file has genuinely moved.
     """
     gallery = shared.load_gallery()
-    by_fn = {i["filename"]: i for i in gallery["images"]}
-    count_added = 0
-    count_fixed = 0
-    count_checked = 0
+    images = gallery.setdefault("images", [])
+    count_added = count_fixed = count_checked = 0
 
     def _stored(img):
-        """Tags as STORED — the resident copy carries none.
-
-        Comparing against the resident copy would read as 0 tags and let a
-        folder-name placeholder overwrite real tags, so this always asks the
-        store. It deliberately does not cache on the entry: hydrating every
-        entry here would put the whole library's tags back on the heap. Only
-        an entry we actually rewrite keeps them (existing["tags"] below).
-        """
         return shared.entry_tags(img)
-    # master scans first; extra gallery roots (HDD-archived folders etc.)
-    # follow. Extra-root files store filepaths relative THROUGH the hidden
-    # .gallery_roots symlink (see _gallery_roots); a filename seen on an
-    # extra root whose master file is gone is a user move — the row adopts
-    # the new path.
+
     roots = _gallery_roots()
-    # heal the .gallery_roots links before anything resolves stored paths:
-    # links are normally created when a root is added/listed, but a restart
-    # (or an unmounted-then-remounted HDD) must never leave stored rows
-    # resolving to nothing — that is how 11k rows read as "deleted"
-    for _r in roots:
+    for root in roots:
         try:
-            _ensure_root_link(_r)
+            _ensure_root_link(root)
         except OSError:
             pass
-    for walk_root in [os.path.realpath(MASTER_FOLDER)] + roots:
+
+    by_path = {}
+    by_name = {}
+    for item in images:
+        fn = item.get("filename")
+        if fn:
+            by_name.setdefault(fn, []).append(item)
+        key = shared.gallery_path_key(item.get("filepath"), master_root=MASTER_FOLDER)
+        if key:
+            by_path[key] = item
+
+    master_names = set()
+    adopted_ids = set()
+    master_real = os.path.realpath(MASTER_FOLDER)
+    scan_roots = [(master_real, True)] + [(root, False) for root in roots]
+
+    def _stored_full(item):
+        stored = item.get("filepath") or ""
+        if not stored:
+            return ""
+        return os.path.realpath(stored if os.path.isabs(stored)
+                                else os.path.join(MASTER_FOLDER, stored))
+
+    def _orphan_candidates(fn):
+        rows = [item for item in by_name.get(fn, [])
+                if (item.get("id") or id(item)) not in adopted_ids
+                and item.get("filepath")
+                and not os.path.isfile(_stored_full(item))]
+        return rows
+
+    for walk_root, is_master in scan_roots:
         for root, dirs, files in os.walk(walk_root):
+            # Internal cache directories are not gallery content.
+            dirs[:] = [d for d in dirs if d != ".remsdl" and d != "__pycache__"]
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
                 if ext not in EXTENSIONS_IMAGE and ext not in EXTENSIONS_VIDEO:
@@ -3663,37 +3884,68 @@ def _scan_and_merge_gallery():
                 except OSError:
                     continue
                 rel = os.path.relpath(full, walk_root)
-                if walk_root == MASTER_FOLDER:
+                if is_master:
                     stored = rel
+                    master_names.add(fn)
                 else:
-                    # extra root: relative THROUGH the .gallery_roots symlink
-                    # so the stored filepath stays a master-relative URL path
                     stored = "/".join([_ROOTS_LINK_DIR, _root_key(walk_root),
                                        rel.replace("\\", "/")])
-                parts = rel.replace('\\', '/').split('/')
-                site = parts[0] if len(parts) > 1 else "unknown"
-                tag = parts[1] if len(parts) > 2 else ""
+                    # Keep the historical master-root precedence for a twin
+                    # across roots. Same-basename files inside the master root
+                    # are not collapsed and have distinct path identities.
+                    if fn in master_names:
+                        continue
 
-                if fn in by_fn:
-                    existing = by_fn[fn]
-                    src = os.path.join(MASTER_FOLDER, existing.get("filepath", ""))
-                    if existing.get("filepath") and not os.path.isfile(src):
-                        # the entry's file vanished (moved/renamed): adopt this
-                        # copy so the row keeps its tags/site/id/dates
+                path_key = shared.gallery_path_key(stored, master_root=MASTER_FOLDER)
+                existing = by_path.get(path_key)
+
+                if existing is None:
+                    # A uniquely identifiable prior row whose old file is gone
+                    # may follow a moved image into another root. Avoid
+                    # guessing when several same-name rows are present.
+                    candidates = _orphan_candidates(fn)
+                    if len(candidates) == 1:
+                        existing = candidates[0]
+                        old_key = shared.gallery_path_key(existing.get("filepath"), master_root=MASTER_FOLDER)
+                        if old_key:
+                            by_path.pop(old_key, None)
                         existing["filepath"] = stored
                         existing["meta_mtime"] = mtime
-                        by_fn[fn] = existing
+                        by_path[path_key] = existing
+                        adopted_ids.add(existing.get("id") or id(existing))
                         count_fixed += 1
+                        # If the row's tags are already durable, no need to
+                        # reread metadata just because it changed roots.
                         continue
+
+                if existing is None and ext == ".jxl":
+                    # JXL auto-conversion changes the suffix in place. Adopt
+                    # only a stale same-directory/same-stem image row.
+                    stem = os.path.splitext(fn)[0]
+                    for item in by_name.get(stem + ".jpg", []) + by_name.get(stem + ".png", []) + by_name.get(stem + ".jpeg", []):
+                        prev_full = _stored_full(item)
+                        if os.path.isfile(prev_full):
+                            continue
+                        if os.path.dirname(prev_full) != os.path.dirname(os.path.realpath(full)):
+                            continue
+                        old_key = shared.gallery_path_key(item.get("filepath"), master_root=MASTER_FOLDER)
+                        if old_key:
+                            by_path.pop(old_key, None)
+                        item["filename"], item["filepath"] = fn, stored
+                        item["meta_mtime"] = mtime
+                        by_path[path_key] = item
+                        by_name.setdefault(fn, []).append(item)
+                        existing = item
+                        count_fixed += 1
+                        break
+
+                if existing is not None:
                     if not existing.get("filepath"):
                         existing["filepath"] = stored
+                        by_path[path_key] = existing
                         count_fixed += 1
-                    # read a file's own tags at most once per file version: most
-                    # bare files carry nothing, and re-reading gigabytes of them
-                    # on every launch is not a scan, it's a benchmark
                     have = _stored(existing)
-                    if (shared.count_tags(have) <= 1
-                            and existing.get("meta_mtime") != mtime):
+                    if shared.count_tags(have) <= 1 and existing.get("meta_mtime") != mtime:
                         existing["meta_mtime"] = mtime
                         count_checked += 1
                         file_sites, file_tags = _tags_from_file(full)
@@ -3702,78 +3954,74 @@ def _scan_and_merge_gallery():
                             if file_sites and existing.get("site") != shared.normalize_site(file_sites[0]):
                                 existing["site"] = shared.normalize_site(file_sites[0])
                             count_fixed += 1
-                else:
-                    # auto-conversion renamed the file in place (foo.png ->
-                    # foo.jxl): adopt the original row instead of adding a twin.
-                    # A fresh row re-dates the image to convert time and shifts
-                    # every gallery page under a browsing user
-                    if ext == ".jxl":
-                        stem = os.path.splitext(fn)[0]
-                        for src_ext in EXTENSIONS_IMAGE:
-                            prev = by_fn.get(stem + src_ext)
-                            if prev is None:
-                                continue
-                            prev_full = os.path.join(MASTER_FOLDER, prev.get("filepath", ""))
-                            if os.path.isfile(prev_full):
-                                continue
-                            prev["filename"], prev["filepath"] = fn, stored
-                            prev["meta_mtime"] = mtime
-                            by_fn[fn] = prev
-                            count_fixed += 1
-                            break
-                        else:
-                            prev = None
-                    else:
-                        prev = None
-                    if prev is not None:
-                        continue
-                    sites, tags = _tags_from_file(full)
-                    if not shared.count_tags(tags) and tag:
-                        tags = {"tag": [tag]}
-                    entry = {
-                        "id": hashlib.sha256(fn.encode()).hexdigest()[:12],
-                        "filename": fn, "filepath": stored, "site": shared.normalize_site(sites[0]) if sites else site,
-                        "tags": tags, "favourite": False,
-                        "downloaded_at": datetime.fromtimestamp(mtime).isoformat()
-                    }
-                    if shared.count_tags(tags) <= 1:
-                        entry["meta_mtime"] = mtime
-                    gallery["images"].append(entry)
-                    by_fn[fn] = entry
-                    count_added += 1
-                    # live count: the pill on an open gallery tab updates as
-                    # the walk finds new files; stragglers arrive with the
-                    # rescan_done reload
-                    if count_added % 20 == 0:
-                        socketio_emit("scan_progress", {
-                            "added": count_added,
-                            "total": len(gallery["images"])})
-    # drop duplicate filenames (a download landing mid-scan can double-add) —
-    # keep the twin carrying the tags, never the empty rebuild.
-    # Dedupe + rebind run under the gallery lock: add_to_gallery inserts into
-    # this same list, and an insert landing mid-iteration would be dropped by
-    # the rebind below and pruned by the caller's save.
+                    continue
+
+                parts = rel.replace("\\", "/").split("/")
+                site = parts[0] if len(parts) > 1 else "unknown"
+                tag = parts[1] if len(parts) > 2 else ""
+                sites, tags = _tags_from_file(full)
+                if not shared.count_tags(tags) and tag:
+                    tags = {"tag": [tag]}
+                entry = {
+                    "id": shared.gallery_id_for_path(
+                        shared.normalize_site(sites[0]) if sites else site,
+                        stored, fn, master_root=MASTER_FOLDER),
+                    "filename": fn, "filepath": stored,
+                    "site": shared.normalize_site(sites[0]) if sites else site,
+                    "tags": tags, "favourite": False,
+                    "downloaded_at": datetime.fromtimestamp(mtime).isoformat(),
+                }
+                if shared.count_tags(tags) <= 1:
+                    entry["meta_mtime"] = mtime
+                images.append(entry)
+                by_path[path_key] = entry
+                by_name.setdefault(fn, []).append(entry)
+                count_added += 1
+                if count_added % 20 == 0:
+                    socketio_emit("scan_progress", {
+                        "added": count_added, "total": len(images)})
+
+    # Collapse only duplicate rows for the SAME canonical path. Equal
+    # basenames in separate folders are valid independent gallery entries.
     with shared._GALLERY_LOCK:
         seen = {}
         unique = []
+        pathless = []
         for img in gallery["images"]:
-            fn = img.get("filename")
-            prev = seen.get(fn)
+            key = shared.gallery_path_key(img.get("filepath"), master_root=MASTER_FOLDER)
+            if not key:
+                pathless.append(img)
+                continue
+            prev = seen.get(key)
             if prev is None:
-                seen[fn] = img
+                seen[key] = img
                 unique.append(img)
             else:
-                # compare STORED tags on both sides: a resident copy reads as 0,
-                # so comparing it against a twin's tags would swap real tags out
-                # for nothing (or for a poorer folder-name set)
                 t_img = _stored(img)
                 t_prev = _stored(prev)
                 if shared.count_tags(t_img) > shared.count_tags(t_prev):
                     prev["tags"] = t_img
-                if not prev.get("filepath") and img.get("filepath"):
-                    prev["filepath"] = img["filepath"]
                 if img.get("favourite"):
                     prev["favourite"] = True
+        # A pathless legacy twin (pre-path record) merges into its UNIQUE
+        # same-name pathed row — same merge rules as same-path duplicates.
+        # Several pathed same-name rows make the twin ambiguous: keep it.
+        by_fn_pathed = {}
+        for img in unique:
+            by_fn_pathed.setdefault(img.get("filename"), []).append(img)
+        for img in pathless:
+            twins = by_fn_pathed.get(img.get("filename") or "", [])
+            if len(twins) != 1:
+                unique.append(img)
+                continue
+            prev = twins[0]
+            t_img = _stored(img)
+            t_prev = _stored(prev)
+            if shared.count_tags(t_img) > shared.count_tags(t_prev):
+                prev["tags"] = t_img
+            if img.get("favourite"):
+                prev["favourite"] = True
+            count_fixed += 1
         gallery["images"] = unique
     return gallery, count_added, count_fixed, count_checked
 
@@ -3831,8 +4079,8 @@ def rescan_gallery():
             # session (manual rescans run far more often)
             with shared._GALLERY_LOCK:
                 removed_names = _prune_dead_gallery_entries(gallery)
-            for fn in removed_names:
-                socketio.emit("image_deleted", {"filename": fn})
+            for item in removed_names:
+                socketio.emit("image_deleted", item)
             try:
                 from core.dedup_store import get_store
                 count_removed_records = get_store().count_missing_files()
@@ -3879,14 +4127,16 @@ def import_gallery_from_history():
     fp_cache = _build_filepath_cache()
     with shared._GALLERY_LOCK:
         gallery = shared.load_gallery()
-        existing = {i["filename"] for i in gallery["images"]}
+        existing_paths = {shared.gallery_path_key(i.get("filepath"), master_root=MASTER_FOLDER)
+                          for i in gallery["images"] if i.get("filepath")}
         count = 0
         for entry in hist:
             fn = entry.get("filename", "")
-            if fn and fn not in existing:
-                rel = fp_cache.get(fn, "")
-                # a deleted image keeps its hash record and history name, but
-                # must not re-enter the gallery as an empty (filepath-less) row
+            rel = _filepath_cache_lookup(fp_cache, entry) if fn else None
+            path_key = shared.gallery_path_key(rel, master_root=MASTER_FOLDER) if rel else None
+            if fn and path_key and path_key not in existing_paths:
+                # a deleted image keeps its history name, but must not re-enter
+                # the gallery as an empty (filepath-less) row.
                 if not rel:
                     continue
                 entry_tags = entry.get("tags", {})
@@ -3896,7 +4146,8 @@ def import_gallery_from_history():
                 else:
                     tags = tags_dict_from_lists(entry_tags, entry_artists)
                 gallery["images"].append({
-                    "id": hashlib.sha256(f"{entry.get('site','')}:{fn}".encode()).hexdigest()[:12],
+                    "id": shared.gallery_id_for_path(entry.get("site", ""), rel,
+                                                     fn, master_root=MASTER_FOLDER),
                     "filename": fn,
                     "filepath": rel,
                     "site": entry.get("site", ""),
@@ -3904,7 +4155,7 @@ def import_gallery_from_history():
                     "favourite": False,
                     "downloaded_at": ""
                 })
-                existing.add(fn)
+                existing_paths.add(path_key)
                 count += 1
         shared.save_gallery(gallery)
     return jsonify({"success": True, "imported": count})
@@ -4513,7 +4764,11 @@ def _prune_dead_gallery_entries(gallery):
                     os.path.join(MASTER_FOLDER, parts[0], parts[1]))):
             kept.append(i)
             continue
-        removed_names.append(i.get("filename", ""))
+        removed_names.append({
+            "id": i.get("id"),
+            "filename": i.get("filename", ""),
+            "filepath": fp,
+        })
     if removed_names:
         gallery["images"] = kept
     return removed_names
@@ -4564,6 +4819,30 @@ def startup_rescan():
 
     _hash_missing_dedup(gallery)
     _heal_bare_gallery_tags()
+def _persist_generated_access_token():
+    """Save an auto-generated token without exposing its value in logs."""
+    if not getattr(access_guard, "token_generated", False):
+        return None
+    os.makedirs(DATABASE_DIR, exist_ok=True)
+    token_path = os.path.join(DATABASE_DIR, "rems_access_token")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(token_path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        data = (access_guard.token + "\n").encode("utf-8")
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(token_path, 0o600)
+    except OSError:
+        pass
+    return token_path
+
+
 if __name__ == "__main__":
     # one instance at a time: a second process shares database/ (gallery.json,
     # dedup.sqlite3 WAL) and has its own sockets — deletes and auto-culls in
@@ -4683,7 +4962,11 @@ if __name__ == "__main__":
     launch_url = access_guard.launch_url(url)
 
     if is_headless:
-        print("Access token:", access_guard.token)
+        token_path = _persist_generated_access_token()
+        if token_path:
+            print(f"Generated access token saved to {token_path} (permissions 0600).", flush=True)
+        else:
+            print("Using configured REMS_ACCESS_TOKEN (value is not logged).", flush=True)
         print(f"Starting Rems Dl in headless/server mode on {url} ...")
         socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
@@ -4694,7 +4977,11 @@ if __name__ == "__main__":
         _BROWSER_FALLBACK = True
         print("NOTE: pywebview is not installed or GUI libraries are missing.")
         print(f"Starting Rems Dl in web browser mode on {url} ...")
-        print("Access token (if automatic sign-in is unavailable):", access_guard.token)
+        token_path = _persist_generated_access_token()
+        if token_path:
+            print(f"Generated access token saved to {token_path} (permissions 0600).", flush=True)
+        else:
+            print("Using configured REMS_ACCESS_TOKEN (value is not logged).", flush=True)
         threading.Timer(1.0, lambda: webbrowser.open(launch_url)).start()
         socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)

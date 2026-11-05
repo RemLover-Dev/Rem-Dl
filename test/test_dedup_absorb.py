@@ -82,3 +82,18 @@ def test_absorb_noop_on_missing_or_nomatch(lib):
         "danbooru", ["t"], []) is False
     # no phantom record invented for an unknown match
     assert shared._gallery_cache["data"]["images"] == []
+
+
+def test_add_to_gallery_keeps_same_filename_at_different_paths_separate(lib):
+    shared.add_to_gallery("pixiv", "same.jpg", "pixiv/first/same.jpg", ["first"], ["alice"])
+    shared.add_to_gallery("danbooru", "same.jpg", "danbooru/second/same.jpg", ["second"], ["bob"])
+
+    images = shared._gallery_cache["data"]["images"]
+    assert len(images) == 2
+    assert {i["filepath"] for i in images} == {
+        "pixiv/first/same.jpg", "danbooru/second/same.jpg"
+    }
+    assert len({i["id"] for i in images}) == 2
+    assert {tuple(shared.entry_tags(i)["tag"]) for i in images} == {
+        ("first",), ("second",)
+    }

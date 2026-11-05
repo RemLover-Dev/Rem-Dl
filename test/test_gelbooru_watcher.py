@@ -4,6 +4,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # same env snapshot/restore dance as test_pixiv_notifications
 _ENV_KEYS = [
     "USE_PROXY", "PROXY_URL", "VERIFY_TLS", "GELBOORU_API_KEY",

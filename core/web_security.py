@@ -36,7 +36,9 @@ else showForm('');
 class AccessGuard:
     def __init__(self, application, token=None, hosts=None):
         self.application = application
-        self.token = token or os.environ.get('REMS_ACCESS_TOKEN') or secrets.token_urlsafe(32)
+        configured_token = token or os.environ.get('REMS_ACCESS_TOKEN')
+        self.token_generated = not bool(configured_token)
+        self.token = configured_token or secrets.token_urlsafe(32)
         if len(self.token) < 32:
             raise ValueError('REMS_ACCESS_TOKEN must contain at least 32 characters')
         self.cookie_value = secrets.token_urlsafe(32)

@@ -128,6 +128,63 @@ class TestDedupStore:
         res = store.check_and_add(same)
         assert not res.is_duplicate
 
+    def test_keep_larger_reports_pre_unlink_stat_only_after_removal(self, dedup_env):
+        store, tmp_dir = dedup_env
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (256, 256), (20, 50, 80))
+        draw = ImageDraw.Draw(image)
+        for x in range(0, 256, 16):
+            draw.rectangle((x, 0, x + 7, 255), fill=(80 + x // 2, 100, 130))
+        draw.ellipse((60, 50, 180, 170), fill=(230, 40, 50))
+        draw.rectangle((100, 150, 220, 210), fill=(30, 200, 90))
+
+        small = os.path.join(tmp_dir, "small.png")
+        large = os.path.join(tmp_dir, "large.png")
+        image.save(small, "PNG", compress_level=9)
+        image.save(large, "PNG", compress_level=0)
+        assert os.path.getsize(large) > os.path.getsize(small)
+        assert not store.check_and_add(small, site="first").is_duplicate
+        old_stat = os.stat(small)
+
+        result = store.check_and_add(large, site="second")
+        assert not result.is_duplicate
+        assert result.replaced_path == small
+        assert result.replaced_stat == (old_stat.st_mtime_ns, old_stat.st_size)
+        assert not os.path.exists(small)
+        assert os.path.exists(large)
+
+    def test_keep_larger_unlink_failure_does_not_report_replacement(self, dedup_env, monkeypatch):
+        store, tmp_dir = dedup_env
+        from PIL import Image, ImageDraw
+        import core.dedup_store as dedup_module
+
+        image = Image.new("RGB", (256, 256), (20, 50, 80))
+        draw = ImageDraw.Draw(image)
+        for x in range(0, 256, 16):
+            draw.rectangle((x, 0, x + 7, 255), fill=(80 + x // 2, 100, 130))
+        draw.ellipse((60, 50, 180, 170), fill=(230, 40, 50))
+        draw.rectangle((100, 150, 220, 210), fill=(30, 200, 90))
+
+        small = os.path.join(tmp_dir, "small.png")
+        large = os.path.join(tmp_dir, "large.png")
+        image.save(small, "PNG", compress_level=9)
+        image.save(large, "PNG", compress_level=0)
+        assert not store.check_and_add(small, site="first").is_duplicate
+        real_remove = os.remove
+
+        def fail_old(path, *args, **kwargs):
+            if os.path.realpath(path) == os.path.realpath(small):
+                raise PermissionError("simulated unlink failure")
+            return real_remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(dedup_module.os, "remove", fail_old)
+        result = store.check_and_add(large, site="second")
+        assert not result.is_duplicate
+        assert result.replaced_path is None
+        assert result.replaced_stat is None
+        assert os.path.exists(small)
+
     def test_settings_toggle(self, tmp_path, monkeypatch):
         store = DedupStore(os.path.join(tmp_path, "toggle.sqlite3"))
         monkeypatch.setattr("core.dedup_store.get_store", lambda: store)

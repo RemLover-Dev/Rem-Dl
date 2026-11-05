@@ -3,6 +3,8 @@ import tempfile
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # Rems_Dl's load_dotenv() pollutes os.environ, which SettingsManager reads for
 # its defaults — snapshot and restore so test_settings stays isolated.
 _ENV_KEYS = [

@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 _ENV_KEYS = [
     "API_TIMEOUT", "RETRY_WAIT", "ANTI_BAN_PAUSE", "DOWNLOAD_RETRIES",
     "USE_PROXY", "PROXY_URL", "VERIFY_TLS",

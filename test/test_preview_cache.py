@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 import Rems_Dl
 
 H = {"User-Agent": "RemsDlDesktopApp/1.0"}

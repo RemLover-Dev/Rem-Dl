@@ -325,17 +325,30 @@ def default_emit(event, data): pass
 emit_callback = default_emit
 def socketio_emit(event, data): emit_callback(event, data)
 
-# set by Rems_Dl: drops gallery/history rows + caches for a file the dedup
-# keep-larger replace deleted after it was already published, and emits
-# image_deleted so clients stop showing it
+# Optional callback installed by Rems_Dl. A keep-larger replacement can
+# remove a file that was already published in the gallery/history/cache; the
+# callback removes those stale references without making dedup depend on Flask.
 dedup_replaced_hook = None
 
-def cleanup_replaced(old_path):
+def cleanup_replaced(old_path, stat_info=None):
+    """Best-effort notification after keep-larger successfully removed a file.
+
+    The core dedup store remains usable without the desktop application. Hook
+    failures must never turn a successful replacement into a failed download.
+    ``stat_info`` is the pre-unlink stat identity used by versioned caches.
+    One-argument hooks remain supported for downstream integrations.
+    """
     hook = dedup_replaced_hook
     if not hook:
         return
     try:
-        hook(old_path)
+        if stat_info is None:
+            hook(old_path)
+        else:
+            try:
+                hook(old_path, stat_info)
+            except TypeError:
+                hook(old_path)
     except Exception as e:
         print("Dedup replace cleanup error:", e)
 
@@ -428,7 +441,38 @@ def save_gallery_partial(entries):
         _store().save_entries_partial(entries)
 
 _GALLERY_LOCK = threading.RLock()
-_gallery_cache = {"data": None, "filenames": set(), "by_fn": {}}
+_gallery_cache = {"data": None, "filenames": set(), "by_fn": {},
+                  "by_path": {}, "by_fn_paths": {}}
+
+
+def gallery_path_key(filepath, master_root=None):
+    """Canonical identity for a gallery file, independent of its basename.
+
+    Stored gallery paths may be master-relative paths through a .gallery_roots
+    symlink or absolute external-root paths. realpath makes those aliases point
+    at the same file while keeping two equal basenames in different folders
+    distinct.
+    """
+    if not filepath:
+        return None
+    path = os.path.expanduser(str(filepath))
+    if not os.path.isabs(path):
+        path = os.path.join(master_root or MASTER_FOLDER, path)
+    return os.path.normcase(os.path.realpath(os.path.normpath(path)))
+
+
+def gallery_id_for_path(site, filepath, filename=None, master_root=None):
+    """Stable ID shared by scan and live-download paths.
+
+    New rows are keyed by canonical path. Existing IDs are never rewritten,
+    preserving references already stored in gallery_tags and browser state.
+    """
+    key = gallery_path_key(filepath, master_root=master_root)
+    if key:
+        return hashlib.sha256(("gallery-path-v2:" + key).encode(
+            "utf-8", "surrogateescape")).hexdigest()[:16]
+    return hashlib.sha256((f"gallery-legacy:{normalize_site(site)}:{filename or ''}")
+                          .encode("utf-8", "surrogateescape")).hexdigest()[:16]
 # entries whose tags are read per pass (heal, filtering) — keeps a whole
 # library's tags off the heap at once
 _TAG_CHUNK = 500
@@ -442,19 +486,46 @@ def _gallery_cached_locked():
     return g
 
 def _reindex_gallery_locked(g):
-    """Rebuild the cache's lookup indexes from the entry list.
+    """Rebuild filename compatibility and canonical-path indexes.
 
-    by_fn replaces a linear scan of the resident list per duplicate download
-    (tens of ms of lock-held GIL work on a 90k library, per file).
+    ``by_fn`` remains for old callers that have no path. New lookups use
+    ``by_path`` first, and ``by_fn_paths`` deliberately stores every same-name
+    occurrence instead of collapsing different files into one identity.
     """
-    _gallery_cache["filenames"] = set()
+    filenames = set()
     by_fn = {}
-    for i in g.get("images", []):
-        fn = i.get("filename")
+    by_path = {}
+    by_fn_paths = {}
+    for entry in g.get("images", []):
+        fn = entry.get("filename")
         if fn is not None:
-            _gallery_cache["filenames"].add(fn)
-            by_fn[fn] = i
+            filenames.add(fn)
+            by_fn[fn] = entry
+            by_fn_paths.setdefault(fn, []).append(entry)
+        key = gallery_path_key(entry.get("filepath"))
+        if key:
+            by_path[key] = entry
+    _gallery_cache["filenames"] = filenames
     _gallery_cache["by_fn"] = by_fn
+    _gallery_cache["by_path"] = by_path
+    _gallery_cache["by_fn_paths"] = by_fn_paths
+
+def drop_gallery_path_index(entry):
+    """Pop one removed entry's by_path key without a full reindex.
+
+    _reindex_gallery_locked realpaths every row (~300ms at 30k images) while
+    callers hold _GALLERY_LOCK; delete paths know exactly which key leaves.
+    A stale by_path ghost would make add_to_gallery "update" a removed row
+    instead of inserting the new file. by_fn/by_fn_paths may keep the ghost:
+    entries carrying a filepath are never adopted as pathless placeholders.
+    """
+    fp = entry.get("filepath")
+    if not fp:
+        return
+    key = gallery_path_key(fp)
+    by_path = _gallery_cache.get("by_path")
+    if key and isinstance(by_path, dict) and by_path.get(key) is entry:
+        by_path.pop(key, None)
 
 # --- tag-category repair: downloads freeze categories at fetch time, so a
 # tag that failed its lookup (or hit the v1 [:150] fetch cap) stays in the
@@ -577,39 +648,42 @@ def recategorize_all():
 def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None):
     with _GALLERY_LOCK:
         gallery = _gallery_cached_locked()
-        if filename in _gallery_cache["filenames"]:
-            # a scan that saw the file land first must not keep its
-            # folder-name placeholder over the tags we just downloaded
+        # Some old tests/integrations replace the cache dict directly; hydrate
+        # the additive indexes without requiring their legacy shape to change.
+        if "by_path" not in _gallery_cache or "by_fn_paths" not in _gallery_cache:
+            _reindex_gallery_locked(gallery)
+        by_path = _gallery_cache.setdefault("by_path", {})
+        by_fn_paths = _gallery_cache.setdefault("by_fn_paths", {})
+        path_key = gallery_path_key(filepath)
+        existing = by_path.get(path_key) if path_key else None
+        if existing is None:
+            # A pathless legacy placeholder may be adopted only when the name
+            # identifies one unambiguous row. Never conflate two known paths.
+            candidates = by_fn_paths.get(filename)
+            if candidates is None:
+                fallback = _gallery_cache.get("by_fn", {}).get(filename)
+                candidates = [fallback] if fallback is not None else []
+            pathless = [i for i in candidates if not i.get("filepath")]
+            if len(pathless) == 1:
+                existing = pathless[0]
+                if filepath:
+                    existing["filepath"] = filepath
+                    by_path[path_key] = existing
+
+        if existing is not None:
             fresh = tags_dict_from_lists(tags_list, artists, characters,
                                          copyrights, metadata_tags, outfits,
                                          groups, hair, eyes)
-            existing = _gallery_cache["by_fn"].get(filename)
-            if existing is None:
-                # index miss: fall back to the list and self-heal — external
-                # code appends to the list directly during rescans
-                existing = next((i for i in gallery["images"]
-                                 if i.get("filename") == filename), None)
-                if existing is not None:
-                    _gallery_cache["by_fn"][filename] = existing
-            if existing is None:
-                return
             gid = existing.get("id") or filename
-            # compare against the STORED tags: the resident copy carries none,
-            # and comparing against empty would let a folder-name placeholder
-            # beat real tags
             have = existing.get("tags")
             if have is None:
                 have = _store().get_tags(gid)
             if count_tags(fresh) <= count_tags(have):
                 return
-            # live heal: the cache may have gained this tag's category right
-            # after the entry was built with it still uncached
             try:
                 recategorize_tags(fresh, site, _live_tag_caches())
             except Exception:
                 pass
-            # tags go to the store only — drop the copy's stale resident tags
-            # so entry_tags can't serve the old set from the snapshot
             existing.pop("tags", None)
             if filepath:
                 existing["filepath"] = filepath
@@ -618,15 +692,14 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             _store().update_fields(gid, existing)
             _store().set_tags(gid, fresh)
             return
+
         tags_dict = tags_dict_from_lists(tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-        # live heal at write time: same intent as the job-end recategorize_all,
-        # but the first image shows its categories the moment it lands
         try:
             recategorize_tags(tags_dict, site, _live_tag_caches())
         except Exception:
             pass
         record = {
-            "id": hashlib.md5(f"{site}:{filename}".encode()).hexdigest()[:12],
+            "id": gallery_id_for_path(site, filepath, filename),
             "filename": filename,
             "filepath": filepath,
             "site": normalize_site(site),
@@ -634,15 +707,15 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
             "favourite": False,
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S")
         }
-        # per-image rating only when the worker knows it — records without the
-        # field keep falling back to path/tag sniffing
         if rating:
             record["rating"] = rating
         gallery["images"].insert(0, record)
-        _gallery_cache["filenames"].add(filename)
-        _gallery_cache["by_fn"][filename] = record
+        _gallery_cache.setdefault("filenames", set()).add(filename)
+        _gallery_cache.setdefault("by_fn", {})[filename] = record
+        by_fn_paths.setdefault(filename, []).append(record)
+        if path_key:
+            by_path[path_key] = record
         _store().insert_entry(record)
-        # the store has the tags; the resident copy stays tagless
         record.pop("tags", None)
 
 
@@ -656,16 +729,20 @@ def absorb_duplicate(dup, site, tags_list, artists, characters=None, copyrights=
     try:
         with _GALLERY_LOCK:
             gallery = _gallery_cached_locked()
-            target = os.path.normpath(str(dup.matched_path))
-            rec = None
-            for i in gallery["images"]:
-                fp = i.get("filepath") or ""
-                if fp and os.path.normpath(os.path.join(MASTER_FOLDER, fp)) == target:
-                    rec = i
-                    break
+            target_key = gallery_path_key(dup.matched_path)
+            # A row's filename is its filepath's basename — prefilter by name
+            # so one phash kill doesn't realpath every row under this lock
+            # (that blocked /api/gallery for hundreds of ms per duplicate).
+            base = os.path.basename(str(dup.matched_path))
+            rec = next((i for i in gallery["images"]
+                        if i.get("filename") == base and i.get("filepath")
+                        and gallery_path_key(i.get("filepath")) == target_key), None)
             if rec is None:
-                base = os.path.basename(target)
-                rec = next((i for i in gallery["images"] if i.get("filename") == base), None)
+                candidates = [i for i in gallery["images"] if i.get("filename") == base]
+                # Legacy rows without a filepath can only be guessed when the
+                # basename is unique. Never absorb tags into an arbitrary twin.
+                if len(candidates) == 1:
+                    rec = candidates[0]
             if rec is None:
                 return False
             gid = rec.get("id") or rec.get("filename")
@@ -1686,12 +1763,14 @@ class BaseDownloader:
                                             outfits, groups, hair, eyes)
                     return False
 
-                # keep-larger replace: dedup kept the fresh download and already
-                # deleted the older published file — drop its rows/caches and
-                # stop clients from showing it (file check guards a failed remove)
-                replaced = getattr(dup, "replaced_path", None)
+                # keep-larger may have removed an older file which was already
+                # published. Clean its gallery/history/caches only after the
+                # dedup store confirms that unlink succeeded; hook failures are
+                # isolated from this successful download.
+                replaced = getattr(dup, "replaced_path", None) if dup is not None else None
                 if replaced and not os.path.exists(replaced):
-                    await asyncio.to_thread(cleanup_replaced, replaced)
+                    await asyncio.to_thread(cleanup_replaced, replaced,
+                                             getattr(dup, "replaced_stat", None))
 
                 self.downloaded_count += 1
                 self.dl_history.add(filename)

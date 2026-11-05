@@ -86,11 +86,15 @@ RULE34_API_KEY=your_api_key_here
 RULE34_USER_ID=your_user_id_here
 USE_PROXY=false
 PROXY_URL=http://127.0.0.1:10808
-VERIFY_TLS=false
+VERIFY_TLS=true
 API_TIMEOUT=10
 RETRY_WAIT=5
 ANTI_BAN_PAUSE=3.0
 ```
+
+Keep `VERIFY_TLS=true` during normal use. If a local proxy intercepts HTTPS,
+install and trust that proxy's CA certificate instead of disabling certificate
+verification; `VERIFY_TLS=false` should be a temporary troubleshooting exception.
 
 ### 4. Run
 
@@ -316,22 +320,37 @@ python Rems_Dl.py
 - **Missing WebKitGTK?** No problem! If `pywebview` or WebKitGTK is not installed on your system, Rems Dl will automatically notify you and launch smoothly in your default web browser at `http://127.0.0.1:<port>`.
 - **Headless Server / Remote VPS / SSH:** Run without opening a window:
   ```bash
-  REMS_HEADLESS=1 python Rems_Dl.py
+  REMS_HEADLESS=1 PORT=5000 python Rems_Dl.py
   # or
-  python Rems_Dl.py --headless
+  PORT=5000 python Rems_Dl.py --headless
   ```
-  The app will bind to `0.0.0.0:$PORT` (default: 5000) and allow external access from any device on your network. Closing browser tabs will **not** terminate the server.
+  The app binds to `127.0.0.1:$PORT` by default. Set `PORT=5000` as above (or use the actual selected port) before creating the SSH tunnel:
+  ```bash
+  ssh -L 5000:127.0.0.1:5000 user@server
+  ```
+  Then open `http://127.0.0.1:5000` locally. Closing browser tabs will **not** terminate the server.
+
+  Direct network binding is opt-in and requires a 32+ character `REMS_ACCESS_TOKEN` plus an explicit `REMS_ALLOWED_HOSTS` allowlist. Only expose it behind a firewall/reverse proxy you control:
+  ```bash
+  REMS_HEADLESS=1 REMS_HOST=0.0.0.0 PORT=5000 \
+    REMS_ACCESS_TOKEN='replace-with-a-random-32-plus-character-secret' \
+    REMS_ALLOWED_HOSTS='rems.example.com,192.0.2.10' python Rems_Dl.py
+  ```
+  Do not put the access token in shell history or logs. If omitted, a generated token is saved to `database/rems_access_token` with mode `0600`; read it locally with `cat database/rems_access_token` and enter it on the login page. The value itself is never printed to service logs.
 
 ### 6. Running with Docker (Zero Host Dependencies)
 Pull and run the official image:
 ```bash
 docker pull ghcr.io/remlover-dev/rems-dl:latest
-docker run -d -p 5000:5000 \
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_HOST=0.0.0.0 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
   -v "$(pwd)/Rems Dl:/app/Rems Dl" \
   -v "$(pwd)/database:/app/database" \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
-Then open `http://localhost:5000` in your browser. (The container runs persistently in headless mode and stays active across tab disconnects).
+The container listens internally on all interfaces, but Docker publishes it only on the host loopback address. Reach it remotely through `ssh -L 5000:127.0.0.1:5000 user@server`, then open `http://localhost:5000`. The container persists across browser-tab disconnects. For public/LAN binding, use a strong configured token, a narrow `REMS_ALLOWED_HOSTS` list, and a firewall rule.
 
 ---
 
@@ -361,7 +380,7 @@ cp database/*.json dist/Rems_Dl/database/
 ```
 The Linux build lands in `dist/Rems_Dl/Rems_Dl` (no `.exe` extension). Notes:
 - Build **inside WSL**, never on Windows, when the target is Linux.
-- On a headless server, skip `pywebview` -- run with `REMS_HEADLESS=1` (or `--headless`) so the app serves on `0.0.0.0:$PORT` instead of opening a window.
+- On a headless server, skip `pywebview` -- run with `REMS_HEADLESS=1` (or `--headless`). The default bind is loopback; use SSH forwarding for remote access. A non-loopback `REMS_HOST` requires `REMS_ACCESS_TOKEN` and `REMS_ALLOWED_HOSTS`.
 - For servers/containers, the Docker image (see above) is usually simpler than a binary.
 
 > You don't need to build by hand for every release: pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the Windows `.exe`, the Linux binary, and the Docker image, then attaches the archives to the GitHub Release and pushes the image to GHCR.

@@ -310,6 +310,9 @@ class DedupResult:
     # set when the new file was a duplicate but larger: it is kept
     # (is_duplicate=False) and this smaller stored file was replaced by it
     replaced_path: str | None = None
+    # (mtime_ns, size) captured before unlink; versioned cache eviction can
+    # still derive the old cache keys after the source file is gone.
+    replaced_stat: tuple[int, int] | None = None
 
 
 # --- color histogram / correlation helpers --------------------------------
@@ -1029,6 +1032,11 @@ class DedupStore:
         Caller holds the lock.
         """
         old_path = match["filepath"]
+        try:
+            old_st = os.stat(old_path)
+            old_stat = (int(old_st.st_mtime_ns), int(old_st.st_size))
+        except OSError:
+            old_stat = None
         data = _sig_to_row(sig)
         new_site = site if site is not None else match["site"]
         new_pid = post_id if site is not None else match["post_id"]
@@ -1050,15 +1058,22 @@ class DedupStore:
                 is_duplicate=True, filepath=new_path, matched_path=old_path,
                 matched_site=match["site"], matched_post_id=match["post_id"])
         self._phash_index[match["id"]] = int(data["phash"], 16)
+        replaced_path = None
+        replaced_stat = None
         if DELETE_REPLACED:
             try:
                 os.remove(old_path)
+                replaced_path = old_path
+                replaced_stat = old_stat
             except OSError as e:
+                # The DB points at the larger new file, but the stale file may
+                # still be present. Do not announce a completed replacement
+                # cleanup until its physical removal actually succeeded.
                 print(f"[DEDUP] could not remove replaced file {old_path}: {e}")
         return DedupResult(
             is_duplicate=False, filepath=new_path, matched_path=old_path,
             matched_site=match["site"], matched_post_id=match["post_id"],
-            replaced_path=old_path)
+            replaced_path=replaced_path, replaced_stat=replaced_stat)
 
     def check_and_add_many(self, entries, workers=None, executor=None, progress=None) -> list:
         """check_and_add for many images, hashing them in parallel.

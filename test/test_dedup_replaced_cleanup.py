@@ -1,81 +1,43 @@
-import os
-import types
-
-# Rems_Dl's load_dotenv() pollutes os.environ, which SettingsManager reads for
-# its defaults — snapshot and restore (same dance as test_download_queue).
-_ENV_KEYS = [
-    "API_TIMEOUT", "RETRY_WAIT", "ANTI_BAN_PAUSE", "DOWNLOAD_RETRIES",
-    "USE_PROXY", "PROXY_URL", "VERIFY_TLS",
-]
-_env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
-
-import Rems_Dl
-
-for _k, _v in _env_before.items():
-    if _v is None:
-        os.environ.pop(_k, None)
-    else:
-        os.environ[_k] = _v
-
+"""Tests for keep-larger dedup replacement cleanup hand-off."""
 from core import shared
 
 
-def test_cleanup_removes_rows_caches_and_emits(monkeypatch):
-    calls = {}
-    gallery = {"images": [
-        {"filename": "a.jpg", "filepath": "sub/a.jpg"},
-        {"filename": "gone.jpg", "filepath": "sub/gone.jpg"},
-    ]}
-    deleted_rows, history_rows, events = [], [], []
-    class FakeStore:
-        def delete_by_filename(self, fn): deleted_rows.append(fn)
-    monkeypatch.setattr(shared, "load_gallery", lambda: gallery)
-    monkeypatch.setattr(shared, "_store", lambda: FakeStore())
-    monkeypatch.setattr(Rems_Dl, "_invalidate_fp_cache", lambda: calls.__setitem__("fp", True))
-    monkeypatch.setattr(Rems_Dl, "_evict_caches", lambda p: calls.__setitem__("evict", p))
-    monkeypatch.setattr(Rems_Dl.DatabaseManager, "remove_image_history",
-                        lambda fn: history_rows.append(fn))
-    monkeypatch.setattr(Rems_Dl, "socketio",
-                        types.SimpleNamespace(emit=lambda e, d: events.append((e, d))))
-
-    Rems_Dl._dedup_replaced_cleanup(os.path.join("roots", "sub", "gone.jpg"))
-
-    assert deleted_rows == ["gone.jpg"]
-    assert history_rows == ["gone.jpg"]
-    assert events == [("image_deleted", {"filename": "gone.jpg"})]
-    assert [i["filename"] for i in gallery["images"]] == ["a.jpg"]
-    assert calls == {"fp": True, "evict": os.path.join("roots", "sub", "gone.jpg")}
+def test_cleanup_replaced_calls_two_argument_hook_with_stat(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shared, "dedup_replaced_hook",
+                        lambda path, stat: calls.append((path, stat)))
+    shared.cleanup_replaced("/old/image.jpg", (123, 456))
+    assert calls == [("/old/image.jpg", (123, 456))]
 
 
-def test_cleanup_without_gallery_row_does_not_emit(monkeypatch):
-    gallery = {"images": [{"filename": "a.jpg", "filepath": "sub/a.jpg"}]}
-    deleted_rows, events = [], []
-
-    class FakeStore:
-        def delete_by_filename(self, fn): deleted_rows.append(fn)
-    monkeypatch.setattr(shared, "load_gallery", lambda: gallery)
-    monkeypatch.setattr(shared, "_store", lambda: FakeStore())
-    monkeypatch.setattr(Rems_Dl, "_invalidate_fp_cache", lambda: None)
-    monkeypatch.setattr(Rems_Dl, "_evict_caches", lambda p: None)
-    monkeypatch.setattr(Rems_Dl.DatabaseManager, "remove_image_history", lambda fn: None)
-    monkeypatch.setattr(Rems_Dl, "socketio",
-                        types.SimpleNamespace(emit=lambda e, d: events.append((e, d))))
-
-    Rems_Dl._dedup_replaced_cleanup(os.path.join("roots", "missing.jpg"))
-
-    assert deleted_rows == []
-    # history row is always attempted (the file is gone either way), but an
-    # event with no gallery row gone never happens
-    assert events == []
+def test_cleanup_replaced_supports_legacy_one_argument_hook(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shared, "dedup_replaced_hook", lambda path: calls.append(path))
+    shared.cleanup_replaced("/old/image.jpg", (123, 456))
+    assert calls == ["/old/image.jpg"]
 
 
 def test_cleanup_replaced_swallows_hook_errors(monkeypatch, capsys):
-    def boom(_p):
-        raise RuntimeError("hook exploded")
-
-    monkeypatch.setattr(shared, "dedup_replaced_hook", boom)
-    shared.cleanup_replaced("/x/y.jpg")  # must not raise
+    def fail(_path, _stat=None):
+        raise RuntimeError("broken cleanup")
+    monkeypatch.setattr(shared, "dedup_replaced_hook", fail)
+    assert shared.cleanup_replaced("/old/image.jpg", (123, 456)) is None
     assert "Dedup replace cleanup error" in capsys.readouterr().out
 
-    monkeypatch.setattr(shared, "dedup_replaced_hook", None)
-    shared.cleanup_replaced("/x/y.jpg")  # no hook = no-op
+
+def test_gallery_path_identity_keeps_same_basename_separate(tmp_path, monkeypatch):
+    root = tmp_path / "library"
+    a = root / "site-a" / "image.jpg"
+    b = root / "site-b" / "image.jpg"
+    monkeypatch.setattr(shared, "MASTER_FOLDER", str(root))
+
+    assert shared.gallery_path_key(str(a)) != shared.gallery_path_key(str(b))
+    assert shared.gallery_id_for_path("site-a", str(a), "image.jpg") != \
+           shared.gallery_id_for_path("site-b", str(b), "image.jpg")
+
+
+def test_gallery_path_identity_normalizes_relative_and_absolute_paths(tmp_path, monkeypatch):
+    root = tmp_path / "library"
+    target = root / "site" / "image.jpg"
+    monkeypatch.setattr(shared, "MASTER_FOLDER", str(root))
+    assert shared.gallery_path_key("site/image.jpg") == shared.gallery_path_key(str(target))

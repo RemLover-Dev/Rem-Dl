@@ -1,5 +1,7 @@
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 H = {"User-Agent": "RemsDlDesktopApp/1.0"}
 FP = "/mnt/sda3/Rem/Dan/Mochizuki Kei/Safe/Images/12264376.jpg"
 

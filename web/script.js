@@ -2570,17 +2570,37 @@ socket.on("gallery_rescan_done", function (data) {
 // keep living as dead log cards with broken thumbnails
 socket.on("image_deleted", function (data) {
     const fn = (data && data.filename) || "";
-    if (!fn) return;
-    // register the name (and paths as log-card hits resolve) so every open
-    // guard toasts "deleted" instead of a 404 on browser-cached thumbs
-    markDeleted(null, fn);
-    const enc = encodeURIComponent(fn).replace(/'/g, "%27");
+    const filepath = (data && data.filepath) || "";
+    const id = (data && data.id) || "";
+    if (!filepath && !fn && !id) return;
+    // A path is the identity. Basename fallback is reserved for older server
+    // events that predate filepath/id payloads.
+    markDeleted(filepath, filepath ? "" : fn);
+    if (id) {
+        const card = document.querySelector(`.gallery-card[data-id="${CSS.escape(String(id))}"]`);
+        if (card) card.remove();
+    }
+    // The server's replacement/delete cleanup also removes the matching
+    // history row. Keep an already-open History tab in sync without a reload.
+    if (filepath && typeof imageHistory !== "undefined" && Array.isArray(imageHistory)) {
+        const before = imageHistory.length;
+        imageHistory = imageHistory.filter(function (entry) {
+            return normPath(entry.filepath || "") !== normPath(filepath);
+        });
+        if (imageHistory.length !== before && typeof renderImageHistory === "function") {
+            renderImageHistory();
+        }
+    }
     document.querySelectorAll(".image-card-log img[data-ofi]").forEach(function (img) {
-        const tail = (img.dataset.ofi || "").split("/").pop();
-        let hit = tail === enc;
-        if (!hit) { try { hit = decodeURIComponent(tail) === fn; } catch (e) { hit = false; } }
+        const candidate = normPath(img.dataset.ofi || "");
+        let hit = filepath ? candidate === normPath(filepath) : false;
+        if (!filepath && fn) {
+            const tail = candidate.split("/").pop();
+            let decoded = tail;
+            try { decoded = decodeURIComponent(tail); } catch (e) {}
+            hit = decoded === fn;
+        }
         if (hit) {
-            markDeleted(img.dataset.ofi, fn);
             const card = img.closest(".image-card-log");
             if (card) card.remove();
         }
@@ -4323,8 +4343,8 @@ function historyRowHtml(img) {
     const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${hHoverSrc}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
     return `
     <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}${_histAnimated.has(histRowKey(img)) ? ' no-anim' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
-    <button onclick="removeImageHistory('${safeFn}')" class="img-card-btn" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
-    <button onclick="toggleImageHistoryFav('${safeFn}', this)" class="img-card-btn" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
+    <button onclick="removeImageHistory(${Number(img.history_id) || 0})" class="img-card-btn" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
+    <button onclick="toggleImageHistoryFav('${escJs(img.filepath || "")}', this)" class="img-card-btn" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
     <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">${hHoverKind === 'video' ? '<span class="gallery-card-play"></span>' : ''}
     </div>
@@ -4378,14 +4398,24 @@ function renderImageHistory() {
     }
 }
 
-async function removeImageHistory(filename) { await fetch("/api/image_history/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: filename }) }); await loadTagsData(); }
-async function toggleImageHistoryFav(filename, btn) {
+async function removeImageHistory(historyId) {
+    if (!historyId) return;
+    const resp = await fetch("/api/image_history/remove", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ history_id: Number(historyId) })
+    });
+    if (resp.ok) await loadTagsData();
+}
+async function toggleImageHistoryFav(filepath, btn) {
     try {
-        let resp = await fetch("/api/gallery/favourite_by_name", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: filename }) });
+        let resp = await fetch("/api/gallery/favourite_by_name", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filepath: filepath })
+        });
         let data = await resp.json();
         if (data.success) {
             if (btn) btn.innerHTML = heartIcon(data.favourite);
-            const h = imageHistory.find(i => i.filename === filename);
+            const h = imageHistory.find(i => i.filepath === filepath);
             if (h) h.favourite = data.favourite;
         }
     } catch(e) { console.error("image-history favourite save failed:", e); }
@@ -6140,7 +6170,7 @@ function normPath(p) {
 }
 function markDeleted(path, name) {
     if (path) deletedPaths.add(normPath(path));
-    if (name) deletedNames.add(name);
+    else if (name) deletedNames.add(name);
 }
 function isDeleted(path, name) {
     return !!((path && deletedPaths.has(normPath(path))) || (name && deletedNames.has(name)));
@@ -6777,11 +6807,12 @@ function viewerNav(dir) {
     const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
 function toggleViewerFav() {
     if (viewerSingle) {
-        fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) })
+        fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename, filepath: galleryPathFromUrl(viewerSingleUrl) }) })
         .then(r => r.json()).then(data => {
             if (data.success) {
                 document.getElementById("galleryViewerFav").innerHTML = heartIcon(data.favourite);
-                const h = typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === viewerSingleFilename) : null;
+                const viewerPath = galleryPathFromUrl(viewerSingleUrl);
+                const h = typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filepath === viewerPath) : null;
                 if (h) h.favourite = data.favourite;
             }
         }).catch(e => console.error("Fav toggle error:", e));
@@ -7420,7 +7451,7 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
         if (viewerSingle) {
             if (!await customConfirm("Are you sure you want to delete this image? It will be removed from disk.", "Delete")) return;
             try {
-                let resp = await fetch("/api/gallery/delete_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) });
+                let resp = await fetch("/api/gallery/delete_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename, filepath: galleryPathFromUrl(viewerSingleUrl) }) });
                 let data = await resp.json().catch(() => ({}));
                 if (resp.ok) {
                     markDeleted(galleryPathFromUrl(viewerSingleUrl), viewerSingleFilename);

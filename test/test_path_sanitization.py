@@ -226,6 +226,15 @@ class TestWorkerFolderBuildingWithProhibitedChars:
         assert os.path.isdir(w.site_root)
         rel = os.path.relpath(w.site_root, str(tmp_path))
         assert ":" not in rel
+        # History is worker-wide, while downloaded media remains in the
+        # per-query folder. A reconstructed worker must load the same history.
+        assert os.path.normpath(w.site_root) == os.path.normpath(str(tmp_path / "Pinterest"))
+        assert os.path.normpath(w.tag_dir) != os.path.normpath(w.site_root)
+        w.dl_history.add("12345.jpg")
+        from core.shared import save_history
+        save_history(w.site_root, w.dl_history)
+        again = PinterestWorker("another query", 10, True, self.NET_CONFIG)
+        assert "12345.jpg" in again.dl_history
 
     def test_zerochan_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
