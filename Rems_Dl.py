@@ -452,6 +452,9 @@ def upload_wallpaper():
             if not picked_ts or time.time() - picked_ts > _WP_PICK_TTL:
                 return jsonify({"success": False,
                                 "error": "Pick an image with the file dialog first"}), 403
+            src_path = os.path.realpath(src_path)
+            if not os.path.isfile(src_path):
+                return jsonify({"success": False, "error": "Picked image is gone"}), 400
             with open(src_path, "rb") as stream:
                 content = stream.read(32 * 1024 * 1024 + 1)
         else:
@@ -1115,6 +1118,9 @@ def import_x_cookies():
             if not picked_ts or time.time() - picked_ts > _WP_PICK_TTL:
                 return jsonify({"success": False,
                                 "error": "Pick the file with the file dialog first"}), 403
+            src_path = os.path.realpath(src_path)
+            if not os.path.isfile(src_path):
+                return jsonify({"success": False, "error": "Picked file is gone"}), 400
             with open(src_path, "rb") as stream:
                 content = stream.read(1024 * 1024 + 1)
         else:
