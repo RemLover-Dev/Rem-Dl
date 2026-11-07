@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from core.extensions import EXTENSIONS_DIR, get_extension_manager
+from core.extensions import EXTENSIONS_DIR, get_extension_manager, _log_safe
 
 logger = logging.getLogger("RemsDl.ExtensionDownloader")
 
@@ -102,7 +102,7 @@ def fetch_release_info(repo: str) -> dict[str, Any]:
                     "published_at": data.get("published_at", "")
                 }
     except Exception as e:
-        logger.warning(f"Failed to fetch GitHub release for {repo}: {e}")
+        logger.warning(f"Failed to fetch GitHub release for {_log_safe(repo)}: {_log_safe(e)}")
 
     # Fallback: Main branch zipball
     fallback_url = GITHUB_ARCHIVE_URL.format(repo=repo)

@@ -10,6 +10,10 @@ from core.database import DATABASE_DIR, DatabaseManager, _app_base_dir
 
 logger = logging.getLogger("RemsDl.Extensions")
 
+def _log_safe(value):
+    # collapse control chars so user text cannot forge log lines
+    return " ".join(str(value).split()) or "''"
+
 EXTENSIONS_DIR = os.path.join(_app_base_dir(), "extensions")
 EXTENSIONS_CONFIG_FILE = os.path.join(DATABASE_DIR, "extensions.json")
 
@@ -143,7 +147,7 @@ class ExtensionManager:
 
         installed = {item["id"]: item for item in self.discover_installed()}
         if ext_id not in installed:
-            logger.warning(f"Extension '{ext_id}' not found in installed extensions.")
+            logger.warning(f"Extension '{_log_safe(ext_id)}' not found in installed extensions.")
             return False
 
         manifest = installed[ext_id]
@@ -157,14 +161,14 @@ class ExtensionManager:
             return False
 
         if not os.path.exists(plugin_file):
-            logger.error(f"Extension '{ext_id}' entry point missing: {plugin_file}")
+            logger.error(f"Extension '{_log_safe(ext_id)}' entry point missing: {_log_safe(plugin_file)}")
             return False
 
         try:
             module_name = f"rems_ext_{ext_id.replace('-', '_')}"
             spec = importlib.util.spec_from_file_location(module_name, plugin_file)
             if spec is None or spec.loader is None:
-                logger.error(f"Cannot create spec for extension '{ext_id}' from {plugin_file}")
+                logger.error(f"Cannot create spec for extension '{_log_safe(ext_id)}' from {_log_safe(plugin_file)}")
                 return False
 
             module = importlib.util.module_from_spec(spec)
@@ -188,10 +192,10 @@ class ExtensionManager:
 
             self.plugin_modules[ext_id] = module
             self.active_plugins[ext_id] = plugin_instance or module
-            logger.info(f"Extension '{ext_id}' loaded successfully.")
+            logger.info(f"Extension '{_log_safe(ext_id)}' loaded successfully.")
             return True
-        except Exception as e:
-            logger.exception(f"Failed to load extension '{ext_id}': {e}")
+        except Exception:
+            logger.exception(f"Failed to load extension '{_log_safe(ext_id)}'")
             return False
 
     def unload_extension(self, ext_id: str) -> bool:
@@ -208,12 +212,12 @@ class ExtensionManager:
             module = self.plugin_modules.get(ext_id)
             if module and hasattr(module, "teardown"):
                 module.teardown()
-        except Exception as e:
-            logger.error(f"Error during extension '{ext_id}' teardown: {e}")
+        except Exception:
+            logger.error(f"Error during extension '{_log_safe(ext_id)}' teardown")
 
         self.active_plugins.pop(ext_id, None)
         self.plugin_modules.pop(ext_id, None)
-        logger.info(f"Extension '{ext_id}' unloaded.")
+        logger.info(f"Extension '{_log_safe(ext_id)}' unloaded.")
         return True
 
     def load_all_enabled(self) -> dict[str, bool]:
@@ -244,10 +248,10 @@ class ExtensionManager:
             folder = installed[ext_id]["folder"]
             try:
                 shutil.rmtree(folder)
-                logger.info(f"Extension '{ext_id}' folder removed: {folder}")
+                logger.info(f"Extension '{_log_safe(ext_id)}' folder removed: {_log_safe(folder)}")
                 return True
-            except Exception as e:
-                logger.error(f"Failed to remove extension '{ext_id}' folder: {e}")
+            except Exception:
+                logger.error(f"Failed to remove extension '{_log_safe(ext_id)}' folder")
                 return False
         return True
 

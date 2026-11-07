@@ -1132,7 +1132,8 @@ def import_x_cookies():
             f.write(text)
         return jsonify({"success": True, "path": staged})
     except OSError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+        print("X cookie import error:", e)
+        return jsonify({"success": False, "error": "could not stage the cookie file"}), 400
 
 _PIXIV_OAUTH = {"verifier": ""}  # pending PKCE verifier, set by /api/pixiv/oauth/start
 
@@ -2405,7 +2406,8 @@ def get_extensions_catalog():
             "contributions": contributions
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print("Extension catalog error:", e)
+        return jsonify({"success": False, "error": "extension catalog failed"}), 500
 
 @app.route("/api/extensions/install", methods=["POST"])
 def install_extension():
@@ -2428,7 +2430,8 @@ def install_extension():
 
         return jsonify({"success": ok, "message": msg})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print("Extension install error:", e)
+        return jsonify({"success": False, "error": "extension install failed"}), 500
 
 @app.route("/api/extensions/toggle", methods=["POST"])
 def toggle_extension():
@@ -2447,7 +2450,8 @@ def toggle_extension():
 
         return jsonify({"success": ok, "enabled": enabled, "is_active": ext_id in mgr.active_plugins})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print("Extension toggle error:", e)
+        return jsonify({"success": False, "error": "extension toggle failed"}), 500
 
 @app.route("/api/extensions/uninstall", methods=["POST"])
 def uninstall_extension():
@@ -2461,7 +2465,8 @@ def uninstall_extension():
         ok = mgr.uninstall_extension(ext_id)
         return jsonify({"success": ok, "message": f"Extension '{ext_id}' uninstalled successfully."})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print("Extension uninstall error:", e)
+        return jsonify({"success": False, "error": "extension uninstall failed"}), 500
 
 @app.route("/api/extensions/check_update", methods=["POST"])
 def check_extension_update():
@@ -2476,7 +2481,8 @@ def check_extension_update():
         res = check_for_updates(ext_id, repo)
         return jsonify({"success": True, "update_info": res})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        print("Extension update check error:", e)
+        return jsonify({"success": False, "error": "extension update check failed"}), 500
 
 @app.route("/api/gallery/favourite_by_name", methods=["POST"])
 def toggle_gallery_fav_by_name():
