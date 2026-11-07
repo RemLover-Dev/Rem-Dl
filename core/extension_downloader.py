@@ -224,8 +224,14 @@ def _install_source(local_path, ext_id):
 
 
 def install_from_local_path(local_path: str, ext_id: str) -> tuple[bool, str]:
+    # Arbitrary user-picked paths are the feature; validate shape, not location.
+    if not isinstance(local_path, str) or not local_path or "\x00" in local_path:
+        return False, "Invalid local path."
+    local_path = os.path.realpath(os.path.abspath(local_path))
+    if not os.path.exists(local_path):
+        return False, "Local path does not exist."
     try:
-        return _install_source(os.path.abspath(local_path), ext_id)
+        return _install_source(local_path, ext_id)
     except Exception as exc:
         logger.warning("Local extension installation failed: %s", exc)
         return False, str(exc)

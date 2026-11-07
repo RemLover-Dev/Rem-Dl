@@ -62,7 +62,7 @@ def test_kona_suggest_query_normalizes_spaces(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         Rems_Dl, "_live_tag_suggest",
-        lambda session, url, timeout=5: (seen.update(url=url) or ["fire_keeper"]),
+        lambda session, url, params=None, timeout=5: (seen.update(params=params) or ["fire_keeper"]),
     )
     monkeypatch.setattr(
         Rems_Dl.DatabaseManager, "get_learned_suggestions",
@@ -73,5 +73,5 @@ def test_kona_suggest_query_normalizes_spaces(monkeypatch):
     with Rems_Dl.app.test_client() as client:
         r = client.post("/api/tags/kona", json={"query": "fire k"}, headers=H)
     assert r.status_code == 200
-    assert "fire_k" in seen.get("url", "")
+    assert "fire_k" in (seen.get("params") or {}).get("name", "")
     assert r.get_json() == ["fire_keeper"]

@@ -308,10 +308,10 @@ def _merge_learned_and_online(site, query, online_tags, limit=50):
 
 
 
-def _live_tag_suggest(session, url, timeout=5):
+def _live_tag_suggest(session, url, params=None, timeout=5):
     """GET a public autocomplete endpoint and coerce the response to list[str]."""
     try:
-        resp = session.get(url, timeout=timeout)
+        resp = session.get(url, params=params, timeout=timeout)
         if resp.status_code != 200:
             return []
         try:
@@ -1275,7 +1275,7 @@ def get_zerochan_suggestions():
     try:
         session = get_session("zero", data.get("net_config", {}))
         session.headers.update({"X-Requested-With": "XMLHttpRequest", "Referer": "https://www.zerochan.net/"})
-        resp = session.get(f"https://www.zerochan.net/suggest?q={urllib.parse.quote_plus(query)}", timeout=5)
+        resp = session.get("https://www.zerochan.net/suggest", params={"q": query}, timeout=5)
         if resp.status_code == 200:
             try:
                 if "{" in resp.text or "[" in resp.text:
@@ -1306,8 +1306,7 @@ def get_safe_suggestions():
     try:
         session = get_session("safe", data.get("net_config", {}))
         live = _live_tag_suggest(
-            session,
-            f"https://safebooru.org/autocomplete.php?q={urllib.parse.quote(query)}")
+            session, "https://safebooru.org/autocomplete.php", params={"q": query})
         if live: return jsonify(_merge_learned_and_online("safe", query, live))
     except Exception: pass
     try:
@@ -1351,16 +1350,16 @@ def get_rule34_suggestions():
     if len(query) < 2: return jsonify(_merge_learned_and_online("rule34", query, []))
     try:
         session = get_session("rule34", data.get("net_config", {}))
-        url = f"https://api.rule34.xxx/autocomplete.php?q={urllib.parse.quote(query)}"
-        resp = session.get(url, timeout=3)
+        resp = session.get("https://api.rule34.xxx/autocomplete.php", params={"q": query}, timeout=3)
         if resp.status_code == 200:
             live = [item.get("value") for item in resp.json() if isinstance(item, dict) and "value" in item]
             if live: return jsonify(_merge_learned_and_online("rule34", query, live))
     except Exception: pass
     try:
         session = get_session("rule34", data.get("net_config", {}))
-        url = f"https://gelbooru.com/index.php?page=autocomplete2&term={urllib.parse.quote(query)}&type=tag_query&limit=20"
-        resp = session.get(url, timeout=5)
+        resp = session.get("https://gelbooru.com/index.php",
+                           params={"page": "autocomplete2", "term": query,
+                                   "type": "tag_query", "limit": 20}, timeout=5)
         if resp.status_code == 200:
             live = [item.get("value") for item in resp.json() if isinstance(item, dict) and "value" in item]
             if live: return jsonify(_merge_learned_and_online("rule34", query, live))
@@ -1447,8 +1446,8 @@ def get_kona_suggestions():
     try:
         session = get_session("kona", data.get("net_config", {}))
         live = _live_tag_suggest(
-            session,
-            f"https://konachan.com/tag.json?name={urllib.parse.quote(query)}*&limit=50&order=count")
+            session, "https://konachan.com/tag.json",
+            params={"name": query + "*", "limit": 50, "order": "count"})
     except Exception: pass
     return jsonify(_merge_learned_and_online("kona", query, live))
 
@@ -1532,8 +1531,8 @@ def get_sankaku_suggestions():
         try:
             session = get_session("sankaku", data.get("net_config", {}))
             names = _live_tag_suggest(
-                session,
-                f"https://capi-v2.sankakucomplex.com/autocomplete?tag={urllib.parse.quote(query)}")
+                session, "https://capi-v2.sankakucomplex.com/autocomplete",
+                params={"tag": query})
         except Exception: pass
     return jsonify(_merge_learned_and_online("sankaku", query, names))
 
@@ -4319,7 +4318,7 @@ _NOTIF_THUMB_LOCK = threading.Lock()
 
 def _notif_thumb(url, referer, allow_host):
     """Fetch a hotlink-protected thumbnail server-side (shared by sources)."""
-    from urllib.parse import urlsplit
+    from urllib.parse import urlsplit, urlunsplit
     try:
         parsed = urlsplit(url)
         host = parsed.hostname or ""
@@ -4327,15 +4326,16 @@ def _notif_thumb(url, referer, allow_host):
                 or parsed.port not in (None, 443)
                 or (host != allow_host and not host.endswith("." + allow_host))):
             return jsonify({"error": "bad thumbnail URL"}), 400
+        safe_url = urlunsplit(("https", host, parsed.path, parsed.query, ""))
     except ValueError:
         return jsonify({"error": "bad thumbnail URL"}), 400
     with _NOTIF_THUMB_LOCK:
-        cached = _NOTIF_THUMB_CACHE.get(url)
+        cached = _NOTIF_THUMB_CACHE.get(safe_url)
     if cached:
         return Response(cached[0], mimetype=cached[1])
     try:
         # Never follow a provider redirect to an arbitrary local/network service.
-        with requests.get(url, timeout=15, headers={"Referer": referer,
+        with requests.get(safe_url, timeout=15, headers={"Referer": referer,
                           "User-Agent": "Mozilla/5.0"}, stream=True, allow_redirects=False, verify=settings.get("verify_tls", True)) as r:
             if r.status_code != 200:
                 raise ValueError("Unexpected thumbnail response")
@@ -4352,7 +4352,7 @@ def _notif_thumb(url, referer, allow_host):
     with _NOTIF_THUMB_LOCK:
         if len(_NOTIF_THUMB_CACHE) >= 64:
             _NOTIF_THUMB_CACHE.pop(next(iter(_NOTIF_THUMB_CACHE)), None)
-        _NOTIF_THUMB_CACHE[url] = (bytes(payload), ctype)
+        _NOTIF_THUMB_CACHE[safe_url] = (bytes(payload), ctype)
     return Response(bytes(payload), mimetype=ctype)
 
 
