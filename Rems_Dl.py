@@ -29,6 +29,7 @@ if sys.platform == "win32":
 import hashlib
 import html
 import io
+import json
 import os
 import queue
 import signal
@@ -202,9 +203,12 @@ app = Flask(__name__, static_folder=STATIC_FOLDER)
 # ponytail: pin threading mode — gevent (installed) buffers emits from our native worker threads
 socketio = SocketIO(app, async_mode="threading")
 from core.web_security import AccessGuard
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 access_guard = AccessGuard(app.wsgi_app)
-app.wsgi_app = access_guard
+# Honor X-Forwarded-Proto/Host/Prefix from the reverse proxy before the access
+# guard runs, so host checks and the Secure cookie flag see the public scheme.
+app.wsgi_app = ProxyFix(access_guard, x_proto=1, x_host=1, x_prefix=1)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 from core.extensions import get_extension_manager
@@ -390,6 +394,11 @@ def index():
     mode = DatabaseManager.load_ui_config().get("performance_mode", "lite")
     mode = "full" if mode == "full" else "lite"
     html = html.replace('<head>', '<head>\n    <meta name="rems-performance-mode" content="' + mode + '">', 1)
+    if access_guard.base_path:
+        # nginx strips the subpath prefix before forwarding, so every URL the
+        # browser uses must carry it — the frontend reads this global.
+        html = html.replace('<head>', '<head>\n    <script>window.REMS_BASE=' +
+                            json.dumps(access_guard.base_path) + ';</script>', 1)
     html = html.replace('<html lang="en">', '<html lang="en" data-effects="' + mode + '">', 1)
     label = "Full effects" if mode == "full" else "Lightweight (recommended)"
     option = '<option value="' + mode + '">'

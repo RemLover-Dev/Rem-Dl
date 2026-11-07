@@ -75,6 +75,6 @@
     retry.onclick = () => { lastAuthCheck = 0; socket.disconnect(); socket.connect(); };
     signIn.onclick = async () => {
         if (dirty && !await customConfirm('Sign in again? Unsaved settings on this page will be lost.', 'Sign in')) return;
-        dirty = false; window.location.assign('/');
+        dirty = false; window.location.assign(withBase('/'));
     };
 })();

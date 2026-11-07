@@ -1,5 +1,16 @@
 let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": true, "dedup_enabled": true };
 var workerRunning = {};
+// REMS_BASE_PATH support: the reverse proxy strips the subpath before the app
+// sees it, so the browser must prefix every same-origin URL itself. The server
+// injects window.REMS_BASE into the page; empty means root deployment.
+const BASE = window.REMS_BASE || "";
+const withBase = p => BASE && typeof p === "string" && p.startsWith("/") ? BASE + p : p;
+const stripBase = u => BASE && typeof u === "string" && u.startsWith(BASE) ? u.slice(BASE.length) : u;
+// one hook covers every fetch() call in script.js, planning.js, ux.js, jxl.js
+if (BASE) {
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => _origFetch(typeof input === "string" ? withBase(input) : input, init);
+}
 let queuedCounts = {}; // site -> waiting entries, tracked so START can kick off the queue
 // The HTML carries the on-disk effects choice so startup cannot reset it.
 const initialEffects = document.querySelector('meta[name="rems-performance-mode"]');
@@ -606,7 +617,7 @@ async function resetWallpapersUI() {
     setTimeout(() => { status.textContent = ""; }, 2000);
 }
 
-const socket = io({ transports: ["polling"] });
+const socket = io({ transports: ["polling"], path: withBase("/socket.io") });
 
 const WORKER_TO_TAB = {
     "neko": "neko", "nekos_life": "nekos_life", "zero": "zero",
@@ -856,7 +867,7 @@ function logToConsole(tabID, msg) {
         card.className = "image-card-log";
         if (logRating) card.dataset.rating = logRating;
         if (ratingBlurred(logRating)) card.classList.add("is-nsfw");
-        let thumbSrc = '/api/gallery/thumb/' + pathUrlStr;
+        let thumbSrc = withBase('/api/gallery/thumb/' + pathUrlStr);
         let safeFn = escJs(fn);
         const logHoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
         const logFullU = fullImageUrl(pathUrlStr, fn);
@@ -4269,9 +4280,9 @@ function queueHistoryEntry(site, tag, rating, excludeAI, filters) {
 function getSafeThumbUrl(filepath, filename) {
     if (filepath) {
         let parts = filepath.replace(/\\/g, '/').split('/');
-        return '/api/gallery/thumb/' + parts.map(encodeURIComponent).join('/');
+        return withBase('/api/gallery/thumb/' + parts.map(encodeURIComponent).join('/'));
     }
-    return '/api/thumb_by_name/' + encodeURIComponent(filename || "");
+    return withBase('/api/thumb_by_name/' + encodeURIComponent(filename || ""));
 }
 
 // تابع جدید هیستوری که دقیقاً کپی عکسی هست که دادی
@@ -6142,24 +6153,25 @@ function attachVideoStallRecovery(video) {
 }
 
 function previewImageUrl(filepath, filename) {
-    return fullImageUrl(filepath, filename).replace('/api/gallery/file/', '/api/gallery/preview/');
+    return withBase(fullImageUrl(filepath, filename).replace('/api/gallery/file/', '/api/gallery/preview/'));
 }
 
 function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once
     let clean = filepath || "";
     try { clean = decodeURIComponent(clean); } catch (e) {}
-    return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
+    return withBase(clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`);
 }
 // viewer-open fast path: the server's fit-to-screen copy (display cache),
 // or '' when the URL isn't a gallery file (fallback thumbs etc.)
 function displayImageUrl(fullUrl) {
-    return fullUrl && fullUrl.startsWith('/api/gallery/file/')
-        ? fullUrl.replace('/api/gallery/file/', '/api/gallery/display/')
+    const u = stripBase(fullUrl);
+    return u && u.startsWith('/api/gallery/file/')
+        ? withBase(u.replace('/api/gallery/file/', '/api/gallery/display/'))
         : '';
 }
 function galleryThumbUrl(fp) {
-    return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : '';
+    return fp ? withBase(`/api/gallery/thumb/${String(fp).replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`) : '';
 }
 // deleted this session: the browser may still hold a day-fresh cached copy of
 // the old max-age responses, so a 200 from cache must not reopen them
@@ -6179,7 +6191,8 @@ function isDeleted(path, name) {
 }
 function galleryPathFromUrl(url) {
     const prefix = "/api/gallery/file/";
-    return url && url.startsWith(prefix) ? normPath(url.slice(prefix.length)) : "";
+    const u = stripBase(url);
+    return u && u.startsWith(prefix) ? normPath(u.slice(prefix.length)) : "";
 }
 function openFullImage(filepath, filename, el) {
     if (isDeleted(filepath, filename)) { showToast("Image was deleted", { warn: true, icon: WARN_ICON }); return; }
@@ -6829,15 +6842,17 @@ function toggleViewerFav() {
         }
     }
     function clipboardRelPath(url, filename) {
+        const u = stripBase(url);
         for (const pre of ["/api/gallery/file/", "/api/gallery/display/"]) {
-            if (url && url.startsWith(pre)) return decodeURIComponent(url.slice(pre.length).split("?")[0]);
+            if (u && u.startsWith(pre)) return decodeURIComponent(u.slice(pre.length).split("?")[0]);
         }
-        if (url && url.startsWith("/api/thumb_by_name/")) return decodeURIComponent(url.slice("/api/thumb_by_name/".length));
+        if (u && u.startsWith("/api/thumb_by_name/")) return decodeURIComponent(u.slice("/api/thumb_by_name/".length));
         return filename || "";
     }
     function saveAsDownload(url, filename) {
         const a = document.createElement('a');
-        a.href = /\.jxl$/i.test(filename || '') && url.startsWith('/api/gallery/file/') ? url + (url.includes('?') ? '&' : '?') + 'download=1' : url;
+        const u = stripBase(url);
+        a.href = /\.jxl$/i.test(filename || '') && u.startsWith('/api/gallery/file/') ? withBase(u + (u.includes('?') ? '&' : '?') + 'download=1') : withBase(u);
         a.download = filename || 'file';
         document.body.appendChild(a);
         a.click();

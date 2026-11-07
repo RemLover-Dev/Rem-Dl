@@ -355,6 +355,25 @@ server {
 
 `https://rems.example.com` را باز کنید و یک بار مقدار `REMS_ACCESS_TOKEN` را در صفحهٔ ورود وارد کنید. کوکی نشست `HttpOnly` و `SameSite=Strict` است و روی HTTPS پرچم `Secure` می‌گیرد. پورت 5000 را مستقیم روی `0.0.0.0` منتشر نکنید و برای خارج کردن توکن از تاریخچهٔ شل، به‌جای دستور مستقیم از `--env-file` استفاده کنید.
 
+#### سرو کردن زیر یک زیرمسیر URL
+
+برای میزبانی در `https://example.com/remdl/` به‌جای دامنهٔ جداگانه، `REMS_BASE_PATH=/remdl` را تنظیم کنید و nginx پیشوند را حذف کند:
+
+```nginx
+location = /remdl { return 301 /remdl/; }
+location /remdl/ {
+  proxy_pass http://127.0.0.1:5000/;        # اسلش پایانی پیشوند /remdl/ را حذف می‌کند
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Upgrade $http_upgrade;   # وب‌سوکت socket.io
+  proxy_set_header Connection "upgrade";
+  proxy_read_timeout 60s;
+}
+```
+
+برنامه سپس همهٔ URLهایی که به مرورگر می‌فرستد (لینک‌ها، fetch، socket.io، کوکی) را با `/remdl` پیشوند می‌دهد، در حالی که مسیرهای Flask بدون تغییر می‌مانند. برای استقرار در ریشه، `REMS_BASE_PATH` را تنظیم نکنید.
+
 ---
 
 <a id="build-source"></a>

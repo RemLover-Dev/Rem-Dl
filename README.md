@@ -386,6 +386,25 @@ server {
 
 Open `https://rems.example.com` and enter the `REMS_ACCESS_TOKEN` value on the login page once. The session cookie is `HttpOnly` + `SameSite=Strict` and becomes `Secure` on HTTPS. Do not publish port 5000 on `0.0.0.0` directly, and pass the token via `--env-file` rather than the shell if you want it out of your history.
 
+#### Serving under a URL subpath
+
+To host the app at `https://example.com/remdl/` instead of its own domain, set `REMS_BASE_PATH=/remdl` and have nginx strip the prefix:
+
+```nginx
+location = /remdl { return 301 /remdl/; }
+location /remdl/ {
+  proxy_pass http://127.0.0.1:5000/;        # trailing slash strips /remdl/
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Upgrade $http_upgrade;   # socket.io websocket
+  proxy_set_header Connection "upgrade";
+  proxy_read_timeout 60s;
+}
+```
+
+The app then prefixes every URL it hands to the browser (links, fetches, socket.io, cookies) with `/remdl`, while Flask routes stay unchanged. Leave `REMS_BASE_PATH` unset for root deployments.
+
 ---
 
 ## 🪟 Build from Source (EXE / Binary)
