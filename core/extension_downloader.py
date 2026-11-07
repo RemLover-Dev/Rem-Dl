@@ -234,9 +234,12 @@ def install_from_local_path(local_path: str, ext_id: str) -> tuple[bool, str]:
         return False, "Local path does not exist."
     try:
         return _install_source(local_path, ext_id)
+    except SecurityError as exc:
+        # curated validation message — safe to show
+        return False, str(exc)
     except Exception as exc:
         logger.warning("Local extension installation failed: %s", exc)
-        return False, str(exc)
+        return False, "Extension installation failed."
 
 
 def install_from_github(repo: str, ext_id: str | None = None) -> tuple[bool, str]:
@@ -258,9 +261,11 @@ def install_from_github(repo: str, ext_id: str | None = None) -> tuple[bool, str
                             raise SecurityError("Extension archive exceeds download limit")
                         stream.write(chunk)
             return _install_source(archive, ext_id)
+    except SecurityError as exc:
+        return False, str(exc)
     except Exception as exc:
         logger.warning("GitHub extension installation failed: %s", exc)
-        return False, str(exc)
+        return False, "Extension installation from GitHub failed."
 
 
 def check_for_updates(ext_id: str, repo: str) -> dict[str, Any]:
