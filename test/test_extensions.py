@@ -141,3 +141,34 @@ def test_api_extensions_endpoints():
     assert data["success"] is True
     assert "extensions" in data
     assert "contributions" in data
+
+
+def test_install_failed_messages_contract(monkeypatch, tmp_path):
+    # SecurityError = curated validation message, passed through verbatim;
+    # any other failure must come back generic — never raw exception text.
+    import core.extension_downloader as dl
+
+    def raiser(kind, text):
+        def boom(*_a, **_k):
+            raise kind(text)
+        return boom
+
+    monkeypatch.setattr(dl, "_install_source",
+                        raiser(dl.SecurityError, "Manifest ID must match the extension ID"))
+    ok, msg = dl.install_from_local_path(str(tmp_path), "x")
+    assert (ok, msg) == (False, "Manifest ID must match the extension ID")
+
+    monkeypatch.setattr(dl, "_install_source",
+                        raiser(RuntimeError, "boom reads /etc/passwd"))
+    ok, msg = dl.install_from_local_path(str(tmp_path), "x")
+    assert (ok, msg) == (False, "Extension installation failed.")
+
+    monkeypatch.setattr(dl, "fetch_release_info",
+                        raiser(dl.SecurityError, "Use a GitHub owner/repository name"))
+    ok, msg = dl.install_from_github("some/repo")
+    assert (ok, msg) == (False, "Use a GitHub owner/repository name")
+
+    monkeypatch.setattr(dl, "fetch_release_info",
+                        raiser(RuntimeError, "boom http://secret/token"))
+    ok, msg = dl.install_from_github("some/repo")
+    assert (ok, msg) == (False, "Extension installation from GitHub failed.")
