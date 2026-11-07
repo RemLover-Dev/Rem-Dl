@@ -250,7 +250,6 @@ def _entries(w, posts):
 def check_watcher(w):
     """One watcher check. Never raises; returns {new, error}."""
     wid = w["watcher_id"]
-    w.get("baseline_at")
     try:
         api_tag = build_query(" ".join(w.get("tags") or []),
                               " ".join(w.get("ratings") or []))[0]

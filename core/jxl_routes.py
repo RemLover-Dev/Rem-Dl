@@ -104,8 +104,9 @@ def register(app, master, folder_picker, image_picker, changed, cache, replaced=
 
     @app.route('/api/jxl/reveal', methods=['POST'])
     def jxl_reveal():
-        path = Path(service.snapshot().get('output', ''))
-        if not path.is_dir() or not service.snapshot().get('output'):
+        snapshot = service.snapshot()
+        path = Path(snapshot.get('output', ''))
+        if not path.is_dir() or not snapshot.get('output'):
             return jsonify(error='No completed replacement yet'), 404
         try:
             if sys.platform == 'win32':
