@@ -168,7 +168,9 @@ def _install_source(local_path, ext_id):
         raise SecurityError("Invalid extension ID")
     root = os.path.realpath(EXTENSIONS_DIR)
     os.makedirs(root, exist_ok=True)
-    target = os.path.join(root, ext_id)
+    target = os.path.realpath(os.path.join(root, ext_id))
+    if os.path.commonpath([root, target]) != root:
+        raise SecurityError("Extension target escapes extension directory")
     if os.path.islink(target):
         raise SecurityError("Extension target cannot be a symbolic link")
     with _INSTALL_LOCK, tempfile.TemporaryDirectory(prefix=".install-", dir=root) as work:

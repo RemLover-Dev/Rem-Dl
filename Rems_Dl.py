@@ -1264,7 +1264,7 @@ def pixiv_exchange_cookie():
         return jsonify({"success": True, "refresh_token": refresh_token})
     except Exception as e:
         print("Pixiv auth error:", e)
-        return jsonify({"success": False, "error": f"pixiv auth failed: {e}"}), 500
+        return jsonify({"success": False, "error": "pixiv auth failed"}), 500
 
 @app.route("/api/tags/zerochan", methods=["POST"])
 def get_zerochan_suggestions():
