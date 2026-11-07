@@ -120,11 +120,10 @@ function renderPlanSourceDropdown() {
     if (!menu) return;
     const all = !planSelSites.size || planningSites.every(s => planSelSites.has(s));
     menu.innerHTML =
-        `<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All sources</span><input type="checkbox" value="" ${all ? "checked" : ""}></div>` +
+        `<div class="dd-item" onclick="toggleDropdownCheck(this, event); planOnSourceChange()"><span>All sources</span><input type="checkbox" value="" ${all ? "checked" : ""}></div>` +
         planningSites.map(s =>
-            `<div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>${escapeHtml(siteLabel(s))}</span><input type="checkbox" data-plan-src="${s}" ${planSelSites.has(s) ? "checked" : ""}></div>`
+            `<div class="dd-item" onclick="toggleDropdownCheck(this, event); planOnSourceChange()"><span>${escapeHtml(siteLabel(s))}</span><input type="checkbox" data-plan-src="${s}" value="${escapeHtml(s)}" ${planSelSites.has(s) ? "checked" : ""}></div>`
         ).join("");
-    menu.onchange = planOnSourceChange;
     const btn = document.getElementById("planSrcBtn");
     if (btn) {
         const n = planSelSites.size;
