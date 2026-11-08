@@ -5563,6 +5563,9 @@ let viewerPanY = 0;
 // Image the canvas currently paints: the display copy at stage 1, the
 // original at stage 2. Painting goes through the canvas, never the <img>.
 let viewerStageImage = null;
+// animated rasters (gif/apng) can't go through the canvas painter — it freezes
+// them on frame 0 — so they render via the live <img> fallback path instead
+let viewerAnimatedRaster = false;
 
 // Gwenview-style multiresolution raster (lib/documentview/rasterimageitem):
 // the original plus 1/3 and 1/6 samples; paint picks the coarsest sample
@@ -6230,6 +6233,7 @@ let viewerResource = {
 };
 function clearViewerResource() {
     clearViewerFitRaster();
+    viewerAnimatedRaster = false;
     const r = viewerResource;
     if (r.abortController) { try { r.abortController.abort(); } catch (e) {} r.abortController = null; }
     r.generation++;
@@ -6280,6 +6284,7 @@ function loadViewerRaster(url, filename) {
     const generation = viewerResource.generation;
     viewerResource.url = url;
     viewerResource.filename = filename || "image";
+    viewerAnimatedRaster = /\.(gif|apng)(\?|#|$)/i.test(url) || /\.(gif|apng)$/i.test(filename || "");
     const controller = new AbortController();
     viewerResource.abortController = controller;
     // the display img (video/fallback shell) and the canvas both stay hidden
@@ -7013,6 +7018,9 @@ function toggleViewerFav() {
         if (!canvas || canvas.style.display === 'none') return;
         const L = viewerLayoutState();
         if (L.vw < 1 || L.vh < 1 || L.zoom <= 0 || viewerNaturalWidth <= 0) return;
+        // animated rasters reuse the image-fallback painter: a live <img>
+        // element keeps animating, a canvas draw would freeze on frame 0
+        if (viewerAnimatedRaster) { viewerImageFallback(canvas, L); return; }
         const surface = allocateViewerSurface(canvas, L.vw, L.vh);
         if (!surface) { viewerImageFallback(canvas, L); return; }
         const {ctx, dpr, bw, bh} = surface;
