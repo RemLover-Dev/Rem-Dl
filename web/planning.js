@@ -182,7 +182,7 @@ function renderPlanning() {
         const meta = [];
         if (e.completed && e.completed_at) meta.push("completed " + planFormatDate(e.completed_at));
         if (e.note) meta.push("note: " + e.note);
-        const addedMeta = e.created_at ? `added ${planFormatDate(e.created_at)}` : "";
+        const addedMeta = (!e.completed && e.created_at) ? `added ${planFormatDate(e.created_at)}` : "";
         return `<div class="plan-item" data-id="${escapeHtml(e.id)}" style="display:flex; gap:10px; align-items:center; padding:10px 12px; border:1px solid var(--border-color); border-radius:10px; flex-wrap:wrap; ${e.completed ? "opacity:0.55;" : ""}">
             <button class="action-btn plan-toggle" data-act="toggle" title="${e.completed ? "Mark as pending" : "Mark as completed"}" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px ${e.completed ? "var(--accent-color)" : "var(--border-color)"}; color: var(--text-color);">${e.completed ? "✓" : "○"}</button>
             <div style="flex:1; min-width:260px;">
