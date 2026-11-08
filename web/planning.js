@@ -180,9 +180,10 @@ function renderPlanning() {
     }
     box.innerHTML = shown.map(e => {
         const meta = [];
-        if (e.completed && e.completed_at) meta.push("completed " + planFormatDate(e.completed_at));
         if (e.note) meta.push("note: " + e.note);
-        const addedMeta = (!e.completed && e.created_at) ? `added ${planFormatDate(e.created_at)}` : "";
+        const hoverMeta = e.completed
+            ? ((e.completed_at && `completed ${planFormatDate(e.completed_at)}`) || "")
+            : ((e.created_at && `added ${planFormatDate(e.created_at)}`) || "");
         return `<div class="plan-item" data-id="${escapeHtml(e.id)}" style="display:flex; gap:10px; align-items:center; padding:10px 12px; border:1px solid var(--border-color); border-radius:10px; flex-wrap:wrap; ${e.completed ? "opacity:0.55;" : ""}">
             <button class="action-btn plan-toggle" data-act="toggle" title="${e.completed ? "Mark as pending" : "Mark as completed"}" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px ${e.completed ? "var(--accent-color)" : "var(--border-color)"}; color: var(--text-color);">${e.completed ? "✓" : "○"}</button>
             <div style="flex:1; min-width:260px;">
@@ -191,7 +192,7 @@ function renderPlanning() {
                     <span style="display:flex; gap:6px; flex-wrap:wrap;">${planTagsDisplay(e.tags)}</span>
                     ${planRatingBadge(e)}
                 </div>
-                <div style="font-size:11px; opacity:0.65; margin-top:3px;">${escapeHtml(meta.join(" · "))}${meta.length && addedMeta ? " · " : ""}<span class="plan-added">${escapeHtml(addedMeta)}</span></div>
+                <div style="font-size:11px; opacity:0.65; margin-top:3px;">${escapeHtml(meta.join(" · "))}${meta.length && hoverMeta ? " · " : ""}<span class="plan-added">${escapeHtml(hoverMeta)}</span></div>
             </div>
             <div class="plan-actions" style="display:flex; gap:8px;">
                 <button class="action-btn" data-act="open" title="Load into the ${escapeHtml(siteLabel(e.site))} tab" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button>
