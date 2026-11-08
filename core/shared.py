@@ -274,6 +274,11 @@ def media_subdir(ext: str) -> str:
 _DIRS_CACHE: dict[str, str] = {}
 _DIRS_LOCK = threading.Lock()
 
+# grace window before a fresh download's UI cards (log/history/gallery) are
+# published; files killed by a keep-larger swap inside the window are simply
+# dropped — the doomed card never flashes through any view
+PUBLISH_GRACE_S = float(os.getenv("PUBLISH_GRACE_S", "2"))
+
 def safe_ensure_dir(path: str) -> str:
     """Ensure directory exists with safe, sanitized components across all platforms (Windows, Linux, macOS).
     Creates parent directories safely.
@@ -1813,18 +1818,41 @@ class BaseDownloader:
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
-                # send_tags first: the viewer's tag box reads imageHistory via
-                # the update_history socket, so the history row must exist
-                # before the image is clickable
-                await asyncio.to_thread(send_tags, self.name, filename, tags_list, artists, rel_path, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                # ponytail: metadata + gallery publish BEFORE the SUCCESS log — the log card
-                # requests its thumb instantly and would otherwise read a half-written file
-                await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, extra_sites=extract_site_tags(tags_list, metadata_tags, self.name))
-                await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
-                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-                if post_download_callback is not None:
-                    try: post_download_callback(filepath)
-                    except Exception: pass
+                # a keep-larger duplicate often lands seconds after the smaller
+                # copy in the same batch: publishing the smaller copy's log,
+                # history and gallery cards immediately means the user watches
+                # a card flash into every view and vanish again. The publish
+                # waits one grace window and re-checks the file — a file
+                # removed inside the window was a keep-larger victim and its
+                # card is simply discarded, never shown anywhere.
+                def _publish():
+                    if not os.path.exists(filepath):
+                        return
+                    try:
+                        # send_tags first: the viewer's tag box reads
+                        # imageHistory via the update_history socket, so the
+                        # history row must exist before the image is clickable
+                        send_tags(self.name, filename, tags_list, artists, rel_path,
+                                  characters, copyrights, metadata_tags, outfits,
+                                  groups, hair, eyes)
+                        write_image_metadata(filepath, tags_list, artists, self.name,
+                                             characters, copyrights, metadata_tags,
+                                             outfits, groups, hair, eyes,
+                                             extra_sites=extract_site_tags(tags_list, metadata_tags, self.name))
+                        add_to_gallery(self.name, filename, rel_path, tags_list, artists,
+                                       characters, copyrights, metadata_tags, outfits,
+                                       groups, hair, eyes, rating)
+                    except Exception as e:
+                        print(f"[DEDUP] deferred publish failed for {filepath}: {e}")
+                    self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                    if post_download_callback is not None:
+                        try: post_download_callback(filepath)
+                        except Exception: pass
+                # ponytail: explicit Timer thread — the site worker's event loop
+                # shuts down between batches, a loop timer would die with it
+                timer = threading.Timer(PUBLISH_GRACE_S, _publish)
+                timer.daemon = True
+                timer.start()
                 return True
 
             except Exception as e:

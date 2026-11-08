@@ -1,10 +1,17 @@
 import asyncio
 import os
+import time
 
 from PIL import Image
 from test_download_resume import MockContent, MockResponse, MockSession
 
 from core.shared import BaseDownloader, write_image_metadata
+
+
+def _await_order(order, n=4, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while len(order) < n and time.monotonic() < deadline:
+        time.sleep(0.02)
 
 
 def _png(tmp_path, name="img.png"):
@@ -59,6 +66,7 @@ def test_history_row_lands_before_metadata_and_gallery(monkeypatch, tmp_path):
     metadata write it used to wait behind."""
     monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
     monkeypatch.setattr("core.shared.check_duplicate", lambda *a, **k: None)
+    monkeypatch.setattr("core.shared.PUBLISH_GRACE_S", 0)
     order = []
     monkeypatch.setattr("core.shared.send_tags", lambda *a, **k: order.append("send_tags"))
     monkeypatch.setattr("core.shared.write_image_metadata", lambda *a, **k: order.append("write"))
@@ -86,4 +94,46 @@ def test_history_row_lands_before_metadata_and_gallery(monkeypatch, tmp_path):
         )
 
     assert asyncio.run(_run()) is True
+    _await_order(order)
     assert order == ["send_tags", "write", "gallery", "log:SUCCESS"]
+
+
+def test_publish_discarded_when_file_replaced_in_grace_window(monkeypatch, tmp_path):
+    """A keep-larger swap can delete a newly downloaded file within the publish
+    grace window — its cards must never appear in any view."""
+    monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
+    monkeypatch.setattr("core.shared.check_duplicate", lambda *a, **k: None)
+    monkeypatch.setattr("core.shared.PUBLISH_GRACE_S", 0.15)
+    order = []
+    monkeypatch.setattr("core.shared.send_tags", lambda *a, **k: order.append("send_tags"))
+    monkeypatch.setattr("core.shared.write_image_metadata", lambda *a, **k: order.append("write"))
+    monkeypatch.setattr("core.shared.add_to_gallery", lambda *a, **k: order.append("gallery"))
+
+    payload = b"jpgbytes" * 100
+    dl = BaseDownloader("test_worker", "Test:Site", 1,
+                        {"anti_ban_pause": 0, "download_retries": 1})
+    dl.log = lambda m: order.append("log:SUCCESS") if "[SUCCESS]" in m else None
+    dl.session = MockSession([
+        MockResponse(200, {"Content-Length": str(len(payload))},
+                     MockContent([payload])),
+    ])
+
+    async def _run():
+        folder = os.path.join(dl.site_root, "Safe_Tag")
+        os.makedirs(folder, exist_ok=True)
+        fp = os.path.join(folder, "x.jpg")
+        res = await dl._async_download_file(
+            url="http://example.com/img.jpg",
+            filepath=fp,
+            filename="x.jpg",
+            tags_list=["solo"],
+            artists=["a"],
+            file_size=len(payload),
+        )
+        # the swap runs before the timer fires
+        os.remove(fp)
+        return res
+
+    assert asyncio.run(_run()) is True
+    time.sleep(0.35)
+    assert order == []
