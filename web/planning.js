@@ -371,6 +371,14 @@ function openPlanEntryModal(entry) {
         };
         if (!payload.site) { showToast("Pick a site", { warn: true }); return; }
         if (!payload.tags.trim()) { showToast("Tags are required", { warn: true }); return; }
+        if (entry
+            && entry.site === payload.site
+            && (entry.tags || "") === payload.tags
+            && (entry.rating || "") === payload.rating
+            && (entry.note || "") === payload.note) {
+            close();
+            return;
+        }
         try {
             if (entry) {
                 await planFetch("/api/planning/update", { json: JSON.stringify({ id: entry.id, ...payload }) });
