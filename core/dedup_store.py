@@ -147,7 +147,7 @@ BORDER_TOL = 18                     # per-channel tolerance for the flat border 
 MIN_CONTENT_FRAC = 0.04             # ignore a trim that would leave less than this
 
 # keep-larger behaviour
-KEEP_LARGER = True                  # a bigger duplicate replaces the stored smaller one
+KEEP_LARGER = False                 # off: a duplicated download keeps the stored file; its tags merge into the old record and the new file is removed
 DELETE_REPLACED = True              # remove the smaller file from disk when replaced
 LARGER_PIXEL_MARGIN = 1.02          # needs >2% more content pixels; closer -> file size decides
 

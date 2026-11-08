@@ -128,9 +128,12 @@ class TestDedupStore:
         res = store.check_and_add(same)
         assert not res.is_duplicate
 
-    def test_keep_larger_reports_pre_unlink_stat_only_after_removal(self, dedup_env):
+    def test_keep_larger_reports_pre_unlink_stat_only_after_removal(self, dedup_env, monkeypatch):
         store, tmp_dir = dedup_env
         from PIL import Image, ImageDraw
+        import core.dedup_store as dedup_module
+        # flag off by default now; pin the replacement machinery's own contract
+        monkeypatch.setattr(dedup_module, "KEEP_LARGER", True)
 
         image = Image.new("RGB", (256, 256), (20, 50, 80))
         draw = ImageDraw.Draw(image)
@@ -158,12 +161,12 @@ class TestDedupStore:
         store, tmp_dir = dedup_env
         from PIL import Image, ImageDraw
         import core.dedup_store as dedup_module
+        monkeypatch.setattr(dedup_module, "KEEP_LARGER", True)
 
         image = Image.new("RGB", (256, 256), (20, 50, 80))
         draw = ImageDraw.Draw(image)
         for x in range(0, 256, 16):
             draw.rectangle((x, 0, x + 7, 255), fill=(80 + x // 2, 100, 130))
-        draw.ellipse((60, 50, 180, 170), fill=(230, 40, 50))
         draw.rectangle((100, 150, 220, 210), fill=(30, 200, 90))
 
         small = os.path.join(tmp_dir, "small.png")
@@ -183,6 +186,30 @@ class TestDedupStore:
         assert not result.is_duplicate
         assert result.replaced_path is None
         assert result.replaced_stat is None
+        assert os.path.exists(small)
+
+    def test_duplicate_download_keeps_stored_file(self, dedup_env):
+        """Default (KEEP_LARGER=False): a bigger copy of a stored image is the
+        duplicate — the OLD file survives and the NEW file is reported for the
+        caller's kill; tags merge happens in absorb_duplicate, not here."""
+        store, tmp_dir = dedup_env
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (128, 128), (10, 40, 90))
+        ImageDraw.Draw(image).ellipse((20, 20, 100, 100), fill=(200, 60, 40))
+
+        small = os.path.join(tmp_dir, "small.png")
+        large = os.path.join(tmp_dir, "large.png")
+        image.save(small, "PNG", compress_level=9)
+        image.save(large, "PNG", compress_level=0)
+        assert os.path.getsize(large) > os.path.getsize(small)
+        assert not store.check_and_add(small, site="first").is_duplicate
+
+        result = store.check_and_add(large, site="second")
+        assert result.is_duplicate
+        assert result.filepath == large
+        assert result.matched_path == small
+        assert result.replaced_path is None
         assert os.path.exists(small)
 
     def test_settings_toggle(self, tmp_path, monkeypatch):
