@@ -258,6 +258,12 @@ input[type="number"].queue-pos {
 .tab-btn:active { transform: scale(0.98); }
 .notif-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff4757; margin-left: 3px; vertical-align: top; box-shadow: 0 0 4px rgba(255, 71, 87, 0.85); }
 .notif-list { display: flex; flex-direction: column; gap: 10px; }
+/* planning rows: toggle button is display-hidden (reflows so tags slide into
+   its spot) and the 'added' date is visibility-hidden until hover */
+.plan-toggle { display: none; }
+.plan-item:hover .plan-toggle { display: inline-flex; }
+.plan-added { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.plan-item:hover .plan-added { visibility: visible; opacity: 1; }
 /* history ('.hist-item') and planning ('.plan-item') rows hide their
    compact action buttons until the row is hovered */
 .hist-actions, .plan-actions { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
