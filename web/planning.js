@@ -48,8 +48,6 @@ function planToggleMenu(id) {
 function planModal(inner, escHandler) {
     const ov = document.createElement("div");
     ov.className = "custom-confirm-overlay";
-    ov.style.alignItems = "flex-start";
-    ov.style.overflowY = "auto";
     const panel = document.createElement("div");
     panel.className = "custom-confirm-box";
     panel.style.cssText = "width:min(760px,94vw); max-height:88vh; overflow:auto; display:flex; flex-direction:column; gap:12px; text-align:left;";
