@@ -276,8 +276,83 @@ _DIRS_LOCK = threading.Lock()
 
 # grace window before a fresh download's UI cards (log/history/gallery) are
 # published; files killed by a keep-larger swap inside the window are simply
-# dropped — the doomed card never flashes through any view
+# dropped — the doomed card never flashes through any view. With auto-JXL
+# conversion on, a download instead stays unpublished until its own .jxl
+# commit is done (PUBLISH_HOLD_MAX_S caps the wait; encode failures publish
+# the original file from the converter).
 PUBLISH_GRACE_S = float(os.getenv("PUBLISH_GRACE_S", "2"))
+PUBLISH_HOLD_MAX_S = float(os.getenv("PUBLISH_HOLD_MAX_S", "180"))
+
+_PUBLISH_HOLD_LOCK = threading.Lock()
+_PENDING_PUBLISH = {}
+
+def mark_download_held(abs_fp):
+    """Rems_Dl queues a conversion for this download — hold its cards until
+    the converter releases them."""
+    with _PUBLISH_HOLD_LOCK:
+        spec = _PENDING_PUBLISH.get(abs_fp)
+        if spec is not None:
+            spec["held"] = time.time()
+
+def release_download_publish(abs_fp, converted_abs=None):
+    """Converter finished: publish now, against the .jxl when the commit
+    replaced the file (tags are baked by then; metadata writing is skipped).
+    A checker loop owns publication when the converter never runs or the
+    hold expired."""
+    with _PUBLISH_HOLD_LOCK:
+        spec = _PENDING_PUBLISH.pop(abs_fp, None)
+    if spec is None:
+        return False
+    if converted_abs:
+        try:
+            rel = os.path.relpath(converted_abs, MASTER_FOLDER)
+        except ValueError:
+            rel = converted_abs
+        spec["filepath"] = converted_abs
+        spec["rel_path"] = rel.replace(os.sep, "/")
+        spec["filename"] = os.path.basename(converted_abs)
+        spec["write_metadata"] = False
+    _publish_spec(spec)
+    return True
+
+def _publish_spec(spec):
+    """Publish one download's UI cards. The file must exist at publish time —
+    a keep-larger kill discards the publication outright; a kill racing the
+    publish itself is retracted right after the log card is appended."""
+    filepath = spec["filepath"]
+    rel_path = spec["rel_path"]
+    filename = spec["filename"]
+    site = spec["site"]
+    if not os.path.exists(filepath):
+        return
+    try:
+        # send_tags first: the viewer's tag box reads imageHistory via the
+        # update_history socket, so the history row must exist before the
+        # image is clickable
+        send_tags(site, filename, spec["tags_list"], spec["artists"], rel_path,
+                  spec["characters"], spec["copyrights"], spec["metadata_tags"],
+                  spec["outfits"], spec["groups"], spec["hair"], spec["eyes"])
+        if spec.get("write_metadata", True):
+            write_image_metadata(filepath, spec["tags_list"], spec["artists"], site,
+                                 spec["characters"], spec["copyrights"],
+                                 spec["metadata_tags"], spec["outfits"],
+                                 spec["groups"], spec["hair"], spec["eyes"],
+                                 extra_sites=extract_site_tags(spec["tags_list"],
+                                                               spec["metadata_tags"], site))
+        add_to_gallery(site, filename, rel_path, spec["tags_list"], spec["artists"],
+                       spec["characters"], spec["copyrights"], spec["metadata_tags"],
+                       spec["outfits"], spec["groups"], spec["hair"], spec["eyes"],
+                       spec.get("rating"))
+    except Exception as e:
+        print(f"[DEDUP] deferred publish failed for {filepath}: {e}")
+    spec["log"](f"[SUCCESS] Downloaded {filename} {spec['count_head']} |PATH| {rel_path} |TAGS| {spec['top_tags']} |TAGD| {spec['tagd']}")
+    if not os.path.exists(filepath):
+        # a keep-larger kill landed while these cards were being created —
+        # the killer's own event fired too early to match them, so retract
+        # every view here
+        gid = _retract_published(rel_path, filename)
+        socketio_emit("image_deleted",
+                      {"id": gid, "filename": filename, "filepath": rel_path})
 
 def safe_ensure_dir(path: str) -> str:
     """Ensure directory exists with safe, sanitized components across all platforms (Windows, Linux, macOS).
@@ -1854,47 +1929,50 @@ class BaseDownloader:
                 top_tags = ", ".join(tags_list[:5]) if tags_list else "No tags"
                 tagd = build_tagd(artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, tags_list)
 
-                # a keep-larger duplicate often lands seconds after the smaller
-                # copy in the same batch: publishing the smaller copy's log,
-                # history and gallery cards immediately means the user watches
-                # a card flash into every view and vanish again. The publish
-                # waits one grace window and re-checks the file — a file
-                # removed inside the window was a keep-larger victim and its
-                # card is simply discarded, never shown anywhere.
-                def _publish():
-                    if not os.path.exists(filepath):
-                        return
-                    try:
-                        # send_tags first: the viewer's tag box reads
-                        # imageHistory via the update_history socket, so the
-                        # history row must exist before the image is clickable
-                        send_tags(self.name, filename, tags_list, artists, rel_path,
-                                  characters, copyrights, metadata_tags, outfits,
-                                  groups, hair, eyes)
-                        write_image_metadata(filepath, tags_list, artists, self.name,
-                                             characters, copyrights, metadata_tags,
-                                             outfits, groups, hair, eyes,
-                                             extra_sites=extract_site_tags(tags_list, metadata_tags, self.name))
-                        add_to_gallery(self.name, filename, rel_path, tags_list, artists,
-                                       characters, copyrights, metadata_tags, outfits,
-                                       groups, hair, eyes, rating)
-                    except Exception as e:
-                        print(f"[DEDUP] deferred publish failed for {filepath}: {e}")
-                    self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
-                    if not os.path.exists(filepath):
-                        # a keep-larger kill landed while these cards were
-                        # being created — the killer's own event fired too
-                        # early to match them, so retract every view here
-                        gid = _retract_published(rel_path, filename)
-                        socketio_emit("image_deleted",
-                                      {"id": gid, "filename": filename,
-                                       "filepath": rel_path})
-                    if post_download_callback is not None:
-                        try: post_download_callback(filepath)
-                        except Exception: pass
+                # bake the image's own metadata into the bytes BEFORE the
+                # auto-conversion pipeline can transform the file — the JXL
+                # commit reads and carries this chunk into the .jxl
+                await asyncio.to_thread(write_image_metadata, filepath, tags_list,
+                                        artists, self.name, characters, copyrights,
+                                        metadata_tags, outfits, groups, hair, eyes,
+                                        extra_sites=extract_site_tags(tags_list, metadata_tags, self.name))
+                spec = {
+                    "filepath": filepath, "rel_path": rel_path, "filename": filename,
+                    "site": self.name, "tags_list": tags_list, "artists": artists,
+                    "characters": characters, "copyrights": copyrights,
+                    "metadata_tags": metadata_tags, "outfits": outfits,
+                    "groups": groups, "hair": hair, "eyes": eyes, "rating": rating,
+                    "count_head": f"({self.downloaded_count}/{target_total}) [{pct}%]",
+                    "top_tags": top_tags, "tagd": tagd, "log": self.log,
+                    "write_metadata": False, "held": 0.0,
+                }
+
+                # the conversion hook queues immediately (bytes verified); a
+                # queued file's cards publish only after its own conversion
+                # commits — every held download owns its release, so no other
+                # image's completion can pull this one into view early
+                with _PUBLISH_HOLD_LOCK:
+                    _PENDING_PUBLISH[filepath] = spec
+                if post_download_callback is not None:
+                    try: post_download_callback(filepath)
+                    except Exception: pass
+
+                def _publish_try():
+                    with _PUBLISH_HOLD_LOCK:
+                        cur = _PENDING_PUBLISH.get(filepath)
+                        if cur is None:
+                            return  # released: the converter published it
+                        if cur["held"] and time.time() - cur["held"] < PUBLISH_HOLD_MAX_S:
+                            t = threading.Timer(0.5, _publish_try)
+                            t.daemon = True
+                            t.start()
+                            return
+                        _PENDING_PUBLISH.pop(filepath, None)
+                    _publish_spec(cur)
+
                 # ponytail: explicit Timer thread — the site worker's event loop
                 # shuts down between batches, a loop timer would die with it
-                timer = threading.Timer(PUBLISH_GRACE_S, _publish)
+                timer = threading.Timer(PUBLISH_GRACE_S, _publish_try)
                 timer.daemon = True
                 timer.start()
                 return True

@@ -889,7 +889,10 @@ def _auto_jxl_hook(filepath):
         effort = int(settings.get("jxl_effort") or 5)
     except (TypeError, ValueError):
         effort = 5
-    _auto_jxl_queue.put((os.path.abspath(filepath), max(1, min(9, effort))))
+    target = os.path.abspath(filepath)
+    _auto_jxl_queue.put((target, max(1, min(9, effort))))
+    # its UI cards stay unpublished until this conversion commits
+    shared.mark_download_held(target)
 
 
 def _auto_jxl_spawn_worker(request_path, response_path):
@@ -907,45 +910,52 @@ def _auto_jxl_convert_one(path, effort):
 
     from core.jxl_cpu import conversion_threads
     from core.jxl_service import ENCODE_EXTENSIONS, commit_replacement
-    source = Path(path)
-    if source.suffix.lower() not in ENCODE_EXTENSIONS or not source.is_file() or source.is_symlink():
-        return
-    if not jxl_service.available():
-        log_msg("jxl-auto", "JPEG XL codec missing (install requirements-jxl.txt); keeping original")
-        return
-    work = tempfile.TemporaryDirectory(prefix='rems-auto-jxl-')
+    converted = None
     try:
-        request_path = Path(work.name) / 'request.json'
-        response_path = Path(work.name) / 'response.json'
-        request_path.write_text(json.dumps({'source': str(source), 'mode': 'auto',
-            'quality': 90, 'effort': effort, 'threads': conversion_threads()}), encoding='utf-8')
-        process = _auto_jxl_spawn_worker(str(request_path), str(response_path))
+        source = Path(path)
+        if source.suffix.lower() not in ENCODE_EXTENSIONS or not source.is_file() or source.is_symlink():
+            return
+        if not jxl_service.available():
+            log_msg("jxl-auto", "JPEG XL codec missing (install requirements-jxl.txt); keeping original")
+            return
+        work = tempfile.TemporaryDirectory(prefix='rems-auto-jxl-')
         try:
-            process.wait(timeout=600)
+            request_path = Path(work.name) / 'request.json'
+            response_path = Path(work.name) / 'response.json'
+            request_path.write_text(json.dumps({'source': str(source), 'mode': 'auto',
+                'quality': 90, 'effort': effort, 'threads': conversion_threads()}), encoding='utf-8')
+            process = _auto_jxl_spawn_worker(str(request_path), str(response_path))
+            try:
+                process.wait(timeout=600)
+            finally:
+                if process.poll() is None:  # hung encoder — kill it, original kept
+                    process.terminate()
+                    process.wait(timeout=5)
+            if process.returncode != 0 or not response_path.is_file():
+                raise ValueError('Codec worker stopped or timed out; original kept')
+            data = json.loads(response_path.read_text(encoding='utf-8'))
+            if not data.get('ok'):
+                raise ValueError(str(data.get('error') or 'Codec worker failed; original kept'))
+            value = data['value']
+            staged = Path(value['output']).resolve(strict=True)
+            # Subprocess output is never trusted blindly — same staging-area check
+            # the lab tool's finish() applies.
+            if not staged.is_file() or staged.parent.resolve() != Path(work.name).resolve():
+                raise ValueError('Invalid staged conversion output; original retained')
+            new_target, _snapshot = commit_replacement(source, staged,
+                value.get('output_name') or source.with_suffix('.jxl').name,
+                value['source_sha256'], str(work.name), relocate=_jxl_replace_index)
+            converted = str(new_target)
+            log_msg("jxl-auto", f"{source.name} → {source.with_suffix('.jxl').name} (tags, dates kept)")
+            # history rows were written with the pre-conversion name — the rename
+            # moved them in the store too; the open UI must refetch to follow it
+            socketio.emit("update_history")
         finally:
-            if process.poll() is None:  # hung encoder — kill it, original kept
-                process.terminate()
-                process.wait(timeout=5)
-        if process.returncode != 0 or not response_path.is_file():
-            raise ValueError('Codec worker stopped or timed out; original kept')
-        data = json.loads(response_path.read_text(encoding='utf-8'))
-        if not data.get('ok'):
-            raise ValueError(str(data.get('error') or 'Codec worker failed; original kept'))
-        value = data['value']
-        staged = Path(value['output']).resolve(strict=True)
-        # Subprocess output is never trusted blindly — same staging-area check
-        # the lab tool's finish() applies.
-        if not staged.is_file() or staged.parent.resolve() != Path(work.name).resolve():
-            raise ValueError('Invalid staged conversion output; original kept')
-        commit_replacement(source, staged,
-            value.get('output_name') or source.with_suffix('.jxl').name,
-            value['source_sha256'], str(work.name), relocate=_jxl_replace_index)
-        log_msg("jxl-auto", f"{source.name} → {source.with_suffix('.jxl').name} (tags, dates kept)")
-        # history rows were written with the pre-conversion name — the rename
-        # moved them in the store too; the open UI must refetch to follow it
-        socketio.emit("update_history")
+            work.cleanup()
     finally:
-        work.cleanup()
+        # publish held cards now: the .jxl path on a committed conversion,
+        # the original file on an early return or a failure that kept it
+        shared.release_download_publish(os.path.abspath(path), converted)
 
 
 def _auto_jxl_loop():
