@@ -2303,18 +2303,28 @@ function enhanceSelect(select) {
     }
     renderItems();
     // fixed-position open: an absolute menu inside a scrolling panel
-    // (modals list boxes) gets clipped — the trigger rect pins the menu to
-    // the viewport at the exact spot absolute positioning gives, minus clipping
+    // (modals list boxes) gets clipped — the trigger rect pins the menu at
+    // the spot absolute positioning gives. Coordinates must be measured
+    // against the menu's REAL containing block: any ancestor with
+    // filter/backdrop-filter/transform (the app's glass panel) replaces the
+    // viewport as the fixed-position origin. A zero-position probe returns
+    // that origin in viewport coords; the trigger's viewport rect minus the
+    // probe lands the menu under the trigger in every engine.
     trigger.onclick = (e) => {
         e.stopPropagation();
         if (!wrap.classList.contains('open')) {
             const r = trigger.getBoundingClientRect();
             menu.style.position = 'fixed';
-            menu.style.top = r.bottom + 'px'; // .cs-menu margin-top:4 keeps the gap
-            menu.style.left = r.left + 'px';
             menu.style.minWidth = Math.max(r.width, 150) + 'px';
+            wrap.classList.add('open');
+            menu.style.left = '0px';
+            menu.style.top = '0px';
+            const probe = menu.getBoundingClientRect();
+            menu.style.left = (r.left - probe.left) + 'px';
+            menu.style.top = (r.bottom - probe.top + 4) + 'px';
+        } else {
+            wrap.classList.remove('open');
         }
-        wrap.classList.toggle('open');
     };
     document.addEventListener('scroll', e => { if (!wrap.contains(e.target)) wrap.classList.remove('open'); }, true);
     document.addEventListener('click', () => wrap.classList.remove('open'));
