@@ -3307,14 +3307,17 @@ def _dedup_replaced_cleanup(old_path, stat_info=None):
     except Exception as e:
         print("Dedup replace history cleanup error:", e)
 
-    if removed:
-        socketio.emit("image_deleted", {
-            "id": removed_id, "filename": fn,
-            "filepath": stored_path or old_path,
-        })
+    # Always announce the swap: without the row the UI never learns the file
+    # died and its log card lingers (fallback path in the master-relative
+    # form the front-end cards carry). A no-match emission is harmless.
+    emit_fp = stored_path if stored_path else os.path.relpath(old_path, MASTER_FOLDER)
+    socketio.emit("image_deleted", {
+        "id": removed_id, "filename": fn, "filepath": emit_fp,
+    })
 
 
 shared.dedup_replaced_hook = _dedup_replaced_cleanup
+shared.history_delete_hook = DatabaseManager.remove_image_history_by_filepath
 
 
 def _thumb_alpha_hint(full):

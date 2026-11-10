@@ -142,7 +142,10 @@ def test_keep_larger_cleanup_removes_exact_gallery_history_and_versioned_caches(
     assert deleted[0]["filepath"] == "Danbooru/tag-a/same.jpg"
 
 
-def test_keep_larger_cleanup_without_gallery_row_does_not_emit_delete(gallery_app_env):
+def test_keep_larger_cleanup_without_gallery_row_still_emits_delete(gallery_app_env):
+    """No gallery row does not suppress the event: UI cards the front-end
+    matched nothing for would linger otherwise. The filepath is the
+    master-relative form the log cards carry."""
     root, _client, events = gallery_app_env
     source = root / "Danbooru" / "tag-a" / "orphan.jpg"
     source.parent.mkdir(parents=True)
@@ -151,7 +154,11 @@ def test_keep_larger_cleanup_without_gallery_row_does_not_emit_delete(gallery_ap
                                       filepath="Danbooru/tag-a/orphan.jpg")
     os.remove(source)
     Rems_Dl._dedup_replaced_cleanup(str(source), None)
-    assert not [payload for name, payload in events if name == "image_deleted"]
+    deleted = [payload for name, payload in events if name == "image_deleted"]
+    assert len(deleted) == 1
+    assert deleted[0]["id"] is None
+    assert deleted[0]["filename"] == "orphan.jpg"
+    assert deleted[0]["filepath"].replace("\\", "/") == "Danbooru/tag-a/orphan.jpg"
     assert DatabaseManager.load_image_history() == []
 
 

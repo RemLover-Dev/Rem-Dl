@@ -334,6 +334,42 @@ def socketio_emit(event, data): emit_callback(event, data)
 # remove a file that was already published in the gallery/history/cache; the
 # callback removes those stale references without making dedup depend on Flask.
 dedup_replaced_hook = None
+# Same dependency direction: Rems_Dl installs the history-row delete by
+# filepath for the deferred-publish retraction below.
+history_delete_hook = None
+
+def _retract_published(rel_path, filename):
+    """Remove the gallery row just created for a file that was killed before
+    its deferred UI publish finished (keep-larger landed inside the grace
+    window, so the killer's own event raced ahead of the cards). Returns the
+    row id for the retraction socket, or None when no row existed."""
+    gid = None
+    with _GALLERY_LOCK:
+        gallery = _gallery_cached_locked()
+        if "by_path" not in _gallery_cache or "by_fn_paths" not in _gallery_cache:
+            _reindex_gallery_locked(gallery)
+        key = gallery_path_key(rel_path)
+        victim = _gallery_cache.get("by_path", {}).get(key)
+        if victim is None:
+            base = os.path.basename(rel_path)
+            twins = [i for i in gallery["images"]
+                     if i.get("filename") == base and i.get("filepath")
+                     and gallery_path_key(i.get("filepath")) == key]
+            victim = twins[0] if len(twins) == 1 else None
+        if victim is not None:
+            gid = victim.get("id") or filename
+            gallery["images"].remove(victim)
+            drop_gallery_path_index(victim)
+            try:
+                _store().delete(gid)
+            except Exception as e:
+                print("Retract gallery error:", e)
+    if history_delete_hook:
+        try:
+            history_delete_hook(rel_path)
+        except Exception as e:
+            print("Retract history error:", e)
+    return gid
 
 def cleanup_replaced(old_path, stat_info=None):
     """Best-effort notification after keep-larger successfully removed a file.
@@ -1845,6 +1881,14 @@ class BaseDownloader:
                     except Exception as e:
                         print(f"[DEDUP] deferred publish failed for {filepath}: {e}")
                     self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                    if not os.path.exists(filepath):
+                        # a keep-larger kill landed while these cards were
+                        # being created — the killer's own event fired too
+                        # early to match them, so retract every view here
+                        gid = _retract_published(rel_path, filename)
+                        socketio_emit("image_deleted",
+                                      {"id": gid, "filename": filename,
+                                       "filepath": rel_path})
                     if post_download_callback is not None:
                         try: post_download_callback(filepath)
                         except Exception: pass
