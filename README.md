@@ -26,6 +26,7 @@ Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Nekos.best, Nekos.life,
 - **Packaging & Desktop Automation:** Automated Inno Setup installer builds, bundled `vc_redist.x64.exe` inside portable Windows releases, and automated Linux desktop integration script `install-desktop.sh`.
 - **Safe Folder Rename Protection:** Two-step renaming for case-only changes on case-insensitive filesystems (Windows/macOS) preventing data loss.
 - **Cross-Platform Clipboard & Security:** Literal path escaping for PowerShell/macOS clipboards, plus thread-safe SSRF-guarded notification thumbnail proxying.
+- **Duplicate-Proof Downloads & JXL-Synced Cards:** Cross-site perceptual-hash dedup keeps the larger copy of a duplicated image and merges the duplicate's tags. Download cards (log, history, gallery) publish only once the copy will actually survive — after a short grace window for dedup swaps, and (with auto-convert to JXL on) only after that image's own conversion finishes; a failed conversion still publishes the original image.
 
 ## ✨ New in Version 5.3 (Rem 5.3)
 - **PyInstaller Metadata Fix (`rule34Py`):** Resolved startup failure in frozen standalone/portable builds by packaging distribution metadata and implementing runtime safeguards.
@@ -152,6 +153,7 @@ Entering credentials in the **Settings** tab unlocks higher API limits and restr
 - **Proxy Support** -- Full proxy configuration from the UI (v2rayN, Clash, etc.)
 - **API Key Management** -- Manage Rule34 credentials directly from the Web UI
 - **Tag Auto-Suggest** -- Live autocomplete for all platforms including offline Konachan tag DB
+- **Duplicate-Proof Downloads** -- Perceptual-hash + source-hash dedup across sites: duplicated images are downloaded once, the larger copy survives, and the duplicate's tags are merged into the kept entry
 - **Hydrus Sidecar Files** -- Auto-generates `.filename.txt` sidecar files with tags, artists, and source for Hydrus Network import
 - **Persistent Settings** -- Proxy, API keys, and download settings saved in `.env`
 

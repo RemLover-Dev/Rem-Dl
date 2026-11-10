@@ -4,6 +4,20 @@ All notable changes to Rems Dl will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Deferred Download Card Publication:** Log, history, and gallery cards for a fresh download publish after a short grace window instead of instantly, and a publication is discarded entirely when a keep-larger dedup swap deletes the file inside that window — the replaced (smaller) card never flashes through any view.
+- **Conversion-Synced Cards (auto-JXL):** With convert-to-JXL enabled, a download's cards publish only after that image's own `.jxl` commit completes, carrying the final `.jxl` path. Every held download owns its release, so another file converting sooner can never reveal an unconverted one. Failed/missing-codec conversions and expired holds (180s cap) publish the original image, and image metadata is baked into the downloaded bytes before any conversion runs.
+
+### Fixed
+- **Deleted Images Lingering in Logs:** The keep-larger swap cleanup now always emits `image_deleted` (even when no gallery row was found, using the master-relative path), and a kill landing mid-publish retracts the rows/cards it just created, so deleted images no longer stay visible with broken thumbnails in the log.
+- **Planning Modals Positioned at Screen Top:** Planning add/edit/bulk dialogs are now centered on screen instead of top-aligned.
+- **Dropdown Menus Drifting in Glass Panels:** The custom select (Format, Ratings, ...) positioned its open menu against the real containing block (the app's `backdrop-filter` glass panel), so it now lands exactly under its trigger everywhere.
+- **Viewer GIF Playback:** Animated GIFs/APNGs render through a live-element fallback in the image viewer (pan/zoom math preserved) instead of a single static canvas frame.
+
+---
+
 ## [5.6.0] - Rem 5.6: JPEG XL Engine, Headless Persistence, Scraper Resilience & Release Automation - 2026-10-27
 
 ### Added
