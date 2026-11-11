@@ -1,9 +1,15 @@
-import pytest
+import os
 
-pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+import pytest
 
 H = {"User-Agent": "RemsDlDesktopApp/1.0"}
 FP = "/mnt/sda3/Rem/Dan/Mochizuki Kei/Safe/Images/12264376.jpg"
+
+pytestmark = [
+    pytest.mark.usefixtures("bypass_access_guard"),
+    # reads this machine's gallery root; skip on runners without the drive
+    pytest.mark.skipif(not os.path.isfile(FP), reason="HDD gallery root not mounted"),
+]
 
 
 @pytest.fixture

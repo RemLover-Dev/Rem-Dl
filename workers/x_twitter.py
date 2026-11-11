@@ -74,11 +74,8 @@ class XWorker(BaseDownloader):
 
     @staticmethod
     def auth_mode(net_config):
-        """cookies beats password when both are configured."""
         if (net_config.get("x_cookies") or "").strip():
             return "cookies"
-        if (net_config.get("x_username") or "").strip():
-            return "password"
         return "none"
 
     @staticmethod
@@ -107,34 +104,18 @@ class XWorker(BaseDownloader):
                 return "; ".join(pairs)
         return val
 
-    async def _ensure_account(self, pool, mode):
+    async def _ensure_account(self, pool):
         """Add the .env account to the pool store (idempotent). twscrape
-        never updates an existing row, so credentials or proxy changes
-        replace the stored copy — that forces one fresh login."""
+        never updates an existing row, so cookie changes replace the stored
+        copy — that forces one fresh session."""
         username = (self.net_config.get("x_username") or "").strip()
-        if mode == "cookies":
-            if not username:
-                raise ValueError("cookies also need the X Username field "
-                                 "(the account the cookies belong to)")
-            # upsert: refreshes cookies each run, invalidates the stored
-            # session when the user rotates them
-            await pool.add_account_cookies(
-                username, self.load_cookie_string(self.net_config["x_cookies"]))
-            return
         if not username:
-            return
-        password = self.net_config.get("x_password") or ""
-        email = (self.net_config.get("x_email") or "").strip()
-        email_password = self.net_config.get("x_email_password") or ""
-        stored = await pool.get_account(username)
-        if stored is not None and (stored.password, stored.email,
-                                   stored.email_password, stored.proxy) != \
-                (password, email, email_password, self.proxy):
-            await pool.delete_accounts(username)
-            stored = None
-        if stored is None:
-            await pool.add_account(username, password, email, email_password,
-                                   proxy=self.proxy)
+            raise ValueError("cookies also need the X Username field "
+                             "(the account the cookies belong to)")
+        # upsert: refreshes cookies each run, invalidates the stored
+        # session when the user rotates them
+        await pool.add_account_cookies(
+            username, self.load_cookie_string(self.net_config["x_cookies"]))
 
     async def scraper_task(self):
         if not self.handle:
@@ -153,31 +134,19 @@ class XWorker(BaseDownloader):
 
             mode = self.auth_mode(self.net_config)
             if mode == "none":
-                self.log("No X account configured — set X_COOKIES or X_USERNAME, "
-                         "X_PASSWORD, X_EMAIL, X_EMAIL_PASSWORD in Settings or .env, "
-                         "then run again.")
+                self.log("No X account configured — set X_COOKIES and X_USERNAME "
+                         "in Settings or .env, then run again.")
                 return
 
             pool = AccountsPool(db_file=TWSCRAPE_DB)
             try:
-                await self._ensure_account(pool, mode)
+                await self._ensure_account(pool)
             except ValueError as e:
                 self.log(f"X cookies not set up: {e}")
                 return
             api = API(pool=pool, proxy=self.proxy or None)
+            self.log(f"Using cookies for @{self.handle} session.")
 
-            if mode == "cookies":
-                self.log(f"Using cookies for @{self.handle} session.")
-            else:
-                self.log(f"Using saved credentials for @{self.handle}.")
-
-            # login_all skips cookie accounts and accounts that already have
-            # a session, so this is a one-time step per password account
-            counter = await pool.login_all()
-            if counter.get("failed"):
-                self.log(f"X login failed for {counter['failed']} account(s) — check credentials. "
-                         f"If email verification is needed, run in a terminal: "
-                         f"twscrape --db {TWSCRAPE_DB} login_accounts --manual")
             info = await pool.accounts_info()
             if not any(x["logged_in"] for x in info):
                 self.log("No X account could log in — fix credentials and run again.")

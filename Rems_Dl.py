@@ -4594,9 +4594,6 @@ def _dispatch_worker(data):
     elif worker == "x":
         net_config["x_cookies"] = os.getenv("X_COOKIES", "")
         net_config["x_username"] = os.getenv("X_USERNAME", "")
-        net_config["x_password"] = os.getenv("X_PASSWORD", "")
-        net_config["x_email"] = os.getenv("X_EMAIL", "")
-        net_config["x_email_password"] = os.getenv("X_EMAIL_PASSWORD", "")
         from workers.x_twitter import worker_x
         worker_x(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
 

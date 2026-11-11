@@ -78,15 +78,13 @@ class TestBuildTags:
 
 
 class TestAuthMode:
-    def test_cookies_beat_password(self):
+    def test_cookies(self):
         assert XWorker.auth_mode({"x_cookies": "auth_token=x; ct0=y",
                                   "x_username": "rem"}) == "cookies"
 
-    def test_password(self):
-        assert XWorker.auth_mode({"x_username": "rem"}) == "password"
-
     def test_none(self):
         assert XWorker.auth_mode({}) == "none"
+        assert XWorker.auth_mode({"x_username": "rem"}) == "none"
 
 
 class TestCookieString:
@@ -140,7 +138,7 @@ def test_cookies_without_username_are_rejected(make_worker):
     pool_stub = type("P", (), {"add_account_cookies": _raise_value_error})()
     with pytest.raises(ValueError, match="X Username"):
         import asyncio
-        asyncio.run(w._ensure_account(pool_stub, "cookies"))
+        asyncio.run(w._ensure_account(pool_stub))
 
 
 class TestSettingsRoundTrip:
@@ -149,14 +147,13 @@ class TestSettingsRoundTrip:
 
         from core.database import SettingsManager
         m = SettingsManager(str(tmp_path))
-        m.save_api_settings({"x_username": "rem", "x_password": "pw",
-                             "x_email": "rem@mail.com", "x_email_password": "epw"})
+        m.save_api_settings({"x_username": "rem"})
         assert os.environ.get("X_USERNAME") == "rem"
         loaded = m.load_api_settings()
         assert loaded["x_username"] == "rem"
-        assert loaded["x_password"] == "pw"
-        assert loaded["x_email"] == "rem@mail.com"
-        assert loaded["x_email_password"] == "epw"
+        assert "x_password" not in loaded
+        assert "x_email" not in loaded
+        assert "x_email_password" not in loaded
 
 
 NETSCAPE_COOKIES = (

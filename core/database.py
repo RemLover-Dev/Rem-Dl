@@ -603,10 +603,7 @@ class SettingsManager:
             "DANBOORU_API_KEY": data.get("danbooru_api_key", ""),
             "GSBOORU_API_KEY": data.get("gsbooru_api_key", ""),
             "X_COOKIES": data.get("x_cookies", ""),
-            "X_USERNAME": data.get("x_username", ""),
-            "X_PASSWORD": data.get("x_password", ""),
-            "X_EMAIL": data.get("x_email", ""),
-            "X_EMAIL_PASSWORD": data.get("x_email_password", "")
+            "X_USERNAME": data.get("x_username", "")
         }
         self._upsert_env_keys(env_keys)
         for k, v in env_keys.items():
@@ -638,10 +635,7 @@ class SettingsManager:
             "danbooru_api_key": resolved.get("DANBOORU_API_KEY", ""),
             "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", ""),
             "x_cookies": resolved.get("X_COOKIES", ""),
-            "x_username": resolved.get("X_USERNAME", ""),
-            "x_password": resolved.get("X_PASSWORD", ""),
-            "x_email": resolved.get("X_EMAIL", ""),
-            "x_email_password": resolved.get("X_EMAIL_PASSWORD", "")
+            "x_username": resolved.get("X_USERNAME", "")
         }
 
 

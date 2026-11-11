@@ -3612,9 +3612,6 @@ async function loadApiSettings() {
     document.getElementById("pixivCookie").value = settings.pixiv_cookie || "";
     document.getElementById("xCookies").value = settings.x_cookies || "";
     document.getElementById("xUsername").value = settings.x_username || "";
-    document.getElementById("xPassword").value = settings.x_password || "";
-    document.getElementById("xEmail").value = settings.x_email || "";
-    document.getElementById("xEmailPassword").value = settings.x_email_password || "";
 }
 
 async function saveApiSettings() {
@@ -3638,10 +3635,7 @@ async function saveApiSettings() {
         pixiv_cookie: document.getElementById("pixivCookie").value.trim(),
         pinterest_password: document.getElementById("pinterestPassword").value.trim(),
         x_cookies: document.getElementById("xCookies").value.trim(),
-        x_username: document.getElementById("xUsername").value.trim(),
-        x_password: document.getElementById("xPassword").value.trim(),
-        x_email: document.getElementById("xEmail").value.trim(),
-        x_email_password: document.getElementById("xEmailPassword").value.trim()
+        x_username: document.getElementById("xUsername").value.trim()
     };
     let resp = await fetch("/api/api-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     let result = await resp.json();
