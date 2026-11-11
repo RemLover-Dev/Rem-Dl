@@ -193,11 +193,15 @@ class XWorker(BaseDownloader):
                 return
             self.log(f"Found @{user.username} (id {user.id}) — scanning media tweets...")
 
-            # limit=-1 streams the whole profile; enqueue as tweets arrive
+            # X's media-tab timeline truncates after a few pages and silently
+            # drops the profile's older art (seen live: 27 photos vs 40).
+            # SearchTimeline paginates the full history — this query is the
+            # media tab's exact equivalent (own media, no retweets).
+            q = f"from:{self.handle} filter:media -filter:retweets"
             need = self.amount or 10 ** 9
             collected = 0
             scanned = 0
-            async for tweet in api.user_media(user.id, limit=-1):
+            async for tweet in api.search(q, limit=-1):
                 if self.stop_event.is_set():
                     break
                 scanned += 1
