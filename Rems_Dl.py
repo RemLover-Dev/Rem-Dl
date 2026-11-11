@@ -3192,10 +3192,13 @@ def thumb_by_name(filename):
 
 THUMB_CACHE = os.path.join(DATABASE_DIR, "thumb_cache")
 os.makedirs(THUMB_CACHE, exist_ok=True)
-# Cards crop a center square (object-fit: cover) — a 300px thumb turns a
-# 4000x1450 panorama into a 106px-tall sliver that the card upscales into
-# blur. 800px keeps the cropped square >= ~200px for aspect ratios up to 4:1.
-THUMB_LONG_EDGE = 800
+# Every thumb consumer crops a center square (cards, history, notifications:
+# object-fit: cover, position 50% 20%). Shipping the full image wastes the
+# long edge and leaves the card upscaling the short edge — a 4000x1450
+# panorama became a 106-283px sliver, rendered blurry. So the thumb IS the
+# displayed square: center crop, biased 20% from the top, 640px (covers a
+# ~300px card at 2x DPR). One decode, no upscaled pixels, smaller files.
+THUMB_SQUARE = 640
 # audio-free remuxes for hover previews: WebKitGTK blocks the main thread for
 # seconds when a muted <video> with an audio track is stopped (see preview_cache)
 PREVIEW_CACHE_DIR = os.path.join(DATABASE_DIR, "preview_cache")
@@ -3231,7 +3234,7 @@ def _thumb_cache_path(full, thumb_ext=".jpg"):
     # transparency-preserving thumbnail. Version prefix: a size bump must
     # not keep serving pixels generated at the old resolution.
     return os.path.join(THUMB_CACHE, hashlib.sha256(
-        f"thumb-v2:{full}".encode()).hexdigest()[:16] + thumb_ext)
+        f"thumb-v3:{full}".encode()).hexdigest()[:16] + thumb_ext)
 
 
 def _evict_caches(full, stat_info=None):
@@ -3468,7 +3471,7 @@ def _preserve_converted_thumb(before, after):
 
 
 def _generate_thumb_bytes(full):
-    """(bytes, cache_ext, mime): thumb with a THUMB_LONG_EDGE long edge. PNG
+    """(bytes, cache_ext, mime): square THUMB_SQUARE thumb. PNG
     (alpha kept) for transparent sources — the RGB-conversion path exposed
     palette/RGBA hidden background colors (the green thumbnails); JPEG
     otherwise, exact old pipeline."""
@@ -3479,15 +3482,15 @@ def _generate_thumb_bytes(full):
         # 4K H.264 first-frame extraction; falls back to the software chain
         # unchanged when the hardware path is unavailable or fails
         endargs = ["-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
-        vf_soft = (f"scale={THUMB_LONG_EDGE}:{THUMB_LONG_EDGE}:force_original_aspect_ratio=decrease,"
-                   f"pad={THUMB_LONG_EDGE}:{THUMB_LONG_EDGE}:(ow-iw)/2:(oh-ih)/2")
+        vf = (f"crop=w='min(iw,ih)':h='min(iw,ih)':x='(iw-ow)/2':y='(ih-oh)*0.2',"
+              f"scale={THUMB_SQUARE}:{THUMB_SQUARE}")
         cmd_soft = ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-filter_threads", "1",
-                    "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", vf_soft, *endargs]
+                    "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", vf, *endargs]
         try:
             proc = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-filter_threads", "1",
                                    "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
                                    "-y", "-i", full, "-vframes", "1", "-ss", "0",
-                                   "-vf", f"scale_vaapi=w={THUMB_LONG_EDGE}:h={THUMB_LONG_EDGE}:force_original_aspect_ratio=decrease,hwdownload,format=nv12,format=yuvj420p",
+                                   "-vf", f"crop_vaapi=w='min(iw,ih)':h='min(iw,ih)':x='(iw-ow)/2':y='(ih-oh)*0.2',scale_vaapi={THUMB_SQUARE}:{THUMB_SQUARE},hwdownload,format=nv12,format=yuvj420p",
                                    *endargs],
                                   capture_output=True, timeout=10, check=False)
             if proc.returncode == 0 and proc.stdout:
@@ -3506,8 +3509,7 @@ def _thumb_bytes_from_source(source):
     """(bytes, cache_ext, mime) from an ALREADY-DECODED source — shared by the
     per-file path and the dedup-backfill hook so one decode can serve both."""
     img = source
-    # EXIF rotate before framing; orientation check is a lazy header read so
-    # JPEG's draft() fast path below survives for unrotated files
+    # EXIF rotate before cropping
     try:
         orientation = img.getexif().get(0x0112)
     except Exception:
@@ -3518,20 +3520,22 @@ def _thumb_bytes_from_source(source):
         except Exception:
             pass
     alpha = "A" in img.getbands() or "transparency" in img.info
+    w, h = img.size
+    side = min(w, h)
+    # the card's crop: centered horizontally, 20% from the top vertically
+    left = (w - side) // 2
+    top = int((h - side) * 0.2)
+    img = img.crop((left, top, left + side, top + side))
+    if side > THUMB_SQUARE:
+        img = img.resize((THUMB_SQUARE, THUMB_SQUARE), Image.Resampling.BILINEAR)
     if alpha:
         if img.mode != "RGBA":
             img = img.convert("RGBA")
-        # thumbnail() keeps the source aspect ratio
-        img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE), Image.Resampling.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue(), ".png", "image/png"
-    # ponytail: cap memory usage for very large images; decompress bomb protection
-    img.draft('RGB', (THUMB_LONG_EDGE, THUMB_LONG_EDGE))
     if img.mode not in ('RGB', 'L'):
         img = img.convert('RGB')
-    # BILINEAR: ~2x faster than LANCZOS, invisible at thumbnail size
-    img.thumbnail((THUMB_LONG_EDGE, THUMB_LONG_EDGE), Image.Resampling.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, format='JPEG', quality=80)
     return buf.getvalue(), ".jpg", "image/jpeg"
