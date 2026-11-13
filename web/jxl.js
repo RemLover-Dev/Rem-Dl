@@ -181,7 +181,7 @@
             center=center.map((c,i)=>c+(cursor[i]-viewport[i]/2)/zoom-(cursor[i]-viewport[i]/2)/next);
             zoom=next;fitting=false;clamp();requestDraw();
         }
-        function load(url) {return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('Unable to load comparison. Available memory may be insufficient, or the files may have changed.'));img.src=url;});}
+        function load(url) {return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('Unable to load comparison. Available memory may be insufficient, or the files may have changed.'));img.src=(typeof withBase!=='undefined')?withBase(url):url;});}
         async function modeChanged() {
             $('jxlMixLabel').textContent=mode()==='Fade'?'Converted opacity':'Original reveal';
             $('jxlMix').disabled=!['Reveal','Fade'].includes(mode());$('jxlDiffGain').disabled=mode()!=='Difference';

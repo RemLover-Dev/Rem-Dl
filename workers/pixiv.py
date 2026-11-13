@@ -281,8 +281,13 @@ class PixivWorker(BaseDownloader):
                     break
                 # pass the running headroom down: a 40-page manga work must
                 # not march past the quota on its own file list
-                collected += await self._process_work(
-                    work, (need - collected) if need else 0)
+                try:
+                    collected += await self._process_work(
+                        work, (need - collected) if need else 0)
+                except Exception as e:
+                    # one malformed work must not kill the whole scan
+                    self.log(f"Skipped malformed work {work.get('id')}: {e}")
+                    continue
                 if page_i + 1 < len(works) and (need == 0 or collected < need):
                     await asyncio.sleep(self.anti_ban_pause)
             if need and collected >= need:

@@ -294,6 +294,16 @@ def mark_download_held(abs_fp):
         if spec is not None:
             spec["held"] = time.time()
 
+def _repoint_converted(spec, converted_abs):
+    try:
+        rel = os.path.relpath(converted_abs, MASTER_FOLDER)
+    except ValueError:
+        rel = converted_abs
+    spec["filepath"] = converted_abs
+    spec["rel_path"] = rel.replace(os.sep, "/")
+    spec["filename"] = os.path.basename(converted_abs)
+    spec["write_metadata"] = False
+
 def release_download_publish(abs_fp, converted_abs=None):
     """Converter finished: publish now, against the .jxl when the commit
     replaced the file (tags are baked by then; metadata writing is skipped).
@@ -304,14 +314,7 @@ def release_download_publish(abs_fp, converted_abs=None):
     if spec is None:
         return False
     if converted_abs:
-        try:
-            rel = os.path.relpath(converted_abs, MASTER_FOLDER)
-        except ValueError:
-            rel = converted_abs
-        spec["filepath"] = converted_abs
-        spec["rel_path"] = rel.replace(os.sep, "/")
-        spec["filename"] = os.path.basename(converted_abs)
-        spec["write_metadata"] = False
+        _repoint_converted(spec, converted_abs)
     _publish_spec(spec)
     return True
 
@@ -320,11 +323,18 @@ def _publish_spec(spec):
     a keep-larger kill discards the publication outright; a kill racing the
     publish itself is retracted right after the log card is appended."""
     filepath = spec["filepath"]
+    if not os.path.exists(filepath):
+        # the converter's commit may have unlinked the source between the
+        # hold's pop and this check — the fresh jxl sibling replaced it
+        jxl = os.path.splitext(filepath)[0] + ".jxl"
+        if os.path.exists(jxl):
+            _repoint_converted(spec, jxl)
+            filepath = spec["filepath"]
+        else:
+            return
     rel_path = spec["rel_path"]
     filename = spec["filename"]
     site = spec["site"]
-    if not os.path.exists(filepath):
-        return
     try:
         # send_tags first: the viewer's tag box reads imageHistory via the
         # update_history socket, so the history row must exist before the
@@ -1253,6 +1263,12 @@ def write_image_metadata(filepath, tags_list, artists, site, characters=None, co
         # bmp/tiff: no container mechanism to hang metadata on — stay skipped
     except Exception as e:
         print(f"Metadata write error on {filepath}: {e}")
+        # a failure mid-write leaves the .meta tmp behind — clean it so the
+        # next write starts fresh
+        try:
+            os.remove(filepath + ".meta")
+        except OSError:
+            pass
 
 def read_image_metadata(filepath):
     """Read back what write_image_metadata embedded: JPEG COM, PNG tEXt|iTXt,
@@ -1452,10 +1468,21 @@ def load_history(site_root):
 def save_history(site_root, history_set):
     safe_ensure_dir(site_root)
     hist_path = os.path.join(site_root, "download_history.json")
+    # workers mutate the set outside HISTORY_LOCK; a plain list() can crash
+    # with "set changed size during iteration" — retry briefly
+    payload = None
+    for _ in range(3):
+        try:
+            payload = list(history_set)
+            break
+        except RuntimeError:
+            time.sleep(0.02)
+    if payload is None:
+        payload = list(history_set)
     with HISTORY_LOCK:
         try:
             tmp = hist_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f: json.dump(list(history_set), f)
+            with open(tmp, "w", encoding="utf-8") as f: json.dump(payload, f)
             os.replace(tmp, hist_path)
         except Exception as e: print(f"Error saving history: {e}")
 
@@ -1830,20 +1857,40 @@ class BaseDownloader:
                         await asyncio.to_thread(
                             _seed_hash_state, part_path, (h_md5, h_sha1, h_sha256))
                     f = await asyncio.to_thread(open, part_path, 'ab' if resumed else 'wb')
+                    # buffered writes: blocking f.write per 64KB chunk on the
+                    # event loop stalls every other worker — flush ~1MB at a
+                    # time in a thread instead
+                    write_buf, write_len = [], 0
                     try:
-                        async for chunk in resp.content.iter_chunked(65536):
-                            if self.stop_event.is_set(): break
-                            f.write(chunk)
-                            h_md5.update(chunk)
-                            h_sha1.update(chunk)
-                            h_sha256.update(chunk)
-                            downloaded += len(chunk)
-                            # live bar updates ~5/s while bytes stream in
-                            now = time.monotonic()
-                            if total_expected and now - self._last_progress_emit >= 0.2:
-                                self._last_progress_emit = now
-                                self._inflight[filepath] = downloaded / total_expected
-                                self._emit_progress()
+                        try:
+                            async for chunk in resp.content.iter_chunked(65536):
+                                if self.stop_event.is_set(): break
+                                write_buf.append(chunk)
+                                write_len += len(chunk)
+                                if write_len >= (1 << 20):
+                                    data = b"".join(write_buf)
+                                    write_buf = []
+                                    write_len = 0
+                                    await asyncio.to_thread(f.write, data)
+                                h_md5.update(chunk)
+                                h_sha1.update(chunk)
+                                h_sha256.update(chunk)
+                                downloaded += len(chunk)
+                                # live bar updates ~5/s while bytes stream in
+                                now = time.monotonic()
+                                if total_expected and now - self._last_progress_emit >= 0.2:
+                                    self._last_progress_emit = now
+                                    self._inflight[filepath] = downloaded / total_expected
+                                    self._emit_progress()
+                        except BaseException:
+                            # chunks already yielded belong in the file — flush
+                            # so a truncated stream resumes where it broke
+                            if write_buf:
+                                await asyncio.to_thread(f.write, b"".join(write_buf))
+                                write_buf = []
+                            raise
+                        if write_buf:
+                            await asyncio.to_thread(f.write, b"".join(write_buf))
                     finally:
                         await asyncio.to_thread(f.close)
 
@@ -1963,6 +2010,18 @@ class BaseDownloader:
                         if cur is None:
                             return  # released: the converter published it
                         if cur["held"] and time.time() - cur["held"] < PUBLISH_HOLD_MAX_S:
+                            t = threading.Timer(0.5, _publish_try)
+                            t.daemon = True
+                            t.start()
+                            return
+                        if not os.path.exists(filepath) and cur.get("holds", 0) < 10:
+                            # hold expired while the converter still owns the
+                            # file (source unlinked, jxl not installed yet):
+                            # re-arm instead of popping — a pop here would make
+                            # the later release find no spec and orphan the
+                            # converted file. Bounded: 10 windows ≈ 30 min.
+                            cur["holds"] = cur.get("holds", 0) + 1
+                            cur["held"] = time.time()
                             t = threading.Timer(0.5, _publish_try)
                             t.daemon = True
                             t.start()

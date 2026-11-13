@@ -312,16 +312,18 @@ class GalleryStore:
     # --- gallery: reads ------------------------------------------------------
 
     def count(self):
-        return self._connect().execute("SELECT COUNT(*) FROM gallery").fetchone()[0]
+        with self._lock:
+            return self._connect().execute("SELECT COUNT(*) FROM gallery").fetchone()[0]
 
     def lightweight_entries(self):
         """Every entry WITHOUT tags — this is what stays resident."""
-        conn = self._connect()
-        cols = ", ".join(ENTRY_FIELDS)
-        out = []
-        for row in conn.execute(f"SELECT {cols} FROM gallery"):
-            out.append(_entry_from_row(row))
-        return out
+        with self._lock:
+            conn = self._connect()
+            cols = ", ".join(ENTRY_FIELDS)
+            out = []
+            for row in conn.execute(f"SELECT {cols} FROM gallery"):
+                out.append(_entry_from_row(row))
+            return out
 
     def chunk_with_tags(self, offset, limit):
         """A slice of full entries (tags included) for chunked filtering.
@@ -329,20 +331,21 @@ class GalleryStore:
         Filtering is elementwise, so callers can walk the whole gallery one
         chunk at a time and never hold more than `limit` entries' tags.
         """
-        conn = self._connect()
-        cols = ", ".join(f"g.{c}" for c in ENTRY_FIELDS)
-        rows = conn.execute(
-            f"SELECT {cols} FROM gallery g ORDER BY g.rowid LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-        if not rows:
-            return []
-        ids = [r["id"] for r in rows]
-        tagmap = self._tags_for_ids(conn, ids)
-        out = []
-        for r in rows:
-            d = _entry_from_row(r)
-            d["tags"] = tagmap.get(d["id"], {})
-            out.append(d)
-        return out
+        with self._lock:
+            conn = self._connect()
+            cols = ", ".join(f"g.{c}" for c in ENTRY_FIELDS)
+            rows = conn.execute(
+                f"SELECT {cols} FROM gallery g ORDER BY g.rowid LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            if not rows:
+                return []
+            ids = [r["id"] for r in rows]
+            tagmap = self._tags_for_ids(conn, ids)
+            out = []
+            for r in rows:
+                d = _entry_from_row(r)
+                d["tags"] = tagmap.get(d["id"], {})
+                out.append(d)
+            return out
 
     def _tags_for_ids(self, conn, ids):
         if not ids:
@@ -392,29 +395,33 @@ class GalleryStore:
 
     def get_entry(self, gid):
         """One full entry (tags included) by id."""
-        conn = self._connect()
-        cols = ", ".join(ENTRY_FIELDS)
-        row = conn.execute(f"SELECT {cols} FROM gallery WHERE id = ?", (gid,)).fetchone()
-        if row is None:
-            return None
-        d = _entry_from_row(row)
-        d["tags"] = self._tags_for_ids(conn, [gid]).get(gid, {})
-        return d
+        with self._lock:
+            conn = self._connect()
+            cols = ", ".join(ENTRY_FIELDS)
+            row = conn.execute(f"SELECT {cols} FROM gallery WHERE id = ?", (gid,)).fetchone()
+            if row is None:
+                return None
+            d = _entry_from_row(row)
+            d["tags"] = self._tags_for_ids(conn, [gid]).get(gid, {})
+            return d
 
     def get_tags(self, gid):
         """One entry's tags, or {} — the recovery/compare path."""
-        conn = self._connect()
-        cur = conn.execute(
-            "SELECT bucket, tag FROM gallery_tags WHERE gallery_id = ?", (gid,))
-        return _tags_from_row([(r["bucket"], r["tag"]) for r in cur])
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "SELECT bucket, tag FROM gallery_tags WHERE gallery_id = ?", (gid,))
+            return _tags_from_row([(r["bucket"], r["tag"]) for r in cur])
 
     def filenames(self):
-        return {r["filename"] for r in
-                self._connect().execute("SELECT filename FROM gallery")}
+        with self._lock:
+            return {r["filename"] for r in
+                    self._connect().execute("SELECT filename FROM gallery")}
 
     def favourite_filenames(self):
-        return {r["filename"] for r in self._connect().execute(
-            "SELECT filename FROM gallery WHERE favourite = 1")}
+        with self._lock:
+            return {r["filename"] for r in self._connect().execute(
+                "SELECT filename FROM gallery WHERE favourite = 1")}
 
     def all_entries_with_tags(self):
         """Full entries — offline scripts only; this is the resident-RAM path."""
@@ -616,18 +623,19 @@ class GalleryStore:
     # --- image history -------------------------------------------------------
 
     def history_all(self):
-        conn = self._connect()
-        out = []
-        for row in conn.execute(
-                "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
-                "FROM image_history ORDER BY seq DESC"):
-            d = dict(row)
-            try:
-                d["tags"] = json.loads(d.get("tags") or "{}")
-            except Exception:
-                d["tags"] = {}
-            out.append(d)
-        return out
+        with self._lock:
+            conn = self._connect()
+            out = []
+            for row in conn.execute(
+                    "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                    "FROM image_history ORDER BY seq DESC"):
+                d = dict(row)
+                try:
+                    d["tags"] = json.loads(d.get("tags") or "{}")
+                except Exception:
+                    d["tags"] = {}
+                out.append(d)
+            return out
 
     def history_insert(self, entry):
         with self._lock:

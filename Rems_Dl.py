@@ -208,7 +208,11 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 access_guard = AccessGuard(app.wsgi_app)
 # Honor X-Forwarded-Proto/Host/Prefix from the reverse proxy before the access
 # guard runs, so host checks and the Secure cookie flag see the public scheme.
-app.wsgi_app = ProxyFix(access_guard, x_proto=1, x_host=1, x_prefix=1)
+# OPT-IN: ProxyFix trusts client-supplied X-Forwarded-* headers, so on a plain
+# LAN binding (no proxy) any client could forge req.host past the host
+# allowlist. Set REMS_TRUST_PROXY=1 only when traffic really passes a proxy.
+if os.environ.get("REMS_TRUST_PROXY") == "1":
+    app.wsgi_app = ProxyFix(access_guard, x_proto=1, x_host=1, x_prefix=1)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 from core.extensions import get_extension_manager
@@ -700,10 +704,17 @@ def _pick_folder_desktop(start: str):
 
     return False
 
+def _local_desktop_request():
+    """Native pickers/revealers run on the SERVER's display — a remote
+    client must paste the path instead of hanging the server's desktop."""
+    return request.remote_addr in ("127.0.0.1", "::1")
+
 @app.route("/api/folder/browse", methods=["POST"])
 def browse_folder():
     """Open the desktop's folder picker across Windows, macOS, and Linux."""
     global MASTER_FOLDER
+    if not _local_desktop_request():
+        return jsonify({"error": "The folder picker runs on the server machine — paste the server path instead"}), 501
     start = shared.MASTER_FOLDER if os.path.isdir(shared.MASTER_FOLDER) else os.path.expanduser("~")
     try:
         picked = _pick_folder_desktop(start)
@@ -759,6 +770,8 @@ def browse_file():
     """Native file picker — KDE gets kdialog/Dolphin's dialog; every other
     desktop falls back to the webview's own file input (unchanged behaviour).
     JSON body {"kind": "images"|"cookies"} selects the file filter."""
+    if not _local_desktop_request():
+        return jsonify({"error": "The file picker runs on the server machine — paste the path instead"}), 501
     kind = (request.get_json(silent=True) or {}).get("kind", "images")
     if kind not in _PICK_FILTERS:
         return jsonify({"error": "unknown kind"}), 400
@@ -2318,7 +2331,9 @@ def get_gallery():
     per_page = min(400, max(1, _safe_int(request.args.get("per_page", 24), 24)))
 
     gallery = shared.load_gallery()
-    images = gallery.get("images", [])
+    # copy before sort/fixup: the shared resident list must not be mutated
+    # while another request iterates it (precedent: offline exports)
+    images = list(gallery.get("images", []))
     # Known paths need no recursive disk walk before answering a search.
     # Startup/background refresh handles the normal repair case. Missing paths
     # still use the existing synchronous recovery behavior.
@@ -3035,23 +3050,21 @@ def _generate_display_full(full):
     original instead).
 
     Open-priority: while this request generates, background warmers hold, so
-    the decode gets the cores. A fresh open also waits at most one inline
-    decode — when the shared pool is backing up (hover sweep), the decisive
-    decode leaves the queue and runs here."""
-    fut = submit_shared(_display_pool, _display_inflight,
-                        _display_inflight_lock, full, _make_display_copy)
-    if _display_backlogged(full) and _inline_display_slot.acquire(blocking=False):
-        try:
-            _open_priority_enter(full)
+    the decode gets the cores. Registering BEFORE submitting closes the gap
+    where a warmer sees no waiter and grabs the cores first. A fresh open also
+    waits at most one inline decode — when the shared pool is backing up
+    (hover sweep), the decisive decode leaves the queue and runs here."""
+    _open_priority_enter(full)
+    try:
+        fut = submit_shared(_display_pool, _display_inflight,
+                            _display_inflight_lock, full, _make_display_copy)
+        if _display_backlogged(full) and _inline_display_slot.acquire(blocking=False):
             try:
                 return _make_display_copy(full)
             except Exception:
                 pass  # fall through to the queued job / None below
-        finally:
-            _open_priority_exit(full)
-            _inline_display_slot.release()
-    _open_priority_enter(full)
-    try:
+            finally:
+                _inline_display_slot.release()
         return fut.result()  # registry lock is released before waiting
     except Exception:
         return None
@@ -3814,7 +3827,9 @@ def get_gallery_sources():
     images = _filter_gallery(images, search, [], fav_only, type_filters, rating_filters)
     counts = {}
     for img in images:
-        s = shared.normalize_site(img.get("site", "unknown"))
+        s = shared.normalize_site(img.get("site", ""))
+        if not s:
+            continue  # unattributed (external archives) — not a source
         counts[s] = counts.get(s, 0) + 1
     _sources_cache["key"] = key
     _sources_cache["at"] = now
@@ -3931,6 +3946,13 @@ def _scan_and_merge_gallery():
 
                 path_key = shared.gallery_path_key(stored, master_root=MASTER_FOLDER)
                 existing = by_path.get(path_key)
+                parts = rel.replace("\\", "/").split("/")
+                # Folder names are a hint, never a source: a top folder like
+                # "Ringeko-Chan" is the artist/archive, not a site. A folder
+                # only attributes when it normalizes to a canonical site
+                # (the master tree's site folders) — everything else is "".
+                folder_site = shared.normalize_site(parts[0]) if len(parts) > 1 else ""
+                _CANON = set(shared.SITE_CANONICAL.values())
 
                 if existing is None:
                     # A uniquely identifiable prior row whose old file is gone
@@ -3977,6 +3999,16 @@ def _scan_and_merge_gallery():
                         existing["filepath"] = stored
                         by_path[path_key] = existing
                         count_fixed += 1
+                    # Rows created before folder names stopped being sources
+                    # carry the artist/archive folder as their site — drop it.
+                    # Embedded metadata re-attributes when tags refresh.
+                    ex_site = existing.get("site")
+                    if ex_site:
+                        ex_norm = shared.normalize_site(ex_site)
+                        if ex_norm == "unknown" or (ex_norm == folder_site
+                                                    and ex_norm not in _CANON):
+                            existing["site"] = ""
+                            count_fixed += 1
                     have = _stored(existing)
                     if shared.count_tags(have) <= 1 and existing.get("meta_mtime") != mtime:
                         existing["meta_mtime"] = mtime
@@ -3989,18 +4021,18 @@ def _scan_and_merge_gallery():
                             count_fixed += 1
                     continue
 
-                parts = rel.replace("\\", "/").split("/")
-                site = parts[0] if len(parts) > 1 else "unknown"
                 tag = parts[1] if len(parts) > 2 else ""
                 sites, tags = _tags_from_file(full)
                 if not shared.count_tags(tags) and tag:
                     tags = {"tag": [tag]}
+                attributed = shared.normalize_site(sites[0]) if sites else folder_site
+                if attributed not in _CANON:
+                    attributed = ""
                 entry = {
                     "id": shared.gallery_id_for_path(
-                        shared.normalize_site(sites[0]) if sites else site,
-                        stored, fn, master_root=MASTER_FOLDER),
+                        attributed, stored, fn, master_root=MASTER_FOLDER),
                     "filename": fn, "filepath": stored,
-                    "site": shared.normalize_site(sites[0]) if sites else site,
+                    "site": attributed,
                     "tags": tags, "favourite": False,
                     "downloaded_at": datetime.fromtimestamp(mtime).isoformat(),
                 }
@@ -4421,8 +4453,10 @@ def handle_connect():
 @socketio.on("disconnect")
 def handle_disconnect():
     global shutdown_timer
-    if is_headless_mode():
-        # Headless, server, or Docker instances must stay running across tab disconnects
+    if is_headless_mode() or _BROWSER_FALLBACK:
+        # Headless, server, or Docker instances must stay running across tab
+        # disconnects — and browser-fallback mode may be accessed remotely,
+        # where one closed tab must not kill the server for everyone
         return
     print("Browser Tab Closed! Shutting down in 3 seconds if not reconnected...")
 
@@ -4661,7 +4695,8 @@ def handle_stop_worker(data):
     name = data.get("worker")
     shared.log_msg(name, ">>> STOP SIGNAL RECEIVED! Terminating connections... <<<")
     if name in shared.STOP_EVENTS:
-        for evt in shared.STOP_EVENTS[name]:
+        # copy: a worker appending its stop event mid-iteration crashes the loop
+        for evt in list(shared.STOP_EVENTS[name]):
             evt.set()
     # stop stays per-site — cancel this site's waiting entries only,
     # other sites' queues keep their turn
@@ -4999,6 +5034,9 @@ if __name__ == "__main__":
         else:
             print("Using configured REMS_ACCESS_TOKEN (value is not logged).", flush=True)
         print(f"Starting Rems Dl in headless/server mode on {url} ...")
+        if host == "0.0.0.0":
+            # the operator needs the LAN address to actually connect remotely
+            print(f"Listening on all interfaces — reachable as http://<server-ip>:{port}", flush=True)
         socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
 

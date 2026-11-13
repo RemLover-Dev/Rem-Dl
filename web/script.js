@@ -198,7 +198,7 @@ function siteLabel(site) {
     return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase());
 }
 function escJs(s) {
-    return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
+    return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
 }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -1110,9 +1110,9 @@ function renderGelWatcherList() {
                 <div style="font-size:11px; opacity:0.7;">${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
                 ${err}${pending}
             </div>
-            <button class="action-btn" onclick="editGelWatcher('${w.watcher_id}')">Edit</button>
-            <button class="action-btn" onclick="toggleGelWatcher('${w.watcher_id}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
-            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')" title="Delete watcher" style="display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <button class="action-btn" onclick="editGelWatcher('${escJs(w.watcher_id)}')">Edit</button>
+            <button class="action-btn" onclick="toggleGelWatcher('${escJs(w.watcher_id)}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
+            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${escJs(w.watcher_id)}')" title="Delete watcher" style="display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>`;
     }).join("");
 }
@@ -2573,7 +2573,8 @@ socket.on("scan_progress", function (data) {
     // live image count while a scan walks a new folder: patch the pill text
     // in place; the rescan_done reload brings the pages themselves up to date
     const pill = document.querySelector(".gallery-count-pill");
-    if (pill && data && typeof data.total === "number") pill.lastChild.textContent = data.total;
+    if (pill && data && typeof data.total === "number" &&
+            pill.lastChild && pill.lastChild.nodeType === 3) pill.lastChild.textContent = data.total;
 });
 
 socket.on("gallery_rescan_done", function (data) {
@@ -3049,7 +3050,11 @@ function updateNekosLifeFormat() {
 async function saveProxySettings() {
     globalNetConfig.use_proxy = document.getElementById("proxyEnabled").checked;
     globalNetConfig.proxy_url = document.getElementById("proxyUrl").value;
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) }); showToast("Proxy updated.", { icon: CHECK_ICON }); } catch (e) {}
+    try {
+        const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        showToast("Proxy updated.", { icon: CHECK_ICON });
+    } catch (e) { showToast("Proxy save failed — check the connection", { warn: true, icon: WARN_ICON }); }
 }
 
 async function browseFolder() {
@@ -5267,7 +5272,10 @@ function galleryHoverPreview(card, on) {
         // buffered blob pauses in ~1ms
         const ctl = new AbortController();
         card._hoverCtl = ctl;
-        fetch(url, { signal: ctl.signal }).then(r => r.blob()).then(b => {
+        fetch(url, { signal: ctl.signal }).then(r => {
+            if (!r.ok) throw new Error("preview unavailable (HTTP " + r.status + ")");
+            return r.blob();
+        }).then(b => {
             if (card._hoverCtl !== ctl || !card.isConnected) return;
             card._hoverCtl = null;
             const v = document.createElement('video');
@@ -5945,13 +5953,34 @@ function exitSelectMode() {
 async function selectCopy() {
     const paths = [...gallerySelected.values()].filter(Boolean);
     if (!paths.length) return;
-    try {
-        await writeClipboardPath(paths.join("\n"));
-        showToast(`Copied ${paths.length} file${paths.length > 1 ? "s" : ""} to clipboard`, { icon: COPY_ICON });
-    } catch (err) {
-        console.error("Copy failed:", err);
-        showToast("Copy failed — check server logs", { warn: true, icon: WARN_ICON, sticky: true });
+    // the native backend writes the SERVER's clipboard — for a remote client
+    // the copied paths are meaningless, so copy them as text instead
+    const localUi = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+    if (localUi) {
+        try {
+            await writeClipboardPath(paths.join("\n"));
+            showToast(`Copied ${paths.length} file${paths.length > 1 ? "s" : ""} to clipboard`, { icon: COPY_ICON });
+        } catch (err) {
+            console.error("Copy failed:", err);
+            showToast("Copy failed — check server logs", { warn: true, icon: WARN_ICON, sticky: true });
+        }
+        return;
     }
+    const text = paths.join("\n");
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (err) {
+        const holder = document.createElement('textarea');
+        holder.value = text;
+        holder.style.position = 'fixed';
+        holder.style.opacity = '0';
+        document.body.appendChild(holder);
+        holder.select();
+        const ok = document.execCommand('copy');
+        holder.remove();
+        if (!ok) { showToast("Copy failed — browser refused clipboard access", { warn: true, icon: WARN_ICON }); return; }
+    }
+    showToast(`Copied ${paths.length} server path${paths.length > 1 ? "s" : ""} as text`, { icon: COPY_ICON });
 }
 
 async function selectDelete() {
@@ -6300,11 +6329,13 @@ function loadViewerRaster(url, filename) {
     // draws atomically once decoded). Stage 1 is the server's display-size
     // copy; stage 2 swaps in the original for full-res zooming. Same aspect
     // ratio and the same uncapped fit → the box never moves.
+    let painted = false;
     const revealViewer = async (src, keepZoom) => {
         const image = await preloadViewerRaster(src);
         if (generation !== viewerResource.generation || controller.signal.aborted) return;
         if (!image || !image.naturalWidth) throw new Error("Image load failed");
         viewerStageImage = image;
+        painted = true;
         viewerNaturalWidth = image.naturalWidth;
         viewerNaturalHeight = image.naturalHeight;
 
@@ -6368,6 +6399,13 @@ function loadViewerRaster(url, filename) {
         return null;
     })().catch((err) => {
         if (generation === viewerResource.generation && err && err.name !== "AbortError") {
+            // stage 2 (original) can fail to decode after stage 1 already
+            // painted — the picture IS on screen, so don't toast a failure;
+            // console keeps the detail for format debugging
+            if (painted) {
+                console.warn("Original failed to decode; display copy stays:", err);
+                return Promise.resolve();
+            }
             let msg2 = err.message || "Image load failed";
             return Promise.resolve().then(async () => {
                 try {
@@ -6869,16 +6907,22 @@ function toggleViewerFav() {
         showToast("Clipboard refused this file type — saved to your PC instead", { warn: true, sticky: true, icon: WARN_ICON });
     }
     async function copyToClipboard(url, filename) {
-        // 1. Try native backend clipboard (file copy across Win/Mac/Linux)
-        try {
-            const rel = clipboardRelPath(url, filename);
-            if (rel) {
-                await writeClipboardPath(rel);
-                showToast("Image copied to clipboard", { icon: COPY_ICON });
-                return;
+        // the native backend writes the SERVER's clipboard — only useful when
+        // the browser runs on the same machine (localhost); a remote client
+        // over plain HTTP has no navigator.clipboard either
+        const localUi = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+        if (localUi) {
+            // 1. Try native backend clipboard (file copy across Win/Mac/Linux)
+            try {
+                const rel = clipboardRelPath(url, filename);
+                if (rel) {
+                    await writeClipboardPath(rel);
+                    showToast("Image copied to clipboard", { icon: COPY_ICON });
+                    return;
+                }
+            } catch (nativeErr) {
+                console.warn("Native clipboard write failed, trying web clipboard:", nativeErr);
             }
-        } catch (nativeErr) {
-            console.warn("Native clipboard write failed, trying web clipboard:", nativeErr);
         }
 
         // 2. Try standard browser clipboard API
@@ -6887,8 +6931,38 @@ function toggleViewerFav() {
             await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
             showToast("Image copied to clipboard", { icon: COPY_ICON });
         } catch (webErr) {
-            // 3. Fallback to download
-            saveAsDownload(url, filename);
+            // 3. insecure context (remote over plain HTTP): legacy canvas copy
+            try {
+                let blob = (viewerResource && viewerResource.blob) || await fetch(url).then(r => {
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    return r.blob();
+                });
+                const bmp = await createImageBitmap(blob);
+                const canvas = document.createElement('canvas');
+                canvas.width = bmp.width;
+                canvas.height = bmp.height;
+                canvas.getContext('2d').drawImage(bmp, 0, 0);
+                bmp.close();
+                const holder = document.createElement('div');
+                holder.contentEditable = 'true';
+                holder.style.position = 'fixed';
+                holder.style.opacity = '0';
+                holder.appendChild(canvas);
+                document.body.appendChild(holder);
+                const range = document.createRange();
+                range.selectNode(holder);
+                const sel = getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                const ok = document.execCommand('copy');
+                sel.removeAllRanges();
+                holder.remove();
+                if (!ok) throw new Error("legacy copy refused");
+                showToast("Image copied to clipboard", { icon: COPY_ICON });
+            } catch (legacyErr) {
+                // 4. Fallback to download
+                saveAsDownload(url, filename);
+            }
         }
     }
     async function copyViewerImage() {
@@ -7504,7 +7578,7 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
                 markDeleted(img.filepath, img.filename);
                 if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                 else showToast("Image deleted completely!", { icon: TRASH_ICON });
-                let card = document.querySelector(`.gallery-card[onclick="openGalleryViewer('${escJs(img.id)}')"]`);
+                let card = document.querySelector(`.gallery-card[data-id="${CSS.escape(String(img.id))}"]`);
                 if (card) card.remove();
                 galleryState.images.splice(viewerIndex, 1);
                 if (galleryState.images.length > 0) {
@@ -7533,15 +7607,14 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
     }
 
     document.addEventListener("DOMContentLoaded", function() {
-        // ponytail: Enter in any tag box starts its worker (rule34 input keeps
-        // its own add-tag-on-Enter handler, so it's excluded here)
+        // ponytail: Enter in any tag box starts its worker — but only inputs
+        // WITHOUT their own add-tag-on-Enter handler (those inputs' inline
+        // onkeydown already runs, so mapping them here would do both)
         const ENTER_TO_WORKER = {
-            zeroTag: 'zero', safeTag: 'safe',
-            gelbooruTag: 'gelbooru', gsbooruTag: 'gsbooru', yandeTag: 'yande',
-            danTag: 'dan', konaTag: 'kona', sankakuTag: 'sankaku',
+            zeroTag: 'zero', danTag: 'dan',
             animeDlTag: 'anime_dl', pinterestTag: 'pinterest', pixivTag: 'pixiv',
-            eshuushuuTag: 'eshuushuu', eshuushuuUser: 'eshuushuu',
-            nekosapiTag: 'nekosapi', nekosiaTag: 'nekosia', xTag: 'x'
+            eshuushuuUser: 'eshuushuu',
+            nekosapiTag: 'nekosapi', xTag: 'x'
         };
         document.addEventListener("keydown", function(e) {
             if (e.key !== "Enter") return;

@@ -106,13 +106,15 @@ def test_scan_attributes_from_embedded_site(lib):
     assert added == 1 and entry["site"] == "danbooru"
 
 
-def test_scan_without_embedded_site_keeps_folder_name(lib):
+def test_scan_without_embedded_site_is_unattributed(lib):
     d = lib / "someartist_(x)"
     d.mkdir(parents=True)
     (d / "bare.jpg").write_bytes(b"\xff\xd8\xff\xd9")
     gallery, added, _fixed, _checked = Rems_Dl._scan_and_merge_gallery()
     entry = next(i for i in gallery["images"] if i["filename"] == "bare.jpg")
-    assert added == 1 and entry["site"] == "someartist_(x)"
+    # the folder is the artist, not a source — only embedded metadata or a
+    # canonical site folder may attribute
+    assert added == 1 and entry["site"] == ""
 
 
 def test_embedded_site_endpoint(lib):

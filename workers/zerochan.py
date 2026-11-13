@@ -696,21 +696,25 @@ class ZerochanWorker(BaseDownloader):
             if filename in self.dl_history or filename in self.queued_items \
                     or os.path.exists(filepath):
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"Pre-download dedup check failed for {filename}: {e}")
         # Skip HEAD entirely: Zerochan + Cloudflare often blocks HEAD, and the
         # size is only used for progress stats. Record 0 and continue.
         file_size = 0
-        try:
-            self.queued_items.add(filename)
-            self.download_queue.put_nowait(
-                (url, filepath, filename, tags_list, artists, file_size,
-                 characters, copyrights, metadata_tags, outfits))
-            self.enqueued_count += 1
-            return True
-        except Exception as e:
-            self.log(f"Enqueue failed for {filename}: {e}")
-            return False
+        self.queued_items.add(filename)
+        # base's backpressure: a full queue must stay responsive to Stop,
+        # and a dropped item must not stay in queued_items forever
+        item = (url, filepath, filename, tags_list, artists, file_size,
+                characters, copyrights, metadata_tags, outfits)
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.wait_for(self.download_queue.put(item), 0.25)
+                self.enqueued_count += 1
+                return True
+            except asyncio.TimeoutError:
+                continue
+        self.queued_items.discard(filename)
+        return False
 
     # --- downloader (overrides aiohttp streaming) ---
     async def _async_download_file(self, url, filepath, filename, tags_list, artists,

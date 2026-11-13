@@ -21,6 +21,9 @@ class NekosBestWorker(BaseWorker):
         consecutive_failures = 0
         cats = list(self.categories)
         idx = 0
+        # the API returns random images with no cursor: track all-duplicate
+        # rounds so an exhausted pool ends the scan instead of hammering forever
+        dead_rounds = 0
 
         while not self.stop_event.is_set() and cats and (self.amount == 0 or collected_count < self.amount):
             # round-robin: spread batches across the selected categories
@@ -56,6 +59,7 @@ class NekosBestWorker(BaseWorker):
 
             cat_dir = os.path.join(self.site_root, folder_component(cat, fallback="neko"))
             safe_ensure_dir(cat_dir)
+            before = collected_count
             for item in results:
                 if self.stop_event.is_set() or (self.amount > 0 and collected_count >= self.amount):
                     break
@@ -74,6 +78,17 @@ class NekosBestWorker(BaseWorker):
                 if await self.enqueue_download(url, filepath, filename, [cat],
                                                artists, copyrights=copyrights):
                     collected_count += 1
+
+            if before == collected_count:
+                dead_rounds += 1
+                if dead_rounds >= 20:
+                    self.log(f"API keeps returning duplicates for '{cat}' — pool exhausted, skipping.")
+                    cats.remove(cat)
+                    if cats:
+                        idx = 0
+                    continue
+            else:
+                dead_rounds = 0
 
             if not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
                 await asyncio.sleep(self.anti_ban_pause)

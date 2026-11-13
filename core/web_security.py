@@ -57,6 +57,9 @@ class AccessGuard:
         if len(self.token) < 32:
             raise ValueError('REMS_ACCESS_TOKEN must contain at least 32 characters')
         self.cookie_value = secrets.token_urlsafe(32)
+        # failed /auth attempts per client IP: backoff makes LAN brute-force
+        # slow without any lockout that a shared NAT could trigger
+        self._auth_fails = {}
         # A different name per process/port avoids collisions between app instances.
         self.cookie_name = 'rems_' + secrets.token_hex(8)
         self.hosts = set(hosts or ('localhost', '127.0.0.1', '::1'))
@@ -147,8 +150,19 @@ class AccessGuard:
                 candidate = data.get('token') if isinstance(data, dict) else None
             except (ValueError, TypeError):
                 candidate = None
+            # brute-force backoff: each consecutive miss from one IP delays
+            # its next check up to 30s (5 misses are free, then it climbs)
+            import time as _time
+            client_ip = (req.remote_addr or 'unknown')[:64]
+            fails = self._auth_fails.get(client_ip, 0)
+            if fails >= 5:
+                _time.sleep(min(2 ** (fails - 5), 30))
+            if len(self._auth_fails) > 1000:
+                self._auth_fails.clear()
             if not self._valid(candidate, self.token):
+                self._auth_fails[client_ip] = fails + 1
                 return respond(Response('Unauthorized', status=401))
+            self._auth_fails.pop(client_ip, None)
             response = Response(status=204)
             # req.scheme is http behind a TLS-terminating proxy — the browser
             # Origin tells us whether the cookie will actually travel over https.

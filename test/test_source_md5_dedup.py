@@ -696,7 +696,8 @@ class TestAdapters:
         w.log = lambda m: None
         w.download_queue = asyncio.Queue()
 
-        async def fake_download(url, filepath, filename, tags_list, artists, file_size=0):
+        async def fake_download(url, filepath, filename, tags_list, artists, file_size=0,
+                                characters=None, copyrights=None, metadata_tags=None):
             # claim must still be held while the (immediate) download runs
             assert store.claimed_source_md5(filepath) is not None
             return True

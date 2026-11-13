@@ -88,6 +88,8 @@ def register(app, master, folder_picker, image_picker, changed, cache, replaced=
 
     @app.route('/api/jxl/browse', methods=['POST'])
     def jxl_browse():
+        if request.remote_addr not in ('127.0.0.1', '::1'):
+            return jsonify(error='The file picker runs on the server machine — paste the path instead'), 501
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict) or data.get('kind') not in ('file', 'folder'):
             return jsonify(error='Choose file or folder'), 400
@@ -104,6 +106,10 @@ def register(app, master, folder_picker, image_picker, changed, cache, replaced=
 
     @app.route('/api/jxl/reveal', methods=['POST'])
     def jxl_reveal():
+        # xdg-open fires on the SERVER's desktop — a remote client gets
+        # nothing visible, so tell them to copy the path instead
+        if request.remote_addr not in ('127.0.0.1', '::1'):
+            return jsonify(error='Reveal runs on the server machine — copy the folder path instead'), 501
         snapshot = service.snapshot()
         path = Path(snapshot.get('output', ''))
         if not path.is_dir() or not snapshot.get('output'):

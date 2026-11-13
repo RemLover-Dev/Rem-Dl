@@ -95,7 +95,7 @@ class DanbooruWorker(BaseWorker):
                     if self._auth:
                         self.log(f"ERROR 422: query exceeds your account's tag limit — your query has {n} tags. Reduce tags and retry.")
                     else:
-                        self.log(f"ERROR 422: Danbooru allows max 2 search tags without login (rating excluded) — your query has {n}. Add your login + API key in Options, or reduce tags.")
+                        self.log(f"ERROR 422: Danbooru allows max 3 search tags without login (rating excluded) — your query has {n}. Add your login + API key in Options, or reduce tags.")
                     break
                 resp.raise_for_status()
 

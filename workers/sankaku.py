@@ -92,7 +92,8 @@ class SankakuWorker(BaseWorker):
         self.enqueued_count += 1
         # Download immediately — Sankaku signed URLs expire before queued download starts
         try:
-            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0,
+                                                   characters, copyrights, metadata_tags)
         finally:
             # no worker loop owns this item — the outcome is known right here
             self._release_source_claims((filepath,))
