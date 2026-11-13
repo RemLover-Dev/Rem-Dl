@@ -63,11 +63,12 @@ def test_host_matches_with_or_without_port(monkeypatch):
 
 
 def test_blocked_host_is_logged(capsys, monkeypatch):
+    import re
     guard, client = _client(hosts=("rems.example.com",), base_path="", monkeypatch=monkeypatch)
     response = client.get("/api/x", headers={"Host": "evil.example.com"})
     assert response.status_code == 403
     out = capsys.readouterr().out
-    assert "evil.example.com" in out and "REMS_ALLOWED_HOSTS" in out
+    assert re.search(r"\bevil\.example\.com\b", out) and "REMS_ALLOWED_HOSTS" in out
 
 
 def test_origin_hostname_is_matched_against_allowlist(monkeypatch):

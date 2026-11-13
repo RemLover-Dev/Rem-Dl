@@ -122,7 +122,8 @@ def test_rating_only_lines_not_lost():
 def test_urls_note():
     rows = normalize_bulk_text("see https://gelbooru.com loli_no")
     assert len(rows) == 1
-    assert "https://gelbooru.com/" in rows[0]["note"].replace("://", "://") or "https://gelbooru.com" in rows[0]["note"]
+    note = rows[0]["note"]
+    assert note.startswith("https://gelbooru.com/") or note.startswith("https://gelbooru.com")
     assert "loli_no" in rows[0]["tags"]
     assert "https://gelbooru.com" not in rows[0]["tags"]
 

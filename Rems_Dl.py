@@ -2603,7 +2603,8 @@ def _delete_gallery_item(img_id=None, filename=None, filepath=None):
                 _evict_caches(full_path)
                 os.remove(full_path)
             except OSError as e:
-                return jsonify({"success": False, "error": f"Could not delete file: {e}"}), 500
+                print("Gallery file delete error:", e)
+                return jsonify({"success": False, "error": "Could not delete the file (details in server logs)"}), 500
 
         try:
             # Commit the exact persistent row before mutating the resident
@@ -2611,8 +2612,9 @@ def _delete_gallery_item(img_id=None, filename=None, filepath=None):
             # retry can reconcile the already-removed physical file.
             shared._store().delete(gid)
         except Exception as e:
+            print("Gallery index delete error:", e)
             return jsonify({"success": False,
-                            "error": f"File removed but gallery index update failed: {e}"}), 500
+                            "error": "File removed but gallery index update failed (details in server logs)"}), 500
         gallery["images"].pop(index)
         shared.drop_gallery_path_index(img)
 
@@ -2752,7 +2754,8 @@ def gallery_roots_manage():
         try:
             _ensure_root_link(p)
         except OSError as link_err:
-            return jsonify(error=f"Cannot link folder into the library: {link_err}"), 500
+            print("Gallery root link error:", link_err)
+            return jsonify(error="Cannot link folder into the library (details in server logs)"), 500
     else:
         path = str(payload.get("path", "")).strip()
         if not path:

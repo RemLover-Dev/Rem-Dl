@@ -85,6 +85,10 @@ class XWorker(BaseDownloader):
         string twscrape's parse_cookies understands."""
         val = (val or "").strip()
         if os.path.isfile(val):
+            # cookie files are Netscape .txt or JSON exports — an extension
+            # gate keeps this paste-a-path feature from opening anything else
+            if os.path.splitext(val)[1].lower() not in ('.txt', '.json'):
+                return val
             try:
                 with open(val, "r", encoding="utf-8", errors="replace") as f:
                     val = f.read().strip()

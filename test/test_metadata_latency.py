@@ -1,11 +1,22 @@
 import asyncio
+import io
 import os
 import time
 
+import pytest
 from PIL import Image
 from test_download_resume import MockContent, MockResponse, MockSession
 
 from core.shared import BaseDownloader, write_image_metadata
+
+
+def _pil_can_write_jxl():
+    try:
+        buf = io.BytesIO()
+        Image.new("RGB", (2, 2)).save(buf, format="JXL")
+        return True
+    except Exception:
+        return False
 
 
 def _await_order(order, n=4, timeout=3.0):
@@ -147,7 +158,11 @@ def test_held_publish_waits_for_its_own_conversion(monkeypatch, tmp_path):
     """auto-jxl: cards publish only when THIS file's conversion releases them;
     another file's release must not pull this one into view. Media is baked
     at download time and skipped at publish (the .jxl carries it)."""
+    import io
+
     import core.shared as sh
+    if not _pil_can_write_jxl():
+        pytest.skip("PIL without the JXL plugin — fake .jxl files can't be written")
 
     monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
     monkeypatch.setattr("core.shared.check_duplicate", lambda *a, **k: None)
