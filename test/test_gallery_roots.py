@@ -56,11 +56,12 @@ def test_extra_root_indexed_and_routes_allowed(client, roots_env, monkeypatch):
     # hidden .gallery_roots symlink (relative => URLs keep working)
     key = Rems_Dl._root_key(os.path.realpath(str(hdd_root)))
     assert paths["a.png"] == os.path.join("Zerochan", "a.png")
-    assert paths["b.png"] == os.path.join(".gallery_roots", key, "Danbooru", "b.png")
+    # .gallery_roots rows are always forward-slash (URL-safe on every OS)
+    assert paths["b.png"] == "/".join((".gallery_roots", key, "Danbooru", "b.png"))
     # the symlink exists and points at the real folder
     link = os.path.join(str(master), ".gallery_roots", key)
     assert os.path.islink(link) and os.path.realpath(link) == os.path.realpath(str(hdd_root))
-    assert os.path.isfile(os.path.join(str(master), paths["b.png"]))
+    assert os.path.isfile(os.path.join(str(master), paths["b.png"].replace(os.sep, "/")))
 
     # extra-root image is fetchable through the file route under the guard
     r = client.get(f"/api/gallery/file/{paths['b.png']}", headers=H)
@@ -116,8 +117,9 @@ def test_moved_image_adopted_from_extra_root(client, roots_env, monkeypatch):
     assert added == 2
     assert len(gallery["images"]) == 3
     key = Rems_Dl._root_key(os.path.realpath(str(hdd_root)))
-    assert row["moved.png"]["filepath"] == os.path.join(
-        ".gallery_roots", key, "Danbooru", "moved.png")
+    # .gallery_roots rows are always forward-slash (URL-safe on every OS)
+    assert row["moved.png"]["filepath"] == "/".join(
+        (".gallery_roots", key, "Danbooru", "moved.png"))
     assert row["moved.png"]["tags"] == {"tag": ["original tags"]}  # identity kept
 
 
@@ -176,8 +178,14 @@ def test_slash_merged_abs_url_recovers(client, roots_env, monkeypatch):
     client.post("/api/gallery/roots", json={"path": str(hdd_root)}, headers=H)
     monkeypatch.setattr(Rems_Dl.shared, "load_gallery", lambda: {"images": []})
     Rems_Dl._scan_and_merge_gallery()
-    merged = f"/api/gallery/file{os.path.realpath(str(hdd_root))}/Danbooru/b.png".replace(
-        "//", "/")           # exact post-308 shape: relative-looking abs path
+    # forward slashes so the URL is routable on every OS (Windows realpath
+    # has no leading slash — "fileC:\..." would never match the route)
+    root_url = os.path.realpath(str(hdd_root)).replace(os.sep, "/")
+    merged = f"/api/gallery/file/{root_url}/Danbooru/b.png"
+    if not os.name == "nt":
+        # exact post-308 shape on POSIX: the leading slash of the absolute
+        # path is eaten by werkzeug's slash-merge 308
+        merged = merged.replace("//", "/")
     r = client.get(merged, headers=H)
     assert r.status_code == 200
     # and the thumbnails/display routes recover the same way
@@ -202,7 +210,7 @@ def test_same_basename_inside_master_uses_distinct_path_ids(client, roots_env, m
     assert added == 3
     assert len(scanned["images"]) == 3
     same = [row for row in scanned["images"] if row["filename"] == "same.jpg"]
-    assert {row["filepath"] for row in same} == {
+    assert {row["filepath"].replace(os.sep, "/") for row in same} == {
         "Danbooru/tag-a/same.jpg", "Pixiv/tag-b/same.jpg",
     }
     ids = {row["filepath"]: row["id"] for row in same}
