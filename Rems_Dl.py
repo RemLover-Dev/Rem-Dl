@@ -2767,7 +2767,10 @@ def gallery_roots_manage():
         link = os.path.join(MASTER_FOLDER, _ROOTS_LINK_DIR, _root_key(p))
         try:
             if os.path.islink(link) and os.readlink(link) == p:
-                os.remove(link)
+                try:
+                    os.remove(link)
+                except OSError:
+                    os.rmdir(link)   # Windows dir-symlink removal
         except OSError:
             pass
     DatabaseManager.update_ui_config({"gallery_roots": saved2})

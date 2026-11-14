@@ -225,8 +225,11 @@ def test_same_basename_inside_master_uses_distinct_path_ids(client, roots_env, m
     Rems_Dl.shared._reindex_gallery_locked(scanned)
     Rems_Dl.shared.add_to_gallery("danbooru", "same.jpg", "Danbooru/tag-a/same.jpg",
                                   ["later-tag"], [])
+    # gallery_path_key canonicalizes separators, so the forward-slash input
+    # matches the scanned row even where scan rows carry os.sep (Windows)
+    canon = os.path.join("Danbooru", "tag-a", "same.jpg")
     assert next(row for row in scanned["images"]
-                if row["filepath"] == "Danbooru/tag-a/same.jpg")["id"] == ids["Danbooru/tag-a/same.jpg"]
+                if row["filepath"] == canon)["id"] == ids[canon]
     # registration reused the scanned row: no duplicate appended (3 = a.png + 2)
     assert len(scanned["images"]) == 3
 
