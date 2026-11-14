@@ -12,8 +12,9 @@ if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='rems-thumb-benchmark-') as directory:
         os.environ['REMS_DATA_DIR'] = directory
         os.environ['REMS_HEADLESS'] = '1'
-        import Rems_Dl as main
         from PIL import Image
+
+        import Rems_Dl as main
         sources = []
         for i in range(8):
             path = Path(directory) / f'{i}.png'

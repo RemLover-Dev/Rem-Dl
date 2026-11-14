@@ -12,9 +12,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from PIL import Image, ImageChops, ImageCms, ImageOps
 import pillow_jxl
+from PIL import Image, ImageChops, ImageCms, ImageOps
 from pillow_jxl import JpegXLImagePlugin
+
 from core.jxl_cpu import MAX_THREADS
 from core.jxl_resources import MAX_PIXELS
 
@@ -161,9 +162,8 @@ def convert(source, output_directory, options=Options()):
     started = time.monotonic()
     original_size = source.stat().st_size
     metrics = None
-    if options.mode in ('png', 'restore'):
-        if source.suffix.lower() != '.jxl':
-            raise ValueError('Choose a .jxl file for this operation')
+    if options.mode in ('png', 'restore') and source.suffix.lower() != '.jxl':
+        raise ValueError('Choose a .jxl file for this operation')
     if options.mode == 'restore':
         jpeg, info, payload, _icc, _boxes = pillow_jxl.Decoder(num_threads=options.threads)(source.read_bytes())
         if not jpeg:

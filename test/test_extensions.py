@@ -3,6 +3,8 @@ import zipfile
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 from core.extension_downloader import (
     SecurityError,
     _safe_extract_zip,
@@ -54,7 +56,7 @@ def test_zip_slip_security_prevention(tmp_path):
 
 
 def test_install_from_local_archive_and_lifecycle(temp_ext_dir, tmp_path):
-    ext_dir, manager = temp_ext_dir
+    _ext_dir, manager = temp_ext_dir
 
     # Create a valid test extension archive
     ext_src = tmp_path / "mock_ext"
@@ -99,7 +101,7 @@ def setup(app, socketio, context):
         zf.writestr("mock-addon-1.2.0/plugin.py", plugin_code)
 
     # Install the extension
-    ok, msg = install_from_local_path(str(mock_zip), "mock-addon")
+    ok, _msg = install_from_local_path(str(mock_zip), "mock-addon")
     assert ok is True
 
     # Verify discovery
@@ -139,3 +141,34 @@ def test_api_extensions_endpoints():
     assert data["success"] is True
     assert "extensions" in data
     assert "contributions" in data
+
+
+def test_install_failed_messages_contract(monkeypatch, tmp_path):
+    # SecurityError = curated validation message, passed through verbatim;
+    # any other failure must come back generic — never raw exception text.
+    import core.extension_downloader as dl
+
+    def raiser(kind, text):
+        def boom(*_a, **_k):
+            raise kind(text)
+        return boom
+
+    monkeypatch.setattr(dl, "_install_source",
+                        raiser(dl.SecurityError, "Manifest ID must match the extension ID"))
+    ok, msg = dl.install_from_local_path(str(tmp_path), "x")
+    assert (ok, msg) == (False, "Manifest ID must match the extension ID")
+
+    monkeypatch.setattr(dl, "_install_source",
+                        raiser(RuntimeError, "boom reads /etc/passwd"))
+    ok, msg = dl.install_from_local_path(str(tmp_path), "x")
+    assert (ok, msg) == (False, "Extension installation failed.")
+
+    monkeypatch.setattr(dl, "fetch_release_info",
+                        raiser(dl.SecurityError, "Use a GitHub owner/repository name"))
+    ok, msg = dl.install_from_github("some/repo")
+    assert (ok, msg) == (False, "Use a GitHub owner/repository name")
+
+    monkeypatch.setattr(dl, "fetch_release_info",
+                        raiser(RuntimeError, "boom http://secret/token"))
+    ok, msg = dl.install_from_github("some/repo")
+    assert (ok, msg) == (False, "Extension installation from GitHub failed.")

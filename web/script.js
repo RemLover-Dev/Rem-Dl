@@ -1,5 +1,16 @@
 let globalNetConfig = { "proxy_url": "", "use_proxy": false, "verify_tls": true, "dedup_enabled": true };
 var workerRunning = {};
+// REMS_BASE_PATH support: the reverse proxy strips the subpath before the app
+// sees it, so the browser must prefix every same-origin URL itself. The server
+// injects window.REMS_BASE into the page; empty means root deployment.
+const BASE = window.REMS_BASE || "";
+const withBase = p => BASE && typeof p === "string" && p.startsWith("/") ? BASE + p : p;
+const stripBase = u => BASE && typeof u === "string" && u.startsWith(BASE) ? u.slice(BASE.length) : u;
+// one hook covers every fetch() call in script.js, planning.js, ux.js, jxl.js
+if (BASE) {
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => _origFetch(typeof input === "string" ? withBase(input) : input, init);
+}
 let queuedCounts = {}; // site -> waiting entries, tracked so START can kick off the queue
 // The HTML carries the on-disk effects choice so startup cannot reset it.
 const initialEffects = document.querySelector('meta[name="rems-performance-mode"]');
@@ -167,7 +178,7 @@ function normalizeTags(tagsInput) {
 // so "iii" doesn't become "Iii". Validated roman so "filmi"/"cd-ish" junk is safe.
 const _ROMAN_RE = /^m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
 // leading "-" (exclude markers) must not block the first-letter cap: -kafka -> -Kafka
-function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' ').replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return s.replace(/^([^\p{L}]*)(\p{L})/u, (_, pre, c) => pre + c.toUpperCase()).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
+function cleanTagDisplay(t) { let s = String(t || "").replace(/\\[uU]([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16))); if (/\p{L}/u.test(s)) s = s.replace(/_/g, ' '); const s2 = s.replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return s2.replace(/^([^\p{L}]*)(\p{L})/u, (_, pre, c) => pre + c.toUpperCase()).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()).replace(/:([ ]*)([a-z])/g, (_, sp, c) => ':' + sp + c.toUpperCase()); }
 // history rows & queue pills: zero is comma-joined; free-text/pick sites
 // (anime_dl, eshuushuu, pixiv, pinterest, nekosapi) keep spaces INSIDE one tag
 // — only comma-split them; underscore-joined boorus are space-joined, split on
@@ -179,9 +190,32 @@ function displayTagList(raw, site) {
     const parts = NOSPACE_SPLIT_SITES.includes(String(site || "")) ? s.split(/,/) : s.split(/[\s,]+/);
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
-function siteLabel(site) { const s = site || "unknown"; return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase()); }
+// canonical keys -> the exact names the worker tab buttons use (index.html)
+const SITE_DISPLAY_NAMES = { anime_dl: "Anime DL", dan: "Danbooru", eshuushuu: "E-Shuushuu", gelbooru: "Gelbooru", gsbooru: "Gsbooru", kona: "Konachan", neko: "Nekos", nekos_life: "Nekos.life", nekosapi: "NekosAPI", nekosia: "Nekosia", pinterest: "Pinterest", pixiv: "Pixiv", rule34: "Rule34", safe: "Safebooru", sankaku: "Sankaku", x: "X (Twitter)", yande: "Yande.re", zero: "Zerochan" };
+function siteLabel(site) {
+    const s = site || "unknown";
+    if (SITE_DISPLAY_NAMES[s]) return SITE_DISPLAY_NAMES[s];
+    return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase());
+}
+// classify rating from a lowercase path+tag haystack and site name — the
+// single rule set behind the log card, history row and viewer badges
+function classifyRating(pLow, siteLower) {
+    const NSFW = {label: "NSFW", fg: "#e74c3c", bg: "rgba(231, 76, 60, 0.15)", rating: "explicit"};
+    const QUES = {label: "Questionable", fg: "#f39c12", bg: "rgba(243, 156, 18, 0.15)", rating: "questionable"};
+    const SENS = {label: "Sensitive", fg: "#9b59b6", bg: "rgba(155, 89, 182, 0.15)", rating: "sensitive"};
+    const SAFE = {label: "Safe", fg: "#2ecc71", bg: "rgba(46, 204, 113, 0.15)", rating: "safe"};
+    if (siteLower === "rule34" || pLow.includes('rule34')) return NSFW;
+    if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) return NSFW;
+    if (pLow.includes('/r18g/')) return NSFW;
+    if (pLow.includes('/r18/')) return QUES;
+    if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) return SENS;
+    if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) return QUES;
+    if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g') || pLow.includes('safebooru')) return SAFE;
+    return null;
+}
+
 function escJs(s) {
-    return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
+    return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
 }
 // ponytail: focusing any limit box selects its value — one handler, every worker
 let _selBox = null, _selAt = 0;
@@ -600,20 +634,27 @@ async function resetWallpapersUI() {
     setTimeout(() => { status.textContent = ""; }, 2000);
 }
 
-const socket = io({ transports: ["polling"] });
+const socket = io({ transports: ["polling"], path: withBase("/socket.io") });
 
 const WORKER_TO_TAB = {
     "neko": "neko", "nekos_life": "nekos_life", "zero": "zero",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
-    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia"
+    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia", "x": "x"
 };
 
 // worker name -> sidebar tab target + primary tag input (history jumps, nav icons)
-const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" } };
+const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" }, "x": { tab: "X", input: "xTag" } };
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
+// ponytail: JXL conversion window — gear marks the bar while cards are held
+const GEAR_SVG = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M10.166 1.6a1 1 0 0 1 .99-.84h1.688a1 1 0 0 1 .99.84l.3 1.86c.597.202 1.16.47 1.685.797l1.696-.727a1 1 0 0 1 1.22.356l.844 1.24a1 1 0 0 1-.13 1.253l-1.33 1.315c.113.435.19.884.225 1.345l1.7.763a1 1 0 0 1 .584 1.147l-.358 1.647a1 1 0 0 1-1.038.785l-1.876-.108a8.16 8.16 0 0 1-.87 1.12l.635 1.766a1 1 0 0 1-.436 1.194l-1.433.831a1 1 0 0 1-1.23-.213l-1.226-1.416a8.05 8.05 0 0 1-1.42.003l-1.225 1.413a1 1 0 0 1-1.23.213l-1.433-.831a1 1 0 0 1-.436-1.194l.634-1.764a8.16 8.16 0 0 1-.871-1.121l-1.874.107a1 1 0 0 1-1.038-.785l-.358-1.647a1 1 0 0 1 .583-1.147l1.699-.762c.035-.462.112-.911.225-1.346L2.11 7.744a1 1 0 0 1-.13-1.253l.844-1.24a1 1 0 0 1 1.22-.356l1.694.726a8.02 8.02 0 0 1 1.687-.796l.3-1.865ZM12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/></svg>`;
+// worker -> true while its batch's JXL conversions still hold the cards
+const _convertingBar = {};
+// per-worker elapsed timer for the in-flight conversion (self-clears when the
+// window ends — _convertingBar[worker] goes false)
+const _cvTimer = {};
 
 function updateProgressBar(worker, msg) {
     let key = WORKER_TO_TAB[worker];
@@ -621,12 +662,17 @@ function updateProgressBar(worker, msg) {
     let container = document.getElementById("dualProgress_" + key);
     if (!container) return;
 
+    // 0. conversion window: transient card/percent messages must not stomp
+    // the converting bar — only the final "---" lines end the window
+    if (_convertingBar[worker] && !(typeof msg === "string" && msg.startsWith("---"))) return;
+    _convertingBar[worker] = false;
+
     // 1. نمایش پیام پایانی بزرگ و زیبا و حذف نوارها
     if (msg.includes("Queue finished")) {
         workerRunning[worker] = false; renderRunBtn(worker);
         const m = msg.match(/Queue finished: (\d+) tasks(?:, (\d+) downloaded)?(?:, (\d+) failed)?/);
         const jobs = m ? m[1] : "", d = m && m[2] ? m[2] : "0", f = m && m[3] ? m[3] : "0";
-        let endText = `${CHECK_SVG} Queue finished: ${jobs} tasks — ${d} downloaded`;
+        let endText = `${CHECK_SVG} Queue finished: ${jobs} tasks - ${d} downloaded`;
         if (f !== "0") endText += `, <span style="color: #e74c3c;">${f} failed</span>`;
         container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: #2ecc71; text-shadow: 0 0 10px rgba(46, 204, 113, 0.5);">${endText}</div>`;
         return;
@@ -685,13 +731,48 @@ function updateProgressBar(worker, msg) {
         return;
     }
 }
+// JXL conversion window: downloads done, image cards still publishing —
+// the bar becomes a purple-to-pink "Converting" gauge until the last card
+// lands (then the backend re-emits worker_finished / the completion log)
+function renderConvertingBar(worker, done, total, current) {
+    let key = WORKER_TO_TAB[worker];
+    if (!key) return;
+    let container = document.getElementById("dualProgress_" + key);
+    if (!container) return;
+    _convertingBar[worker] = true;
+    if (workerRunning[worker] !== false) { workerRunning[worker] = false; renderRunBtn(worker); }
+    const pct = total > 0 ? Math.max(0, Math.min(100, Math.round(done * 100 / total))) : 0;
+    const label = current ? `${GEAR_SVG} Converting <span style="opacity:.85">${escapeHtml(current)}</span>` : `${GEAR_SVG} Converting...`;
+    container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:10px; margin-bottom:5px;">
+    <span>${label}</span>
+    <span id="cvText_${key}">${pct}%</span>
+    </div>
+    <div class="progress-bar-bg"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
+    `;
+    container.style.display = "block";
+    // the encoder is one blocking call with no intra-encode progress — tick
+    // the elapsed time per file so the bar stays visibly alive while it runs
+    if (!_cvTimer[worker] || _cvTimer[worker].key !== current) {
+        if (_cvTimer[worker]) clearInterval(_cvTimer[worker].iv);
+        _cvTimer[worker] = { key: current, t0: Date.now(), iv: 0 };
+    }
+    const t0 = _cvTimer[worker].t0;
+    clearInterval(_cvTimer[worker].iv);
+    _cvTimer[worker].iv = setInterval(() => {
+        if (!_convertingBar[worker]) { clearInterval(_cvTimer[worker].iv); return; }
+        const el = document.getElementById("cvText_" + key);
+        if (el) el.textContent = `${pct}% (${Math.round((Date.now() - t0) / 1000)}s)`;
+        else clearInterval(_cvTimer[worker].iv);
+    }, 1000);
+}
 // --- Ultimate GUI Log Parser ---
 function capConsole(cb, max) {
     max = max || 200;
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia", "x": "consoleLog_x" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -718,6 +799,36 @@ function appendLogCard(cb, card) {
     // a new card may have joined the box the open viewer walks — update now so
     // the next/prev arrows appear without reopening the image
     refreshViewerSingleList();
+}
+// a fresh card's thumb can fail while a viewer session mutes thumb decodes
+// (503) or during the JXL conversion swap — retry on a ladder; a card must
+// heal once the viewer closes, not settle for the placeholder forever
+const _thumbPending = [];
+function thumbRetry(img) {
+    if (_thumbPending.length < 64 && !_thumbPending.includes(img)) _thumbPending.push(img);
+    const n = +(img.dataset.rt || 0);
+    if (n >= 4) { img.onerror = null; img.src = img.dataset.fb; return; }
+    img.dataset.rt = n + 1;
+    img.dataset.ob = img.dataset.ob || img.src;
+    setTimeout(() => { img.src = img.dataset.ob.split('?')[0] + '?r=' + Date.now(); }, [2000, 6000, 15000, 30000][n]);
+}
+function thumbLoaded(img) {
+    const i = _thumbPending.indexOf(img);
+    if (i >= 0) _thumbPending.splice(i, 1);
+}
+// viewer close: the mute just lifted — make the server start generating the
+// thumbs that 503'd, then refetch them right away instead of waiting on the
+// retry ladder
+function flushPendingThumbs() {
+    if (!_thumbPending.length) return;
+    const list = _thumbPending.splice(0);
+    const fps = [...new Set(list.map(i => i.dataset.ofi).filter(Boolean))];
+    if (fps.length) fetch("/api/gallery/warm_thumbs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filepaths: fps }) }).catch(() => {});
+    list.forEach(i => {
+        if (!i.isConnected || !i.dataset.ob) return;
+        i.onerror = () => thumbRetry(i);
+        i.src = i.dataset.ob.split('?')[0] + '?r=' + Date.now();
+    });
 }
 function logToConsole(tabID, msg) {
     let boxMap = CONSOLE_BOX_MAP;
@@ -770,34 +881,12 @@ function logToConsole(tabID, msg) {
         let ratingHtml = "";
         let logRating = "";
         let pLow = rawPath.toLowerCase().replace(/\\/g, '/');
-        if (pLow.includes('/rule34/') || pLow.includes('\\rule34\\') || pLow.includes('rule34')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
-            logRating = "explicit";
-        }
-        else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
-            logRating = "explicit";
-        }
-        // pixiv stores files under <tag>/R18/ and <tag>/R18G/ — r18g before r18
-        else if (pLow.includes('/r18g/')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
-            logRating = "explicit";
-        }
-        else if (pLow.includes('/r18/')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
-            logRating = "questionable";
-        }
-        else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Sensitive</div>`;
-            logRating = "sensitive";
-        }
-        else if (pLow.includes('moderate') || pLow.includes('questionable')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
-            logRating = "questionable";
-        }
-        else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Safe</div>`;
-            logRating = "safe";
+        // one rule set for the log card, history rows and the viewer
+        // (r18g before r18 — pixiv stores files under <tag>/R18/ and <tag>/R18G/)
+        const _cr = classifyRating(pLow, "");
+        if (_cr) {
+            ratingHtml = `<div class="img-card-rating" style="background:${_cr.bg}; color:${_cr.fg};">${_cr.label}</div>`;
+            logRating = _cr.rating;
         }
         // ponytail: badge only matters when the tab's rating filter doesn't pin it down
         const _ratingInputByWorker = RATING_INPUT_BY_WORKER;
@@ -820,7 +909,7 @@ function logToConsole(tabID, msg) {
         card.className = "image-card-log";
         if (logRating) card.dataset.rating = logRating;
         if (ratingBlurred(logRating)) card.classList.add("is-nsfw");
-        let thumbSrc = '/api/gallery/thumb/' + pathUrlStr;
+        let thumbSrc = withBase('/api/gallery/thumb/' + pathUrlStr);
         let safeFn = escJs(fn);
         const logHoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
         const logFullU = fullImageUrl(pathUrlStr, fn);
@@ -830,7 +919,7 @@ function logToConsole(tabID, msg) {
         card.innerHTML = `
         <div class="img-card-left"${logHoverAttr}>
         <!-- استفاده از Date.now برای جلوگیری از باگ لود شدن -->
-        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="cursor: pointer;">${isVideo ? '<span class="gallery-card-play"></span>' : ''}
+        <img src="${thumbSrc}" data-ofi="${pathUrlStr}" onclick="openFullImage('${pathUrlStr}', '${safeFn}', this)" data-fb="${fallbackSrc}" onerror="thumbRetry(this)" onload="thumbLoaded(this)" style="cursor: pointer;">${isVideo ? '<span class="gallery-card-play"></span>' : ''}
         </div>
         <div class="img-card-right">
         <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
@@ -883,9 +972,11 @@ let currentRule34Tags = [];
 function addRule34Tag() {
     let input = document.getElementById("rule34TagInput");
     if (!input) return;
-    let val = input.value.trim().toLowerCase();
-    if (val && !currentRule34Tags.includes(val)) {
-        currentRule34Tags.push(val);
+    let added = false;
+    chipsFromTyped(input.value).forEach(function(val) {
+        if (!currentRule34Tags.includes(val)) { currentRule34Tags.push(val); added = true; }
+    });
+    if (added) {
         input.value = "";
         renderRule34Tags();
     }
@@ -917,44 +1008,54 @@ function renderRule34Tags() {
 }
 
 // --- Gelbooru interactive tags (mirrors rule34; joined with ' ' for the worker) ---
-let currentGelbooruTags = [];
-let gelbooruSubTags = new Set();
-function addGelbooruTag() {
-    let input = document.getElementById("gelbooruTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: read via danTagForRequest, not input.value — the box shows
-    // pretty text ("reze (chainsaw man)") while dataset.raw holds the real
-    // tag ("reze_(chainsaw_man)"); splitting pretty text shreds it into chips
-    danTagForRequest('gelbooruTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentGelbooruTags.includes(val)) {
-            currentGelbooruTags.push(val);
-            if (val === raw) gelbooruSubTags.add(val);
-            added = true;
+// --- Booru chip rows: one factory, eight tag boxes --------------------------
+// add/remove/render were per-site copy-paste; payload join, tab-clear and
+// restore paths keep working through the returned object (chips.tags etc.)
+function makeChips(name) {
+    const chips = {
+        tags: [],
+        subTags: new Set(),
+        add() {
+            let input = document.getElementById(name + "Tag");
+            if (!input) return;
+            let added = false;
+            let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
+            // pretty box ("reze (chainsaw man)") vs raw tag ("reze_(chainsaw_man)"):
+            // danTagForRequest reads dataset.raw so pretty text isn't shredded
+            chipsFromTyped(danTagForRequest(name + "Tag")).forEach(function(val) {
+                if (!chips.tags.includes(val)) {
+                    chips.tags.push(val);
+                    if (val === raw) chips.subTags.add(val);
+                    added = true;
+                }
+            });
+            if (added) { input.value = ""; delete input.dataset.raw; chips.render(); }
+        },
+        remove(tag) {
+            chips.tags = chips.tags.filter(function(t) { return t !== tag; });
+            chips.subTags.delete(tag);
+            chips.render();
+        },
+        render() {
+            let container = document.getElementById(name + "TagsContainer");
+            if (!container) return;
+            container.innerHTML = chips.tags.map(function(t, idx) {
+                let isNeg = t.startsWith('-');
+                let text = isNeg ? t.substring(1) : t;
+                // negatives stay warning; first pill main, dropdown picks sub,
+                // typed neutral
+                let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (chips.subTags.has(t) ? 'sub' : 'neutral'));
+                let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
+                let safeT = escJs(t);
+                return '<span class="v-tag ' + cls + '" onclick="' + name + 'Chips.remove(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
+            }).join('');
         }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderGelbooruTags(); }
+    };
+    return chips;
 }
-function removeGelbooruTag(tag) {
-    currentGelbooruTags = currentGelbooruTags.filter(function(t) { return t !== tag; });
-    gelbooruSubTags.delete(tag);
-    renderGelbooruTags();
-}
-function renderGelbooruTags() {
-    let container = document.getElementById("gelbooruTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentGelbooruTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        // ponytail: zerochan-style pills — negatives stay warning; else first
-        // pill is main, dropdown picks are sub, typed are neutral
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (gelbooruSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+
+const gelbooruChips = makeChips("gelbooru");
+function addGelbooruTag() { gelbooruChips.add(); }
 // --- NekosAPI tag dropdown (flat ~50-tag vocabulary, laid out in columns) ---
 let currentNekosapiTags = []; // tokens: 'tag' = include, '-tag' = exclude
 let nekosapiTagList = [];
@@ -1002,7 +1103,7 @@ function addWatcherTag() {
     let input = document.getElementById("watcherTag");
     if (!input) return;
     let added = false;
-    danTagForRequest('watcherTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
+    chipsFromTyped(danTagForRequest('watcherTag')).forEach(function(val) {
         if (!watcherTags.includes(val)) { watcherTags.push(val); added = true; }
     });
     if (added) { input.value = ""; delete input.dataset.raw; renderWatcherTags(); }
@@ -1061,9 +1162,9 @@ function renderGelWatcherList() {
                 <div style="font-size:11px; opacity:0.7;">${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
                 ${err}${pending}
             </div>
-            <button class="action-btn" onclick="editGelWatcher('${w.watcher_id}')">Edit</button>
-            <button class="action-btn" onclick="toggleGelWatcher('${w.watcher_id}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
-            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${w.watcher_id}')" title="Delete watcher" style="display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
+            <button class="action-btn" onclick="editGelWatcher('${escJs(w.watcher_id)}')">Edit</button>
+            <button class="action-btn" onclick="toggleGelWatcher('${escJs(w.watcher_id)}', ${!w.enabled})">${w.enabled ? "Disable" : "Enable"}</button>
+            <button class="action-btn stop-btn" onclick="deleteGelWatcher('${escJs(w.watcher_id)}')" title="Delete watcher" style="display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>`;
     }).join("");
 }
@@ -1080,7 +1181,7 @@ async function saveGelWatcher() {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const d = await r.json();
     if (!r.ok) { showToast(d.error || "Failed to save watcher", { warn: true }); return; }
-    showToast(editingWatcherId ? "Watcher updated — fresh baseline on next check" : "Watcher added — baseline on first check");
+    showToast(editingWatcherId ? "Watcher updated - fresh baseline on next check" : "Watcher added - baseline on first check");
     cancelGelWatcherEdit();
     await loadGelWatchers();
 }
@@ -1145,8 +1246,7 @@ function checkGelWatchersNow() {
 }
 
 // --- E-Shuushuu interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentEshuushuuTags = [];
-let eshuushuuSubTags = new Set();
+const eshuushuuChips = makeChips("eshuushuu");
 function addEshuushuuTag() {
     let input = document.getElementById("eshuushuuTag");
     if (!input) return;
@@ -1162,247 +1262,39 @@ function addEshuushuuTag() {
         vals = full.split(',').map(s => s.trim()).filter(Boolean);
     }
     vals.forEach(function(val) {
-        if (!currentEshuushuuTags.includes(val)) {
-            currentEshuushuuTags.push(val);
-            if (val === raw) eshuushuuSubTags.add(val);
+        if (!eshuushuuChips.tags.includes(val)) {
+            eshuushuuChips.tags.push(val);
+            if (val === raw) eshuushuuChips.subTags.add(val);
             added = true;
         }
     });
-    if (added) { input.value = ""; delete input.dataset.raw; renderEshuushuuTags(); }
+    if (added) { input.value = ""; delete input.dataset.raw; eshuushuuChips.render(); }
 }
-function removeEshuushuuTag(tag) {
-    currentEshuushuuTags = currentEshuushuuTags.filter(function(t) { return t !== tag; });
-    eshuushuuSubTags.delete(tag);
-    renderEshuushuuTags();
-}
-function renderEshuushuuTags() {
-    let container = document.getElementById("eshuushuuTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentEshuushuuTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (eshuushuuSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeEshuushuuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+eshuushuuChips.add = addEshuushuuTag;
 
 // --- Gsbooru interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentGsbooruTags = [];
-let gsbooruSubTags = new Set();
-function addGsbooruTag() {
-    let input = document.getElementById("gsbooruTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('gsbooruTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentGsbooruTags.includes(val)) {
-            currentGsbooruTags.push(val);
-            if (val === raw) gsbooruSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderGsbooruTags(); }
-}
-function removeGsbooruTag(tag) {
-    currentGsbooruTags = currentGsbooruTags.filter(function(t) { return t !== tag; });
-    gsbooruSubTags.delete(tag);
-    renderGsbooruTags();
-}
-function renderGsbooruTags() {
-    let container = document.getElementById("gsbooruTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentGsbooruTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (gsbooruSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeGsbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const gsbooruChips = makeChips("gsbooru");
+function addGsbooruTag() { gsbooruChips.add(); }
 
 // --- Konachan interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentKonaTags = [];
-let konaSubTags = new Set();
-function addKonaTag() {
-    let input = document.getElementById("konaTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('konaTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentKonaTags.includes(val)) {
-            currentKonaTags.push(val);
-            if (val === raw) konaSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderKonaTags(); }
-}
-function removeKonaTag(tag) {
-    currentKonaTags = currentKonaTags.filter(function(t) { return t !== tag; });
-    konaSubTags.delete(tag);
-    renderKonaTags();
-}
-function renderKonaTags() {
-    let container = document.getElementById("konaTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentKonaTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (konaSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeKonaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const konaChips = makeChips("kona");
+function addKonaTag() { konaChips.add(); }
 
 // --- Nekosia interactive tags (mirrors gelbooru; first chip is the category) ---
-let currentNekosiaTags = [];
-let nekosiaSubTags = new Set();
-function addNekosiaTag() {
-    let input = document.getElementById("nekosiaTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('nekosiaTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentNekosiaTags.includes(val)) {
-            currentNekosiaTags.push(val);
-            if (val === raw) nekosiaSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderNekosiaTags(); }
-}
-function removeNekosiaTag(tag) {
-    currentNekosiaTags = currentNekosiaTags.filter(function(t) { return t !== tag; });
-    nekosiaSubTags.delete(tag);
-    renderNekosiaTags();
-}
-function renderNekosiaTags() {
-    let container = document.getElementById("nekosiaTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentNekosiaTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (nekosiaSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeNekosiaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const nekosiaChips = makeChips("nekosia");
+function addNekosiaTag() { nekosiaChips.add(); }
 
 // --- Safebooru interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentSafeTags = [];
-let safeSubTags = new Set();
-function addSafeTag() {
-    let input = document.getElementById("safeTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('safeTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentSafeTags.includes(val)) {
-            currentSafeTags.push(val);
-            if (val === raw) safeSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderSafeTags(); }
-}
-function removeSafeTag(tag) {
-    currentSafeTags = currentSafeTags.filter(function(t) { return t !== tag; });
-    safeSubTags.delete(tag);
-    renderSafeTags();
-}
-function renderSafeTags() {
-    let container = document.getElementById("safeTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentSafeTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (safeSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeSafeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const safeChips = makeChips("safe");
+function addSafeTag() { safeChips.add(); }
 
 // --- Sankaku interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentSankakuTags = [];
-let sankakuSubTags = new Set();
-function addSankakuTag() {
-    let input = document.getElementById("sankakuTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('sankakuTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentSankakuTags.includes(val)) {
-            currentSankakuTags.push(val);
-            if (val === raw) sankakuSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderSankakuTags(); }
-}
-function removeSankakuTag(tag) {
-    currentSankakuTags = currentSankakuTags.filter(function(t) { return t !== tag; });
-    sankakuSubTags.delete(tag);
-    renderSankakuTags();
-}
-function renderSankakuTags() {
-    let container = document.getElementById("sankakuTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentSankakuTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (sankakuSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeSankakuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const sankakuChips = makeChips("sankaku");
+function addSankakuTag() { sankakuChips.add(); }
 
 // --- Yande.re interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentYandeTags = [];
-let yandeSubTags = new Set();
-function addYandeTag() {
-    let input = document.getElementById("yandeTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    danTagForRequest('yandeTag').trim().toLowerCase().split(/\s+/).filter(Boolean).forEach(function(val) {
-        if (!currentYandeTags.includes(val)) {
-            currentYandeTags.push(val);
-            if (val === raw) yandeSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderYandeTags(); }
-}
-function removeYandeTag(tag) {
-    currentYandeTags = currentYandeTags.filter(function(t) { return t !== tag; });
-    yandeSubTags.delete(tag);
-    renderYandeTags();
-}
-function renderYandeTags() {
-    let container = document.getElementById("yandeTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentYandeTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (yandeSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeYandeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const yandeChips = makeChips("yande");
+function addYandeTag() { yandeChips.add(); }
 
 // --- Zerochan interactive tags (mirrors rule34; joined with ',' for the worker) ---
 let currentZerochanTags = [];
@@ -1463,8 +1355,6 @@ async function showZeroSubtags(dropdown, input) {
     const items = (zeroSubtagCache[key] || []).filter(s => s && s.name && !currentZerochanTags.includes(s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
-    zeroSuggestItems = items.map(s => s.name);
-    zeroSuggestActiveIndex = -1;
     items.forEach((s) => {
         let div = document.createElement("div");
         div.className = "autosuggest-item";
@@ -1481,352 +1371,145 @@ async function showZeroSubtags(dropdown, input) {
     dropdown.style.display = "block";
 }
 
-// --- Rule34 Autosuggest ---
-let r34SuggestTimer = null;
-let r34SuggestActiveIndex = -1;
-let r34SuggestItems = [];
+// --- Autosuggest: one engine, five tag boxes -------------------------------
+// debounce + in-flight-seq guard + keyboard nav + click-away; each site only
+// supplies its deltas (endpoint, pick behavior, subtag hook, item shaping)
+function initAutosuggest(cfg) {
+    let timer = null;
+    let activeIndex = -1;
+    document.addEventListener("DOMContentLoaded", function() {
+        let input = document.getElementById(cfg.inputId);
+        let dropdown = document.getElementById(cfg.dropdownId);
+        if (!input || !dropdown) return;
+        input.removeAttribute("onkeydown");
 
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("rule34TagInput");
-    let dropdown = document.getElementById("rule34Autosuggest");
-    if (!input || !dropdown) return;
-
-    // Remove inline onkeydown from HTML to prevent double trigger
-    input.removeAttribute("onkeydown");
-
-    input.addEventListener("input", function() {
-        clearTimeout(r34SuggestTimer);
-        let val = input.value.trim();
-
-        // Handle negative tags correctly for suggest (strip minus for query)
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (queryVal.length < 2) {
-            dropdown.style.display = "none";
-            return;
+        function setActive(items) {
+            for (let i = 0; i < items.length; i++) items[i].classList.remove("active");
+            if (activeIndex > -1 && items[activeIndex]) {
+                items[activeIndex].classList.add("active");
+                items[activeIndex].scrollIntoView({ block: "nearest" });
+            }
         }
+        function close() { dropdown.style.display = "none"; }
 
-        r34SuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/rule34", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (data && data.length > 0) {
-                    r34SuggestItems = data;
-                    r34SuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item, index) => {
-                        let finalTag = isNegative ? '-' + item : item;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = finalTag;
-                            dropdown.style.display = "none";
-                            input.focus();
-                            addRule34Tag();
-                        };
-                        dropdown.appendChild(div);
+        input.addEventListener("input", function() {
+            clearTimeout(timer);
+            if (cfg.clearOnInput) cfg.clearOnInput(input);
+            let val = input.value.trim();
+            let isNegative = val.startsWith('-');
+            let queryVal = isNegative ? val.substring(1) : val;
+            if (!queryVal) {
+                if (cfg.showSubtags) { cfg.showSubtags(dropdown, input); return; }
+                close();
+                return;
+            }
+            if (queryVal.length < 2) { close(); return; }
+            timer = setTimeout(async () => {
+                // latest keystroke wins — an in-flight older fetch
+                // must not overwrite the newer dropdown
+                input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+                let mySeq = input.dataset.suggestSeq;
+                try {
+                    let resp = await fetch("/api/tags/" + cfg.endpoint, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                     });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
+                    let data = await resp.json();
+                    if (input.dataset.suggestSeq !== mySeq) return;
+                    if (cfg.skipIfEmptyInput && input.value.trim() === "") return;
+                    if (data && data.length > 0) {
+                        activeIndex = -1;
+                        dropdown.innerHTML = "";
+                        data.forEach((item) => {
+                            let name = cfg.itemName
+                                ? cfg.itemName(item)
+                                : (typeof item === "string" ? item : (item.tag || item.value || ""));
+                            if (!name) return;
+                            let finalTag = isNegative ? '-' + name : name;
+                            let div = document.createElement("div");
+                            div.className = "autosuggest-item";
+                            if (cfg.itemColor) div.style.color = cfg.itemColor(item) || '';
+                            div.textContent = cleanTagDisplay(finalTag);
+                            div.onclick = function() { cfg.pick(finalTag, input, dropdown); };
+                            dropdown.appendChild(div);
+                        });
+                        dropdown.style.display = "block";
+                    } else {
+                        close();
+                    }
+                } catch(e) {
+                    close();
                 }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400); // 400ms debounce
-    });
+            }, 400); // 400ms debounce
+        });
 
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                r34SuggestActiveIndex++;
-                if (r34SuggestActiveIndex >= items.length) r34SuggestActiveIndex = 0;
-                updateSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                r34SuggestActiveIndex--;
-                if (r34SuggestActiveIndex < 0) r34SuggestActiveIndex = items.length - 1;
-                updateSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (r34SuggestActiveIndex > -1 && items[r34SuggestActiveIndex]) {
-                    items[r34SuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addRule34Tag();
+        input.addEventListener("keydown", function(e) {
+            if (dropdown.style.display === "block") {
+                let items = dropdown.getElementsByClassName("autosuggest-item");
+                if (e.key === "ArrowDown") {
+                    activeIndex++;
+                    if (activeIndex >= items.length) activeIndex = 0;
+                    setActive(items);
+                    e.preventDefault();
+                } else if (e.key === "ArrowUp") {
+                    activeIndex--;
+                    if (activeIndex < 0) activeIndex = items.length - 1;
+                    setActive(items);
+                    e.preventDefault();
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (activeIndex > -1 && items[activeIndex]) {
+                        items[activeIndex].click();
+                    } else {
+                        close();
+                        cfg.enter();
+                    }
+                } else if (e.key === "Escape") {
+                    close();
                 }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addRule34Tag();
-            }
-        }
-    });
-
-    document.addEventListener("click", function(e) {
-        if (e.target !== input && e.target !== dropdown) {
-            dropdown.style.display = "none";
-        }
-    });
-
-    function updateSuggestActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (r34SuggestActiveIndex > -1 && items[r34SuggestActiveIndex]) {
-            items[r34SuggestActiveIndex].classList.add("active");
-            items[r34SuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
-    }
-});
-
-// --- E-Shuushuu Autosuggest (rows colored by tag type) ---
-let eshuSuggestTimer = null;
-let eshuSuggestActiveIndex = -1;
-const ESHU_TAG_COLOR = { 1: '#00e5e5', 2: '#ff69b4', 3: '#e67e00', 4: '#228b22' };
-
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("eshuushuuTag");
-    let dropdown = document.getElementById("eshuushuuAutosuggest");
-    if (!input || !dropdown) return;
-
-    // Remove inline onkeydown from HTML to prevent double trigger
-    input.removeAttribute("onkeydown");
-
-    input.addEventListener("input", function() {
-        clearTimeout(eshuSuggestTimer);
-        delete input.dataset.raw;
-        let val = input.value.trim();
-
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (queryVal.length < 2) {
-            dropdown.style.display = "none";
-            return;
-        }
-
-        eshuSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/eshuushuu", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (data && data.length > 0) {
-                    eshuSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let title = (item && item.title) || item;
-                        let finalTag = isNegative ? '-' + title : title;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        // ponytail: text color only, gallery-pill hues
-                        div.style.color = ESHU_TAG_COLOR[item && item.type] || '';
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = (isNegative ? '-' : '') + cleanTagDisplay(title);
-                            input.dataset.raw = finalTag;
-                            dropdown.style.display = "none";
-                            input.focus();
-                            if (typeof addEshuushuuTag === 'function') addEshuushuuTag();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
+            } else {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    cfg.enter();
+                } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "" && cfg.showSubtags) {
+                    e.preventDefault();
+                    cfg.showSubtags(dropdown, input);
                 }
-            } catch(e) {
-                dropdown.style.display = "none";
             }
-        }, 400); // 400ms debounce
+        });
+        if (cfg.showSubtags) {
+            input.addEventListener("focus", function() {
+                if (input.value.trim() === "") cfg.showSubtags(dropdown, input);
+            });
+        }
+        document.addEventListener("click", function(e) {
+            if (e.target !== input && e.target !== dropdown) close();
+        });
     });
+}
 
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                eshuSuggestActiveIndex++;
-                if (eshuSuggestActiveIndex >= items.length) eshuSuggestActiveIndex = 0;
-                updateEshuActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                eshuSuggestActiveIndex--;
-                if (eshuSuggestActiveIndex < 0) eshuSuggestActiveIndex = items.length - 1;
-                updateEshuActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (eshuSuggestActiveIndex > -1 && items[eshuSuggestActiveIndex]) {
-                    items[eshuSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addEshuushuuTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addEshuushuuTag();
-            }
-        }
-    });
+// pick adds the tag straight to the chip list and clears the box
+function pickAddTag(addFn) {
+    return function(finalTag, input, dropdown) {
+        input.value = "";
+        dropdown.style.display = "none";
+        addFn(finalTag);
+        input.focus();
+    };
+}
 
-    document.addEventListener("click", function(e) {
-        if (e.target !== input && e.target !== dropdown) {
-            dropdown.style.display = "none";
-        }
-    });
-
-    function updateEshuActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (eshuSuggestActiveIndex > -1 && items[eshuSuggestActiveIndex]) {
-            items[eshuSuggestActiveIndex].classList.add("active");
-            items[eshuSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
+initAutosuggest({
+    inputId: "rule34TagInput", dropdownId: "rule34Autosuggest", endpoint: "rule34",
+    enter: () => addRule34Tag(),
+    pick: function(finalTag, input, dropdown) {
+        input.value = finalTag;
+        dropdown.style.display = "none";
+        input.focus();
+        addRule34Tag();
     }
 });
 
 // --- Zerochan tag box: empty shows sub-tags of the last tag, typing suggests ---
-let zeroSuggestTimer = null;
-let zeroSuggestActiveIndex = -1;
-let zeroSuggestItems = [];
-
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("zeroTag");
-    let dropdown = document.getElementById("zeroAutosuggest");
-    if (!input || !dropdown) return;
-
-    input.addEventListener("input", function() {
-        clearTimeout(zeroSuggestTimer);
-        let val = input.value.trim();
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (!queryVal) { showZeroSubtags(dropdown, input); return; }
-        if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
-
-        zeroSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/zerochan", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (input.value.trim() === "") return;
-                if (data && data.length > 0) {
-                    zeroSuggestItems = data;
-                    zeroSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let finalTag = isNegative ? '-' + item : item;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = "";
-                            dropdown.style.display = "none";
-                            addZerochanTagName(finalTag);
-                            input.focus();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
-                }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400);
-    });
-
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                zeroSuggestActiveIndex++;
-                if (zeroSuggestActiveIndex >= items.length) zeroSuggestActiveIndex = 0;
-                updateZeroSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                zeroSuggestActiveIndex--;
-                if (zeroSuggestActiveIndex < 0) zeroSuggestActiveIndex = items.length - 1;
-                updateZeroSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (zeroSuggestActiveIndex > -1 && items[zeroSuggestActiveIndex]) {
-                    items[zeroSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addZerochanTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addZerochanTag();
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "") {
-                e.preventDefault();
-                showZeroSubtags(dropdown, input);
-            }
-        }
-    });
-
-    input.addEventListener("focus", function() {
-        if (input.value.trim() === "") showZeroSubtags(dropdown, input);
-    });
-
-        document.addEventListener("click", function(e) {
-            if (e.target !== input && e.target !== dropdown) {
-                dropdown.style.display = "none";
-            }
-        });
-
-        function updateZeroSuggestActive(items) {
-            for (let i = 0; i < items.length; i++) {
-                items[i].classList.remove("active");
-            }
-            if (zeroSuggestActiveIndex > -1 && items[zeroSuggestActiveIndex]) {
-                items[zeroSuggestActiveIndex].classList.add("active");
-                items[zeroSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-            }
-        }
-});
-
 // --- AnimeDL tag box: same pattern, joined with '&&', child tags standalone ---
 let currentAnimeDlTags = [];
 let animeDlSubtagCache = {};
@@ -1881,7 +1564,6 @@ async function showAnimeDlSubtags(dropdown, input) {
     const items = (animeDlSubtagCache[key] || []).filter(s => s && s.name && !currentAnimeDlTags.includes(s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
-    animeDlSuggestActiveIndex = -1;
     items.forEach((s) => {
         let div = document.createElement("div");
         div.className = "autosuggest-item";
@@ -1898,131 +1580,20 @@ async function showAnimeDlSubtags(dropdown, input) {
     dropdown.style.display = "block";
 }
 
-let animeDlSuggestTimer = null;
-let animeDlSuggestActiveIndex = -1;
-
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("animeDlTag");
-    let dropdown = document.getElementById("animeDlAutosuggest");
-    if (!input || !dropdown) return;
-
-    input.addEventListener("input", function() {
-        clearTimeout(animeDlSuggestTimer);
-        let val = input.value.trim();
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (!queryVal) { showAnimeDlSubtags(dropdown, input); return; }
-        if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
-
-        animeDlSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/anime_dl", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (input.value.trim() === "") return;
-                if (data && data.length > 0) {
-                    animeDlSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let name = (typeof item === "string") ? item : (item.tag || item.value || "");
-                        if (!name) return;
-                        let finalTag = isNegative ? '-' + name : name;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = "";
-                            dropdown.style.display = "none";
-                            addAnimeDlTagName(finalTag);
-                            input.focus();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
-                }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400);
-    });
-
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                animeDlSuggestActiveIndex++;
-                if (animeDlSuggestActiveIndex >= items.length) animeDlSuggestActiveIndex = 0;
-                updateAnimeDlSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                animeDlSuggestActiveIndex--;
-                if (animeDlSuggestActiveIndex < 0) animeDlSuggestActiveIndex = items.length - 1;
-                updateAnimeDlSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (animeDlSuggestActiveIndex > -1 && items[animeDlSuggestActiveIndex]) {
-                    items[animeDlSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addAnimeDlTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addAnimeDlTag();
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "") {
-                e.preventDefault();
-                showAnimeDlSubtags(dropdown, input);
-            }
-        }
-    });
-
-    input.addEventListener("focus", function() {
-        if (input.value.trim() === "") showAnimeDlSubtags(dropdown, input);
-    });
-
-        document.addEventListener("click", function(e) {
-            if (e.target !== input && e.target !== dropdown) {
-                dropdown.style.display = "none";
-            }
-        });
-
-    function updateAnimeDlSuggestActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (animeDlSuggestActiveIndex > -1 && items[animeDlSuggestActiveIndex]) {
-            items[animeDlSuggestActiveIndex].classList.add("active");
-            items[animeDlSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
-    }
-});
-
 // --- Danbooru tag box: same pattern, joined with ' ', related tags as subs ---
 let currentDanTags = [];
 let danSubtagCache = {};
 let danSubTags = new Set();
 function addDanTagName(name, viaSubtag) {
-    let val = (name || "").trim().toLowerCase();
-    if (val && !currentDanTags.includes(val)) {
-        currentDanTags.push(val);
-        if (viaSubtag) danSubTags.add(val);
-        renderDanTags();
-    }
+    let added = false;
+    chipsFromTyped(name).forEach(function(val) {
+        if (!currentDanTags.includes(val)) {
+            currentDanTags.push(val);
+            if (viaSubtag) danSubTags.add(val);
+            added = true;
+        }
+    });
+    if (added) renderDanTags();
 }
 function addDanTag() {
     let input = document.getElementById("danTag");
@@ -2066,7 +1637,6 @@ async function showDanSubtags(dropdown, input) {
     const items = (danSubtagCache[key] || []).filter(s => s && (s.tag || s.name) && !currentDanTags.includes(s.tag || s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
-    danSuggestActiveIndex = -1;
     items.forEach((s) => {
         const nm = s.tag || s.name;
         let div = document.createElement("div");
@@ -2083,118 +1653,31 @@ async function showDanSubtags(dropdown, input) {
     dropdown.style.display = "block";
 }
 
-let danSuggestTimer = null;
-let danSuggestActiveIndex = -1;
 
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("danTag");
-    let dropdown = document.getElementById("danAutosuggest");
-    if (!input || !dropdown) return;
+// Zerochan: empty input lists sub-tags of the last tag; typing suggests
+// (the old block pointed at "zerochanTag"/"zerochanAutosuggest" — ids that
+// exist nowhere — so the whole suggest never ran; these are the real ids)
+initAutosuggest({
+    inputId: "zeroTag", dropdownId: "zeroAutosuggest", endpoint: "zerochan",
+    skipIfEmptyInput: true, showSubtags: showZeroSubtags,
+    enter: () => addZerochanTag(),
+    pick: pickAddTag(addZerochanTagName)
+});
 
-    input.addEventListener("input", function() {
-        clearTimeout(danSuggestTimer);
-        let val = input.value.trim();
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
+// AnimeDL: same pattern, joined with '&&', child tags standalone
+initAutosuggest({
+    inputId: "animeDlTag", dropdownId: "animeDlAutosuggest", endpoint: "anime_dl",
+    skipIfEmptyInput: true, showSubtags: showAnimeDlSubtags,
+    enter: () => addAnimeDlTag(),
+    pick: pickAddTag(addAnimeDlTagName)
+});
 
-        if (!queryVal) { showDanSubtags(dropdown, input); return; }
-        if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
-
-        danSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/dan", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (input.value.trim() === "") return;
-                if (data && data.length > 0) {
-                    danSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let name = (typeof item === "string") ? item : (item.tag || item.value || "");
-                        if (!name) return;
-                        let finalTag = isNegative ? '-' + name : name;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = "";
-                            dropdown.style.display = "none";
-                            addDanTagName(finalTag);
-                            input.focus();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
-                }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400);
-    });
-
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                danSuggestActiveIndex++;
-                if (danSuggestActiveIndex >= items.length) danSuggestActiveIndex = 0;
-                updateDanSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                danSuggestActiveIndex--;
-                if (danSuggestActiveIndex < 0) danSuggestActiveIndex = items.length - 1;
-                updateDanSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (danSuggestActiveIndex > -1 && items[danSuggestActiveIndex]) {
-                    items[danSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addDanTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addDanTag();
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "") {
-                e.preventDefault();
-                showDanSubtags(dropdown, input);
-            }
-        }
-    });
-
-    input.addEventListener("focus", function() {
-        if (input.value.trim() === "") showDanSubtags(dropdown, input);
-    });
-
-    document.addEventListener("click", function(e) {
-        if (e.target !== input && e.target !== dropdown) {
-            dropdown.style.display = "none";
-        }
-    });
-
-    function updateDanSuggestActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (danSuggestActiveIndex > -1 && items[danSuggestActiveIndex]) {
-            items[danSuggestActiveIndex].classList.add("active");
-            items[danSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
-    }
+// Danbooru: same pattern, joined with ' ', related tags as subs
+initAutosuggest({
+    inputId: "danTag", dropdownId: "danAutosuggest", endpoint: "dan",
+    skipIfEmptyInput: true, showSubtags: showDanSubtags,
+    enter: () => addDanTag(),
+    pick: pickAddTag(addDanTagName)
 });
 
 
@@ -2250,7 +1733,31 @@ function enhanceSelect(select) {
         if (label.textContent === '') label.textContent = select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : '';
     }
     renderItems();
-    trigger.onclick = (e) => { e.stopPropagation(); wrap.classList.toggle('open'); };
+    // fixed-position open: an absolute menu inside a scrolling panel
+    // (modals list boxes) gets clipped — the trigger rect pins the menu at
+    // the spot absolute positioning gives. Coordinates must be measured
+    // against the menu's REAL containing block: any ancestor with
+    // filter/backdrop-filter/transform (the app's glass panel) replaces the
+    // viewport as the fixed-position origin. A zero-position probe returns
+    // that origin in viewport coords; the trigger's viewport rect minus the
+    // probe lands the menu under the trigger in every engine.
+    trigger.onclick = (e) => {
+        e.stopPropagation();
+        if (!wrap.classList.contains('open')) {
+            const r = trigger.getBoundingClientRect();
+            menu.style.position = 'fixed';
+            menu.style.minWidth = Math.max(r.width, 150) + 'px';
+            wrap.classList.add('open');
+            menu.style.left = '0px';
+            menu.style.top = '0px';
+            const probe = menu.getBoundingClientRect();
+            menu.style.left = (r.left - probe.left) + 'px';
+            menu.style.top = (r.bottom - probe.top + 4) + 'px';
+        } else {
+            wrap.classList.remove('open');
+        }
+    };
+    document.addEventListener('scroll', e => { if (!wrap.contains(e.target)) wrap.classList.remove('open'); }, true);
     document.addEventListener('click', () => wrap.classList.remove('open'));
     if (window.MutationObserver) {
         const mo = new MutationObserver(renderItems);
@@ -2405,6 +1912,15 @@ function danTagForRequest(inputId) {
     return val;
 }
 
+// underscore-native boorus (dan/rule34/gelbooru/...): free-typed spaces are
+// part of the tag name ("hiiragi yuuko" = hiiragi_yuuko), commas separate
+// tags — same rule the e-shuushuu adder already uses for its space tags
+function chipsFromTyped(str) {
+    return String(str || "").trim().toLowerCase().split(',')
+        .map(function(s) { return s.trim().replace(/\s+/g, '_'); })
+        .filter(Boolean);
+}
+
 document.addEventListener("DOMContentLoaded", function() {
     enhanceAllSelects();
     setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay);
@@ -2435,9 +1951,14 @@ socket.on("python_log", function (data) {
     logToConsole(data.worker, data.msg);
 });
 
+socket.on("conversion_progress", function (data) {
+    if (!data || !data.worker) return;
+    renderConvertingBar(data.worker, data.done || 0, data.total || 0, data.current);
+});
+
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
-    if (!data || data.stopped || data.more) return;
+    if (!data || data.stopped || data.more || data.converting) return;
     const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
     const dup = z ? ` (${z} duplicates removed)` : "";
     const jobs = data.jobs || 1;
@@ -2484,12 +2005,64 @@ socket.on("update_history", function () {
     }, 1500);
 });
 
+socket.on("scan_progress", function (data) {
+    // live image count while a scan walks a new folder: patch the pill text
+    // in place; the rescan_done reload brings the pages themselves up to date
+    const pill = document.querySelector(".gallery-count-pill");
+    if (pill && data && typeof data.total === "number" &&
+            pill.lastChild && pill.lastChild.nodeType === 3) pill.lastChild.textContent = data.total;
+});
+
 socket.on("gallery_rescan_done", function (data) {
+    const silent = !!(data && (data.startup || data.skipped));
     if (data && data.success) {
-        showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" });
-        loadGallery(1);
+        if (!silent) showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" });
+        // a pending jump against the pre-scan page count retries here, so it
+        // can only be discarded by the finished dataset itself (server clamp)
+        loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage);
         populateGallerySiteFilter(true);
     } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" });
+});
+
+// images deleted server-side (delete buttons, dedup kill, auto-cull) must not
+// keep living as dead log cards with broken thumbnails
+socket.on("image_deleted", function (data) {
+    const fn = (data && data.filename) || "";
+    const filepath = (data && data.filepath) || "";
+    const id = (data && data.id) || "";
+    if (!filepath && !fn && !id) return;
+    // A path is the identity. Basename fallback is reserved for older server
+    // events that predate filepath/id payloads.
+    markDeleted(filepath, filepath ? "" : fn);
+    if (id) {
+        const card = document.querySelector(`.gallery-card[data-id="${CSS.escape(String(id))}"]`);
+        if (card) card.remove();
+    }
+    // The server's replacement/delete cleanup also removes the matching
+    // history row. Keep an already-open History tab in sync without a reload.
+    if (filepath && typeof imageHistory !== "undefined" && Array.isArray(imageHistory)) {
+        const before = imageHistory.length;
+        imageHistory = imageHistory.filter(function (entry) {
+            return normPath(entry.filepath || "") !== normPath(filepath);
+        });
+        if (imageHistory.length !== before && typeof renderImageHistory === "function") {
+            renderImageHistory();
+        }
+    }
+    document.querySelectorAll(".image-card-log img[data-ofi]").forEach(function (img) {
+        const candidate = normPath(img.dataset.ofi || "");
+        let hit = filepath ? candidate === normPath(filepath) : false;
+        if (!filepath && fn) {
+            const tail = candidate.split("/").pop();
+            let decoded = tail;
+            try { decoded = decodeURIComponent(tail); } catch (e) {}
+            hit = decoded === fn;
+        }
+        if (hit) {
+            const card = img.closest(".image-card-log");
+            if (card) card.remove();
+        }
+    });
 });
 
 socket.on("pinterest_progress", function (data) {
@@ -2569,7 +2142,7 @@ function renderQueueChip(data) {
         const text = document.createElement("span");
         if (acts.length) {
             text.textContent = `▶ ${siteLabel(site)}: ${displayTagList(acts[0].tag, site)}`;
-            text.title = `${acts[0].site} — ${acts[0].tag}`;
+            text.title = `${acts[0].site}: ${acts[0].tag}`;
         } else {
             text.textContent = `${siteLabel(site)}: ${items.length} queued`;
         }
@@ -2614,7 +2187,7 @@ function renderQueueChip(data) {
             const label = document.createElement("span");
             label.className = "queue-label";
             label.textContent = displayTagList(j.tag, j.site);
-            label.title = `${j.site} — ${j.tag}`;
+            label.title = `${j.site}: ${j.tag}`;
 
             const x = document.createElement("button");
             x.className = "queue-x";
@@ -2913,7 +2486,11 @@ function updateNekosLifeFormat() {
 async function saveProxySettings() {
     globalNetConfig.use_proxy = document.getElementById("proxyEnabled").checked;
     globalNetConfig.proxy_url = document.getElementById("proxyUrl").value;
-    try { await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) }); showToast("Proxy updated.", { icon: CHECK_ICON }); } catch (e) {}
+    try {
+        const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        showToast("Proxy updated.", { icon: CHECK_ICON });
+    } catch (e) { showToast("Proxy save failed - check the connection", { warn: true, icon: WARN_ICON }); }
 }
 
 async function browseFolder() {
@@ -2981,6 +2558,7 @@ function openTab(tabName, btn) {
         loadTagsData();
     }
     if (tabName === "Notifications") loadNotifications();
+    if (tabName === "Planning") loadPlanning();
 }
 
 // --- Multi-source notifications ---
@@ -2995,7 +2573,7 @@ const GEL_RATING_LABEL = { g: "Safe", s: "Sensitive", q: "Questionable", e: "NSF
 const NOTIF_SOURCES = {
     gelbooru: {
         name: "Gelbooru",
-        empty: "No watcher notifications yet — matching posts from your Gelbooru watchers will appear here.",
+        empty: "No watcher notifications yet - matching posts from your Gelbooru watchers will appear here.",
         toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
         flash: n => gelbooruGotoFlash(n),
         card: (n, idx) => gelbooruNotifCard(n, idx),
@@ -3003,7 +2581,7 @@ const NOTIF_SOURCES = {
     },
     pixiv: {
         name: "Pixiv",
-        empty: "No notifications yet — new works from the artists you follow will appear here.",
+        empty: "No notifications yet - new works from the artists you follow will appear here.",
         toast: n => `${n} new artwork${n === 1 ? "" : "s"} from artists you follow`,
         flash: n => pixivGotoArtist(String(n.artist_id || "").replace(/[^0-9]/g, "")),
         card: (n, idx) => pixivNotifCard(n, idx),
@@ -3251,7 +2829,7 @@ window.addEventListener("error", function(e) {
     try {
         const stack = (e.error && e.error.stack ? String(e.error.stack) : "").split("\n").slice(0, 3).join(" | ");
         const where = (e.filename ? String(e.filename).split("/").pop() : "") + (e.lineno ? ":" + e.lineno : "");
-        showToast("Error: " + (e.message || "unknown") + (where ? " @" + where : "") + (stack ? " — " + stack : ""), { warn: true, sticky: true, icon: WARN_ICON });
+        showToast("Error: " + (e.message || "unknown") + (where ? " @" + where : "") + (stack ? " - " + stack : ""), { warn: true, sticky: true, icon: WARN_ICON });
     } catch (_) {}
 });
 
@@ -3299,7 +2877,7 @@ function toggleWorker(workerName) {
     if (workerRunning[workerName]) stopWorker(workerName);
     else startWorker(workerName);
 }
-function buildWorkerPayload(workerName) {
+function buildWorkerPayload(workerName, allowEmpty) {
     let payload = { worker: workerName, net_config: { ...globalNetConfig } };
     payload.net_config.api_timeout = document.getElementById("apiTimeout").value;
     payload.net_config.retry_wait = document.getElementById("retryWait").value;
@@ -3308,14 +2886,14 @@ function buildWorkerPayload(workerName) {
     if (workerName === 'zero') { payload.tag = currentZerochanTags.join(','); payload.limit = document.getElementById('zeroLimit').value; }
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
     else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; payload.format = document.getElementById('nekosLifeFormat').value; }
-    else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
-    else if (workerName === 'gelbooru') { payload.tag = currentGelbooruTags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !currentGelbooruTags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
-    else if (workerName === 'gsbooru') { payload.tag = currentGsbooruTags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
-    else if (workerName === 'yande') { payload.tag = currentYandeTags.join(' '); payload.limit = document.getElementById('yandeLimit').value; payload.rating = document.getElementById('yandeRating').value; }
+    else if (workerName === 'safe') { payload.tag = safeChips.tags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
+    else if (workerName === 'gelbooru') { payload.tag = gelbooruChips.tags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !gelbooruChips.tags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
+    else if (workerName === 'gsbooru') { payload.tag = gsbooruChips.tags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
+    else if (workerName === 'yande') { payload.tag = yandeChips.tags.join(' '); payload.limit = document.getElementById('yandeLimit').value; payload.rating = document.getElementById('yandeRating').value; }
     else if (workerName === 'dan') { payload.tag = currentDanTags.join(' '); payload.limit = document.getElementById('danLimit').value; payload.rating = document.getElementById('danRating').value; let format = document.getElementById('danFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('danExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
-    else if (workerName === 'kona') { payload.tag = currentKonaTags.join(' '); payload.limit = document.getElementById('konaLimit').value; payload.rating = document.getElementById('konaRating').value; let format = document.getElementById('konaFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('konaExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
+    else if (workerName === 'kona') { payload.tag = konaChips.tags.join(' '); payload.limit = document.getElementById('konaLimit').value; payload.rating = document.getElementById('konaRating').value; let format = document.getElementById('konaFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('konaExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
     else if (workerName === 'rule34') { payload.tag = currentRule34Tags.join(' '); payload.limit = document.getElementById('rule34Limit').value; payload.method = document.getElementById('rule34Method').value; payload.sort_type = document.getElementById('rule34SortType').value; payload.sort_order = document.getElementById('rule34SortOrder').value; let format = document.getElementById('rule34Format').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'gifs') { ex.push('-video'); ex.push('-image'); } else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('exGif').checked) ex.push('-gif'); if (document.getElementById('exComic').checked) ex.push('-comic'); if (document.getElementById('ex3D').checked) ex.push('-3d'); payload.exclusions = ex; payload.exclude_ai = document.getElementById('rule34-exclude-ai').checked; }
-    else if (workerName === 'sankaku') { payload.tag = currentSankakuTags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; if (document.getElementById('sankakuExcludeAi').checked && !currentSankakuTags.includes('-ai-created')) payload.tag += " -ai-created"; }
+    else if (workerName === 'sankaku') { payload.tag = sankakuChips.tags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; if (document.getElementById('sankakuExcludeAi').checked && !sankakuChips.tags.includes('-ai-created')) payload.tag += " -ai-created"; }
     else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join(' '); payload.limit = document.getElementById('animeDlLimit').value; }
     else if (workerName === 'pinterest') { payload.tag = document.getElementById('pinterestTag').value; payload.limit = document.getElementById('pinterestLimit').value; payload.is_search = document.getElementById('pinterestMode').value === 'search'; payload.min_w = parseInt(document.getElementById('pinterestMinW').value) || 0; payload.min_h = parseInt(document.getElementById('pinterestMinH').value) || 0; }
     else if (workerName === 'pixiv') {
@@ -3326,8 +2904,8 @@ function buildWorkerPayload(workerName) {
             payload.tag = 'ranking:' + ranking;
         } else {
             let val = document.getElementById('pixivTag').value.trim();
-            if (!val) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return null; }
-            payload.tag = mode + ':' + val;
+            if (!val && !allowEmpty) { logToConsole('pixiv', 'Error: Please enter a user ID or search term'); return null; }
+            payload.tag = val ? (mode + ':' + val) : '';
         }
 
         payload.limit = document.getElementById('pixivLimit').value;
@@ -3336,7 +2914,7 @@ function buildWorkerPayload(workerName) {
         payload.exclusions = [];
     }
     else if (workerName === 'eshuushuu') {
-        payload.tag = currentEshuushuuTags.join(' ');
+        payload.tag = eshuushuuChips.tags.join(' ');
         payload.user_id = document.getElementById('eshuushuuUser').value;
         payload.limit = document.getElementById('eshuushuuLimit').value;
     }
@@ -3346,23 +2924,26 @@ function buildWorkerPayload(workerName) {
         payload.limit = document.getElementById('nekosapiLimit').value;
         payload.rating = document.getElementById('nekosapiRating').value;
     }
+    else if (workerName === 'x') { payload.tag = document.getElementById('xTag').value; payload.limit = document.getElementById('xLimit').value; }
     else if (workerName === 'nekosia') {
-        payload.tag = currentNekosiaTags.join(' ');
+        payload.tag = nekosiaChips.tags.join(' ');
         payload.limit = document.getElementById('nekosiaLimit').value;
         payload.rating = document.getElementById('nekosiaRating').value;
     }
 
     // ponytail: don't fire a worker with no query — it scans nothing and
     // the empty limit box (now possible) already defaults server-side
-    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia'];
-    if (TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
+    // (allowEmpty = settings-only START with a waiting queue: the chips were
+    // cleared at enqueue, only limit/rating/... travel with this payload)
+    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia', 'x'];
+    if (!allowEmpty && TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
-        logToConsole(workerName, "Error: tag is empty — nothing to search");
+        logToConsole(workerName, "Error: tag is empty - nothing to search");
         return null;
     }
-    if (workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
+    if (!allowEmpty && workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
         showToast("Enter a tag or user ID first");
-        logToConsole('eshuushuu', "Error: tag and user ID are both empty — nothing to search");
+        logToConsole('eshuushuu', "Error: tag and user ID are both empty - nothing to search");
         return null;
     }
 
@@ -3374,25 +2955,34 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'zero') { currentZerochanTags = []; zerochanSubTags.clear(); renderZerochanTags(); document.getElementById('zeroTag').value = ''; }
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
-    if (workerName === 'gelbooru') { currentGelbooruTags = []; gelbooruSubTags.clear(); renderGelbooruTags(); document.getElementById('gelbooruTag').value = ''; }
+    if (workerName === 'gelbooru') { gelbooruChips.tags = []; gelbooruChips.subTags.clear(); gelbooruChips.render(); document.getElementById('gelbooruTag').value = ''; }
     if (workerName === 'nekosapi') { currentNekosapiTags = []; syncNekosapiTags(); }
-    if (workerName === 'eshuushuu') { currentEshuushuuTags = []; eshuushuuSubTags.clear(); renderEshuushuuTags(); document.getElementById('eshuushuuTag').value = ''; }
-    if (workerName === 'gsbooru') { currentGsbooruTags = []; gsbooruSubTags.clear(); renderGsbooruTags(); document.getElementById('gsbooruTag').value = ''; }
-    if (workerName === 'kona') { currentKonaTags = []; konaSubTags.clear(); renderKonaTags(); document.getElementById('konaTag').value = ''; }
-    if (workerName === 'nekosia') { currentNekosiaTags = []; nekosiaSubTags.clear(); renderNekosiaTags(); document.getElementById('nekosiaTag').value = ''; }
-    if (workerName === 'safe') { currentSafeTags = []; safeSubTags.clear(); renderSafeTags(); document.getElementById('safeTag').value = ''; }
-    if (workerName === 'sankaku') { currentSankakuTags = []; sankakuSubTags.clear(); renderSankakuTags(); document.getElementById('sankakuTag').value = ''; }
-    if (workerName === 'yande') { currentYandeTags = []; yandeSubTags.clear(); renderYandeTags(); document.getElementById('yandeTag').value = ''; }
+    if (workerName === 'eshuushuu') { eshuushuuChips.tags = []; eshuushuuChips.subTags.clear(); eshuushuuChips.render(); document.getElementById('eshuushuuTag').value = ''; }
+    if (workerName === 'gsbooru') { gsbooruChips.tags = []; gsbooruChips.subTags.clear(); gsbooruChips.render(); document.getElementById('gsbooruTag').value = ''; }
+    if (workerName === 'kona') { konaChips.tags = []; konaChips.subTags.clear(); konaChips.render(); document.getElementById('konaTag').value = ''; }
+    if (workerName === 'nekosia') { nekosiaChips.tags = []; nekosiaChips.subTags.clear(); nekosiaChips.render(); document.getElementById('nekosiaTag').value = ''; }
+    if (workerName === 'safe') { safeChips.tags = []; safeChips.subTags.clear(); safeChips.render(); document.getElementById('safeTag').value = ''; }
+    if (workerName === 'sankaku') { sankakuChips.tags = []; sankakuChips.subTags.clear(); sankakuChips.render(); document.getElementById('sankakuTag').value = ''; }
+    if (workerName === 'yande') { yandeChips.tags = []; yandeChips.subTags.clear(); yandeChips.render(); document.getElementById('yandeTag').value = ''; }
     // plain-text boxes (no tag-chip state): empty the field that was queued
     if (workerName === 'pixiv') document.getElementById('pixivTag').value = '';
     if (workerName === 'pinterest') document.getElementById('pinterestTag').value = '';
+    if (workerName === 'x') document.getElementById('xTag').value = '';
 }
 
 function startWorker(workerName) {
     delete stoppedWorker[workerName];
     if (queuedCounts[workerName]) {
-        // jobs are already waiting — START kicks off the head of the queue
-        socket.emit("start_worker", { worker: workerName });
+        // jobs are already waiting — START kicks the head and stamps this
+        // form's limit/rating/... onto every waiting job (settings_only: the
+        // chips were cleared at enqueue, so no new job is appended)
+        const payload = buildWorkerPayload(workerName, true);
+        if (payload) {
+            payload.settings_only = true;
+            socket.emit("start_worker", payload);
+        } else {
+            socket.emit("start_worker", { worker: workerName });
+        }
     } else {
         const payload = buildWorkerPayload(workerName);
         if (!payload) return false;
@@ -3461,6 +3051,8 @@ async function loadApiSettings() {
     document.getElementById("pinterestPassword").value = settings.pinterest_password || "";
     document.getElementById("pixivToken").value = settings.pixiv_refresh_token || "";
     document.getElementById("pixivCookie").value = settings.pixiv_cookie || "";
+    document.getElementById("xCookies").value = settings.x_cookies || "";
+    document.getElementById("xUsername").value = settings.x_username || "";
 }
 
 async function saveApiSettings() {
@@ -3482,11 +3074,48 @@ async function saveApiSettings() {
         pinterest_email: document.getElementById("pinterestEmail").value.trim(),
         pixiv_refresh_token: document.getElementById("pixivToken").value.trim(),
         pixiv_cookie: document.getElementById("pixivCookie").value.trim(),
-        pinterest_password: document.getElementById("pinterestPassword").value.trim()
+        pinterest_password: document.getElementById("pinterestPassword").value.trim(),
+        x_cookies: document.getElementById("xCookies").value.trim(),
+        x_username: document.getElementById("xUsername").value.trim()
     };
     let resp = await fetch("/api/api-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     let result = await resp.json();
     return resp.ok && result.success ? "Saved!" : "Could not save API settings.";
+}
+
+// X cookie import: native picker on KDE (webview file input opens the file
+// manager there), hidden file-input fallback elsewhere. Both routes end
+// with a PATH in the xCookies field — the worker reads the file itself.
+function _fillXCookie(path) {
+    const field = document.getElementById("xCookies");
+    field.value = path;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    showToast("Cookie file imported - press Save Settings");
+}
+
+async function importXCookie() {
+    try {
+        let resp = await fetch("/api/file/browse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "cookies" }) });
+        if (resp.ok) {
+            let data = await resp.json();
+            if (data.cancelled) return;
+            if (data.path) { _fillXCookie(data.path); return; }
+        }
+    } catch (e) {}
+    document.getElementById("xCookieFile").click();
+}
+
+async function xCookieFileChosen(fileInput) {
+    if (!fileInput.files || fileInput.files.length === 0) return;
+    let formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+    try {
+        let resp = await fetch("/api/import-x-cookies", { method: "POST", body: formData });
+        let data = await resp.json();
+        if (data.success && data.path) _fillXCookie(data.path);
+        else showToast(data.error || "Could not import cookie file");
+    } catch (e) { showToast("Cookie import failed: " + e); }
+    fileInput.value = "";
 }
 
 async function startPixivLogin() {
@@ -3675,7 +3304,7 @@ function parseHistoryQuery(q) {
         range = { from: Date.now() - 86400000, to: Date.now() };
         toks = [];
     }
-    const terms = toks.map(t => t.replace(/_/g, " "));
+    const terms = toks.map(t => t.replace(/_/g, " ").replace(/"/g, ""));
     return { terms, range };
 }
 function dateFilterRange(f) {
@@ -3703,7 +3332,7 @@ function historySearchInput(v) {
     historyQuery = v;
     imageHistoryVisible = 30;
     renderHistory();
-    renderImageHistory();
+    reloadImgHist();
 }
 // custom date+time picker (native datetime-local has no time UI in webkit)
 const HP_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -3824,9 +3453,8 @@ function hpApply() {
     } else {
         historyDateFilter = f;
         dateBtnState(s.btn, true);
-        imageHistoryVisible = 30;
         renderHistory();
-        renderImageHistory();
+        reloadImgHist();
     }
     historyPickerClose();
 }
@@ -3840,9 +3468,8 @@ function hpClear() {
     } else {
         historyDateFilter = null;
         dateBtnState(s.btn, false);
-        imageHistoryVisible = 30;
         renderHistory();
-        renderImageHistory();
+        reloadImgHist();
     }
     historyPickerClose();
 }
@@ -3853,24 +3480,23 @@ function dateBtnState(btn, active) {
 async function loadTagsData() {
     try {
         // ponytail: independent reads — never serialize round trips
-        let [hist, favs, imgHist] = await Promise.all([
+        let [hist, favs] = await Promise.all([
             fetch("/api/history").then(r => r.json()),
-            fetch("/api/favorites").then(r => r.json()),
-            fetch("/api/image_history").then(r => r.json())
+            fetch("/api/favorites").then(r => r.json())
         ]);
         // refetch on tab open is only for staleness (favs toggled elsewhere) —
         // rebuild only the sections whose data actually changed, or the archive
         // replays its slide-in animation every time and looks like it reloaded
         const h = JSON.stringify(hist) !== JSON.stringify(historyTags);
         const f = JSON.stringify(favs) !== JSON.stringify(favoriteTags);
-        const i = JSON.stringify(imgHist) !== JSON.stringify(imageHistory);
-        if (!h && !f && !i) return;
         if (h) historyTags = hist;
         if (f) favoriteTags = favs;
-        if (i) imageHistory = imgHist;
         if (h || f) renderHistory();
         if (f) renderFavorites();
-        if (i) renderImageHistory();
+        // image history is paged (300 rows) — always refresh page 0 so new
+        // downloads show; already-rendered rows don't re-animate (_histAnimated)
+        await fetchImgHistPage(0);
+        renderImageHistory();
     } catch(e) { console.error("loadTagsData failed:", e); }
 }
 
@@ -3926,9 +3552,9 @@ function renderHistory() {
             if (item.searched_at) {
                 const d = new Date(item.searched_at * 1000);
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-                timeSpan = `<span title="${when}" style="font-size: 11px; color: var(--text-color); opacity: 0.5; margin-left: 10px; white-space: nowrap;">${when}</span>`;
+                timeSpan = `<span class="hist-time" title="${when}" style="font-size: 11px; color: var(--text-color); margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div class="hist-actions" style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="queueHistoryEntry('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -3990,36 +3616,36 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
     } else if (site === "gelbooru") {
         // the saved tag carries the AI exclusion — map it to the checkbox, never a pill
         const hadAI = /\s*-ai[_ ]generated\b/i.test(tag || "");
-        currentGelbooruTags = String(tag || "").replace(/\s*-ai[_ ]generated\b/gi, "").trim().split(/\s+/).filter(Boolean);
-        renderGelbooruTags();
+        gelbooruChips.tags = String(tag || "").replace(/\s*-ai[_ ]generated\b/gi, "").trim().split(/\s+/).filter(Boolean);
+        gelbooruChips.render();
         const gelNoAI = document.getElementById('gelNoAI');
         if (gelNoAI) gelNoAI.checked = hadAI;
     } else if (site === "eshuushuu") {
         // e-shuushuu tags contain spaces ("fire keeper") — comma only, like zero
-        currentEshuushuuTags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
-        renderEshuushuuTags();
+        eshuushuuChips.tags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
+        eshuushuuChips.render();
     } else if (site === "gsbooru") {
-        currentGsbooruTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderGsbooruTags();
+        gsbooruChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        gsbooruChips.render();
     } else if (site === "kona") {
-        currentKonaTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderKonaTags();
+        konaChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        konaChips.render();
     } else if (site === "nekosia") {
-        currentNekosiaTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderNekosiaTags();
+        nekosiaChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        nekosiaChips.render();
     } else if (site === "safe") {
-        currentSafeTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderSafeTags();
+        safeChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        safeChips.render();
     } else if (site === "sankaku") {
         // the saved tag carries the AI exclusion — map it to the checkbox, never a pill
         const sankHadAI = /\s*-ai-created\b/i.test(tag || "");
-        currentSankakuTags = String(tag || "").replace(/\s*-ai-created\b/gi, "").trim().split(/\s+/).filter(Boolean);
-        renderSankakuTags();
+        sankakuChips.tags = String(tag || "").replace(/\s*-ai-created\b/gi, "").trim().split(/\s+/).filter(Boolean);
+        sankakuChips.render();
         const sankNoAI = document.getElementById('sankakuExcludeAi');
         if (sankNoAI) sankNoAI.checked = sankHadAI;
     } else if (site === "yande") {
-        currentYandeTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderYandeTags();
+        yandeChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        yandeChips.render();
     } else if (site === "anime_dl") {
         currentAnimeDlTags = String(tag || "").split("&&").map(t => t.trim()).filter(Boolean);
         renderAnimeDlTags();
@@ -4085,32 +3711,64 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
     }
 }
 
+// arrow button: fill the worker's tab state, then enqueue it — the same as
+// typing the tag there and pressing "Add to queue", never just the tag box
+function queueHistoryEntry(site, tag, rating, excludeAI, filters) {
+    jumpToSite(site, tag, rating, excludeAI, filters);
+    addWorkerToQueue(site);
+}
+
 // یک هلپر حرفه‌ای برای درست کردن آدرس‌های عکس بدون قاطی کردن Flask
 function getSafeThumbUrl(filepath, filename) {
     if (filepath) {
         let parts = filepath.replace(/\\/g, '/').split('/');
-        return '/api/gallery/thumb/' + parts.map(encodeURIComponent).join('/');
+        return withBase('/api/gallery/thumb/' + parts.map(encodeURIComponent).join('/'));
     }
-    return '/api/thumb_by_name/' + encodeURIComponent(filename || "");
+    return withBase('/api/thumb_by_name/' + encodeURIComponent(filename || ""));
 }
 
 // تابع جدید هیستوری که دقیقاً کپی عکسی هست که دادی
 let imageHistoryVisible = 30;
 let imgHistFiltered = [];
-function filteredImageHistory() {
+// ponytail: 22k history rows = 14MB + ~2s of server/parse per tab open —
+// the archive shows 30 rows at a time, so fetch it from the server in pages
+// (search + date filter run server-side; X-Total-Count bounds paging)
+const IMG_HIST_PAGE = 300;
+let imgHistTotal = Infinity;
+let imgHistParams = new URLSearchParams();
+let imgHistLoading = false;
+function imgHistQueryParams() {
     const { terms, range } = historyQueryParts();
-    return imageHistory.filter(img => {
-        if (range) {
-            const t = img.downloaded_at ? img.downloaded_at * 1000 : 0;
-            if (t < range.from || t > range.to) return false;
-        }
-        if (!terms.length) return true;
-        let allTags = [];
-        let tagsDict = normalizeTags(img.tags || {});
-        TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
-        const hay = ((img.site || "") + " " + (img.filepath || img.filename || "") + " " + allTags.join(" ")).toLowerCase().replace(/_/g, " ");
-        return terms.every(t => hay.includes(t));
-    });
+    const p = new URLSearchParams();
+    if (terms.length) p.set("q", terms.join(" "));
+    if (range) { p.set("from_ts", String(range.from / 1000)); p.set("to_ts", String(range.to / 1000)); }
+    return p;
+}
+function imgHistHasMore() { return imageHistory.length < imgHistTotal; }
+async function fetchImgHistPage(offset) {
+    if (imgHistLoading) return;
+    imgHistLoading = true;
+    try {
+        const p = new URLSearchParams(imgHistParams);
+        p.set("limit", IMG_HIST_PAGE);
+        p.set("offset", offset);
+        const r = await fetch("/api/image_history?" + p.toString());
+        imgHistTotal = +(r.headers.get("X-Total-Count") || 0) || Infinity;
+        const rows = await r.json();
+        if (Array.isArray(rows)) imageHistory = offset === 0 ? rows : imageHistory.concat(rows);
+    } catch (e) { console.error("image history page failed:", e); }
+    finally { imgHistLoading = false; }
+}
+async function reloadImgHist() {
+    imageHistoryVisible = 30;
+    imgHistParams = imgHistQueryParams();
+    await fetchImgHistPage(0);
+    renderImageHistory();
+}
+function filteredImageHistory() {
+    // server-side now: imgHistParams carried q/from_ts/to_ts on the page
+    // fetch, so the loaded rows are already the filtered set
+    return imageHistory;
 }
 function appendHistoryRows(n) {
     const ui = document.getElementById("imageHistoryUI");
@@ -4132,21 +3790,10 @@ function historyRowHtml(img) {
     TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
     let pLow = ((img.filepath || img.filename) + " " + allTags.join(' ')).toLowerCase();
     let siteLower = (img.site || "").toLowerCase();
-    if (siteLower === "rule34") {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-        histRating = "explicit";
-    } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-        histRating = "explicit";
-    } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
-        histRating = "sensitive";
-    } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-        histRating = "questionable";
-    } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g')) {
-        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
-        histRating = "safe";
+    const _cr = classifyRating(pLow, siteLower);
+    if (_cr) {
+        ratingHtml = `<span style="background:${_cr.bg}; color:${_cr.fg}; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">${_cr.label}</span>`;
+        histRating = _cr.rating;
     }
 
     let thumbUrl = getSafeThumbUrl(img.filepath, img.filename);
@@ -4163,8 +3810,8 @@ function historyRowHtml(img) {
     const hHoverAttr = hHoverKind ? ` data-hover="${hHoverKind}" data-hover-src="${hHoverSrc}" data-thumb="${thumbUrl}" onmouseenter="galleryHoverPreview(this,1)" onmouseleave="galleryHoverPreview(this,0)"` : '';
     return `
     <div class="image-card-log${ratingBlurred(histRating) ? ' is-nsfw' : ''}${_histAnimated.has(histRowKey(img)) ? ' no-anim' : ''}" data-rating="${histRating}" style="position: relative; align-items: stretch; background: rgba(15, 15, 20, 0.75);">
-    <button onclick="removeImageHistory('${safeFn}')" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
-    <button onclick="toggleImageHistoryFav('${safeFn}', this)" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
+    <button onclick="removeImageHistory(${Number(img.history_id) || 0})" class="img-card-btn" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
+    <button onclick="toggleImageHistoryFav('${escJs(img.filepath || "")}', this)" class="img-card-btn" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
     <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">${hHoverKind === 'video' ? '<span class="gallery-card-play"></span>' : ''}
     </div>
@@ -4185,8 +3832,13 @@ function renderImageHistory() {
     if (scroller && !scroller.dataset.histScroll) {
         scroller.dataset.histScroll = "1";
         scroller.addEventListener("scroll", () => {
-            if (imageHistoryVisible >= imgHistFiltered.length) return;
-            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) appendHistoryRows(30);
+            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) {
+                if (imageHistoryVisible >= imgHistFiltered.length) {
+                    if (imgHistHasMore()) fetchImgHistPage(imageHistory.length).then(() => { appendHistoryRows(IMG_HIST_PAGE); });
+                    return;
+                }
+                appendHistoryRows(30);
+            }
         });
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
@@ -4216,16 +3868,31 @@ function renderImageHistory() {
     while (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
         appendHistoryRows(30);
     }
+    // local rows exhausted and the viewport still isn't full: pull the next
+    // server page, then re-render to append it
+    if (imgHistHasMore() && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
+        fetchImgHistPage(imageHistory.length).then(() => renderImageHistory());
+    }
 }
 
-async function removeImageHistory(filename) { await fetch("/api/image_history/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: filename }) }); await loadTagsData(); }
-async function toggleImageHistoryFav(filename, btn) {
+async function removeImageHistory(historyId) {
+    if (!historyId) return;
+    const resp = await fetch("/api/image_history/remove", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ history_id: Number(historyId) })
+    });
+    if (resp.ok) await loadTagsData();
+}
+async function toggleImageHistoryFav(filepath, btn) {
     try {
-        let resp = await fetch("/api/gallery/favourite_by_name", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: filename }) });
+        let resp = await fetch("/api/gallery/favourite_by_name", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filepath: filepath })
+        });
         let data = await resp.json();
         if (data.success) {
             if (btn) btn.innerHTML = heartIcon(data.favourite);
-            const h = imageHistory.find(i => i.filename === filename);
+            const h = imageHistory.find(i => i.filepath === filepath);
             if (h) h.favourite = data.favourite;
         }
     } catch(e) { console.error("image-history favourite save failed:", e); }
@@ -4742,6 +4409,7 @@ function invalidateGalleryBuffer() {
     galleryBufferRequests.clear();
     // A new search/filter supersedes speculative thumbnail work too.
     while (galleryThumbQueue.length) galleryThumbQueued.delete(galleryThumbQueue.shift());
+    _thumbRetryN.clear();
 }
 function rememberGalleryPage(params, data) {
     const key = galleryBufferKey(params);
@@ -4787,8 +4455,39 @@ function warmGalleryThumbnails(images) {
     }
     pumpGalleryThumbnails();
 }
-function pumpGalleryThumbnails() {
-    if (document.hidden) return;
+// While a viewer session mutes the server, card thumbs that 503 are hidden
+// by the card's one-shot onerror — remember those cards and revive them
+// when the session closes (error doesn't bubble, so capture phase catches it)
+document.addEventListener('error', e => {
+    const im = e.target;
+    if (!im || !im.classList || !im.closest) return;
+    const card = im.closest('.gallery-card');
+    if (!card || !(im.getAttribute('src') || '').includes('/api/gallery/thumb/')) return;
+    // hide first — no broken-image glyph while we decide what to do
+    im.style.display = 'none';
+    if (typeof _viewerLease !== 'undefined' && _viewerLease) {
+        card.classList.add('thumb-muted');   // viewing: try again on close
+        return;
+    }
+    // not viewing: a stray close-race 503 — bounded self-retries
+    const n = (+card.dataset.thumbRetry || 0) + 1;
+    if (n > 4) return;
+    card.dataset.thumbRetry = n;
+    setTimeout(() => {
+        if (card.classList.contains('thumb-muted')) return;
+        card.dataset.thumbRetry = 0;
+        if (_viewerLease) { card.classList.add('thumb-muted'); return; }
+        // restore a hiding onerror: the inline one was consumed on the first
+        // failure, so without this a failed retry paints the ?-glyph
+        im.onerror = function(){ this.style.display = 'none'; };
+        const u = im.getAttribute('src');
+        im.style.display = '';
+        im.removeAttribute('src');
+        im.setAttribute('src', u);
+    }, n * 3000);
+}, true);
+
+function pumpGalleryThumbnails() {    if (document.hidden) return;
     while (galleryThumbActive < (typeof lightweightUI === 'function' && lightweightUI() ? 2 : 4) && galleryThumbQueue.length) {
         const url = galleryThumbQueue.shift();
         galleryThumbActive++;
@@ -4799,7 +4498,18 @@ function pumpGalleryThumbnails() {
             image.onload = image.onerror = null;
             if (ok) {
                 galleryThumbCache.set(url, image);
+                _thumbRetryN.delete(url);  // retry bookkeeping must not outlive success
                 while (galleryThumbCache.size > (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 96)) galleryThumbCache.delete(galleryThumbCache.keys().next().value);
+            } else if (_viewerLease && !_thumbDeferred.has(url)) {
+                _thumbDeferred.add(url);  // 503 while viewing: try again on close
+            } else if (!_viewerLease && (!_thumbRetryN.has(url) || _thumbRetryN.get(url) < 8)) {
+                // race: the close requeue lands before the server's lease
+                // revocation, the thumb 503s once, nobody re-requests it and
+                // the card never gets a thumbnail — retry a few times; the
+                // server's background-mute hold can last ~60s past close
+                const n = (_thumbRetryN.get(url) || 0) + 1;
+                _thumbRetryN.set(url, n);
+                setTimeout(() => { if (!galleryThumbQueued.has(url) && !_viewerLease) { galleryThumbQueued.add(url); galleryThumbQueue.push(url); pumpGalleryThumbnails(); } else _thumbRetryN.delete(url); }, n * 2000);
             }
             galleryThumbQueued.delete(url);
             galleryThumbActive--;
@@ -4819,7 +4529,7 @@ function preloadGalleryPage(params) {
     // Fixed-size blocks let a 24-item windowed page supply a 45-item maximized
     // page without changing offsets or showing unrelated page contents.
     const blockSize = 128;
-    const first = Math.floor(start / blockSize), last = Math.floor((start + perPage - 1) / blockSize);
+    const first = Math.floor(start / blockSize), last = Math.floor((start + perPage - 1) / blockSize) + 1;
     for (let block = first; block <= last; block++) {
         const query = new URLSearchParams(params);
         query.set('page', block + 1); query.set('per_page', blockSize);
@@ -4868,6 +4578,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 let galleryReqId = 0;
+// page number a jump asked for while the dataset was still too small (server
+// clamped to last). Retained across rescan/import completions; a grown scan
+// retries it. Cleared on any OTHER explicit numeric navigation.
+let galleryPendingPage = 0;
 // one in-flight data fetch per gallery view: a rapid page flip aborts the
 // older query instead of leaving stacked fetches fighting for the browser's
 // connection pool while each abandoned result is already discarded anyway
@@ -4883,6 +4597,8 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
     if (!reuseBuffered) invalidateGalleryBuffer();
     const reqId = ++galleryReqId;
     if (page) currentGalleryPage = page;
+    // any deliberate numeric navigation other than the pending target retires it
+    if (typeof page === "number" && page !== galleryPendingPage) galleryPendingPage = 0;
     const layout = measureGalleryLayout();
     const perPage = layout.perPage;
     galleryLastPerPage = perPage;
@@ -4915,6 +4631,11 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
         if (ms > 1500) showToast(`Gallery request took ${ms} ms`, { warn: true, key: "galtime" });
         // server clamps page to total_pages — trust its answer, not our guess
         if (data.page) currentGalleryPage = data.page;
+        if (galleryPendingPage) {
+            // resolved only when the dataset really offers it; a smaller
+            // response means the scan hadn't grown yet — keep the target
+            if (currentGalleryPage === galleryPendingPage) galleryPendingPage = 0;
+        }
         reanchorGalleryViewer(prevViewId);
         renderGallery();
         // layout may have settled after we measured (maximize, workload) —
@@ -4927,6 +4648,8 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
 }
 async function loadGalleryPage(page, callback) {
     const reqId = ++galleryReqId;
+    // viewer page flips are deliberate navigation — retire a pending jump
+    if (typeof page === "number" && page !== galleryPendingPage) galleryPendingPage = 0;
     const search = document.getElementById("gallerySearch").value;
     const site = getMultiSelectValues('sourceDropdown');
     const sort = document.getElementById("sortDropdown").dataset.sort || 'newest';
@@ -4952,6 +4675,7 @@ async function loadGalleryPage(page, callback) {
         galleryState = data;
         galleryState.layout = liveLayout;
         if (data.page) currentGalleryPage = data.page;
+        if (galleryPendingPage && currentGalleryPage === galleryPendingPage) galleryPendingPage = 0;
         reanchorGalleryViewer(prevViewId);
         if (callback) callback();
     } catch (e) { if (e && e.name !== "AbortError") console.error("loadGalleryPage failed:", e); }
@@ -5005,7 +4729,10 @@ function galleryHoverPreview(card, on) {
         // buffered blob pauses in ~1ms
         const ctl = new AbortController();
         card._hoverCtl = ctl;
-        fetch(url, { signal: ctl.signal }).then(r => r.blob()).then(b => {
+        fetch(url, { signal: ctl.signal }).then(r => {
+            if (!r.ok) throw new Error("preview unavailable (HTTP " + r.status + ")");
+            return r.blob();
+        }).then(b => {
             if (card._hoverCtl !== ctl || !card.isConnected) return;
             card._hoverCtl = null;
             const v = document.createElement('video');
@@ -5173,15 +4900,17 @@ function renderGallery() {
     const countPill = `<span class="gallery-count-pill"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg>${total}</span>`;
     if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; updateSelectBar(); return; }
     let pHtml = '';
-    if (page > 2) pHtml += '<button onclick="loadGallery(1)">«</button>';
-    if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+')">‹</button>';
+    // ponytail: reuseBuffered — page turns render the prefetched block
+    // instantly instead of wiping it first; filters/search still invalidate
+    if (page > 2) pHtml += '<button onclick="loadGallery(1, false, true)">«</button>';
+    if (page > 1) pHtml += '<button onclick="loadGallery('+(page-1)+', false, true)">‹</button>';
     const range = paginationRange(page, total_pages);
     range.forEach(p => {
         if (p === 0 || p === -1) { pHtml += `<button onclick="pageJumpInput(this)" title="Go to page…">…</button>`; return; }
-        pHtml += `<button onclick="loadGallery(${p})" ${p===page?'class="active"':''}>${p}</button>`;
+        pHtml += `<button onclick="loadGallery(${p}, false, true)" ${p===page?'class="active"':''}>${p}</button>`;
     });
-    if (page < total_pages) pHtml += '<button onclick="loadGallery('+(page+1)+')">›</button>';
-    if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+')">»</button>';
+    if (page < total_pages) pHtml += '<button onclick="loadGallery('+(page+1)+', false, true)">›</button>';
+    if (page < total_pages - 1) pHtml += '<button onclick="loadGallery('+total_pages+', false, true)">»</button>';
     pHtml += countPill;
     if (!jumpFocused) pagination.innerHTML = pHtml;
     updateSelectBar();
@@ -5212,8 +4941,16 @@ function pageJumpInput(btn) {
         // blur first: renderGallery skips its rebuild while the jump input is
         // focused, so let go of it before reloading
         input.blur();
-        if (!isNaN(n)) loadGallery(Math.min(Math.max(n, 1), total));
-        else renderGallery();
+        // no local top clamp: within the first seconds galleryState.total_pages
+        // is still unloaded and every number clamped down to 1 — the server
+        // clamps out-of-range pages anyway
+        if (!isNaN(n)) {
+            const target = Math.max(n, 1);
+            // the dataset may still be small; keep the true target so a grown
+            // startup rescan can retry it without the user re-entering it
+            galleryPendingPage = target;
+            loadGallery(target);
+        } else renderGallery();
     }
     input.addEventListener('input', () => { input.value = faToEnDigits(input.value).replace(/\D/g, ''); });
     input.addEventListener('keydown', e => {
@@ -5295,6 +5032,9 @@ let viewerPanY = 0;
 // Image the canvas currently paints: the display copy at stage 1, the
 // original at stage 2. Painting goes through the canvas, never the <img>.
 let viewerStageImage = null;
+// animated rasters (gif/apng) can't go through the canvas painter — it freezes
+// them on frame 0 — so they render via the live <img> fallback path instead
+let viewerAnimatedRaster = false;
 
 // Gwenview-style multiresolution raster (lib/documentview/rasterimageitem):
 // the original plus 1/3 and 1/6 samples; paint picks the coarsest sample
@@ -5590,6 +5330,9 @@ function openGalleryViewer(id, force) {
     }
     viewerIndex = galleryState.images.findIndex(i => i.id === id);
     if (viewerIndex < 0) return;
+    // ponytail: while an image is open, server-side thumb/preview generation
+    // holds — paused before this fetch can even race the display request
+    _viewerOpen();
     viewerZoom = 1;
     // the viewer may page forward while browsing (boundary → next page);
     // on close we restore the page the user actually opened the viewer on,
@@ -5605,18 +5348,9 @@ function galleryCardSelectClick(id, on) {
 }
 
 function updateSelectBar() {
-    // pin toolbar height to its normal-mode height BEFORE the select bar is
-    // shown below — capture after that and the wrapped select bar inflates it
-    {
-        const tab = document.getElementById("Gallery");
-        if (tab) {
-            const wasActive = tab.classList.contains("select-active");
-            if (gallerySelectMode !== wasActive) {
-                const tb = tab.querySelector(".gallery-toolbar");
-                if (tb) tb.style.minHeight = gallerySelectMode ? tb.offsetHeight + "px" : "";
-            }
-        }
-    }
+    // the select bar is a floating overlay (see .gallery-select-bar in
+    // style.css), not a toolbar item — showing/hiding it changes no layout,
+    // so the grid never re-measures, resizes or repaints on select
     const bar = document.getElementById("gallerySelectBar");
     if (bar) bar.style.display = gallerySelectMode ? "flex" : "none";
     const countEl = document.getElementById("gallerySelectCount");
@@ -5632,9 +5366,6 @@ function updateSelectBar() {
     if (favBtn) favBtn.title = gallerySelectMode ? "Favorite selected" : "Favorites only";
     const grid = document.getElementById("galleryGrid");
     if (grid) grid.classList.toggle("select-mode", gallerySelectMode);
-    // top bar compacts while the select bar is out (height pinned at entry above)
-    const tab = document.getElementById("Gallery");
-    if (tab) tab.classList.toggle("select-active", gallerySelectMode);
 }
 
 function setGallerySelected(id, on) {
@@ -5679,13 +5410,34 @@ function exitSelectMode() {
 async function selectCopy() {
     const paths = [...gallerySelected.values()].filter(Boolean);
     if (!paths.length) return;
-    try {
-        await writeClipboardPath(paths.join("\n"));
-        showToast(`Copied ${paths.length} file${paths.length > 1 ? "s" : ""} to clipboard`, { icon: COPY_ICON });
-    } catch (err) {
-        console.error("Copy failed:", err);
-        showToast("Copy failed — check server logs", { warn: true, icon: WARN_ICON, sticky: true });
+    // the native backend writes the SERVER's clipboard — for a remote client
+    // the copied paths are meaningless, so copy them as text instead
+    const localUi = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+    if (localUi) {
+        try {
+            await writeClipboardPath(paths.join("\n"));
+            showToast(`Copied ${paths.length} file${paths.length > 1 ? "s" : ""} to clipboard`, { icon: COPY_ICON });
+        } catch (err) {
+            console.error("Copy failed:", err);
+            showToast("Copy failed - check server logs", { warn: true, icon: WARN_ICON, sticky: true });
+        }
+        return;
     }
+    const text = paths.join("\n");
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (err) {
+        const holder = document.createElement('textarea');
+        holder.value = text;
+        holder.style.position = 'fixed';
+        holder.style.opacity = '0';
+        document.body.appendChild(holder);
+        holder.select();
+        const ok = document.execCommand('copy');
+        holder.remove();
+        if (!ok) { showToast("Copy failed - browser refused clipboard access", { warn: true, icon: WARN_ICON }); return; }
+    }
+    showToast(`Copied ${paths.length} server path${paths.length > 1 ? "s" : ""} as text`, { icon: COPY_ICON });
 }
 
 async function selectDelete() {
@@ -5740,10 +5492,10 @@ function galleryPageNav(page) {
         _galNavTimer = null;
         if (galleryPagingFast) {
             galleryPagingFast = false;
-            loadGallery(currentGalleryPage);   // settled: real thumbnails for this page
+            loadGallery(currentGalleryPage, false, true);   // settled: real thumbnails for this page
         }
     }, 200);
-    loadGallery(page);
+    loadGallery(page, false, true);
 }
 // viewer close may leave an arrow key auto-repeating (it was still held for
 // viewer ←/→); those repeats must not silently page the gallery beneath a
@@ -5894,24 +5646,25 @@ function attachVideoStallRecovery(video) {
 }
 
 function previewImageUrl(filepath, filename) {
-    return fullImageUrl(filepath, filename).replace('/api/gallery/file/', '/api/gallery/preview/');
+    return withBase(fullImageUrl(filepath, filename).replace('/api/gallery/file/', '/api/gallery/preview/'));
 }
 
 function fullImageUrl(filepath, filename) {
     // ponytail: some callers pass pre-encoded paths — normalize before encoding exactly once
     let clean = filepath || "";
     try { clean = decodeURIComponent(clean); } catch (e) {}
-    return clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`;
+    return withBase(clean ? `/api/gallery/file/${clean.replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(filename || '')}`);
 }
 // viewer-open fast path: the server's fit-to-screen copy (display cache),
 // or '' when the URL isn't a gallery file (fallback thumbs etc.)
 function displayImageUrl(fullUrl) {
-    return fullUrl && fullUrl.startsWith('/api/gallery/file/')
-        ? fullUrl.replace('/api/gallery/file/', '/api/gallery/display/')
+    const u = stripBase(fullUrl);
+    return u && u.startsWith('/api/gallery/file/')
+        ? withBase(u.replace('/api/gallery/file/', '/api/gallery/display/'))
         : '';
 }
 function galleryThumbUrl(fp) {
-    return fp ? `/api/gallery/thumb/${String(fp).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')}` : '';
+    return fp ? withBase(`/api/gallery/thumb/${String(fp).replace(/\\/g, '/').replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}`) : '';
 }
 // deleted this session: the browser may still hold a day-fresh cached copy of
 // the old max-age responses, so a 200 from cache must not reopen them
@@ -5924,14 +5677,15 @@ function normPath(p) {
 }
 function markDeleted(path, name) {
     if (path) deletedPaths.add(normPath(path));
-    if (name) deletedNames.add(name);
+    else if (name) deletedNames.add(name);
 }
 function isDeleted(path, name) {
     return !!((path && deletedPaths.has(normPath(path))) || (name && deletedNames.has(name)));
 }
 function galleryPathFromUrl(url) {
     const prefix = "/api/gallery/file/";
-    return url && url.startsWith(prefix) ? normPath(url.slice(prefix.length)) : "";
+    const u = stripBase(url);
+    return u && u.startsWith(prefix) ? normPath(u.slice(prefix.length)) : "";
 }
 function openFullImage(filepath, filename, el) {
     if (isDeleted(filepath, filename)) { showToast("Image was deleted", { warn: true, icon: WARN_ICON }); return; }
@@ -5969,6 +5723,7 @@ let viewerResource = {
 };
 function clearViewerResource() {
     clearViewerFitRaster();
+    viewerAnimatedRaster = false;
     const r = viewerResource;
     if (r.abortController) { try { r.abortController.abort(); } catch (e) {} r.abortController = null; }
     r.generation++;
@@ -6019,6 +5774,7 @@ function loadViewerRaster(url, filename) {
     const generation = viewerResource.generation;
     viewerResource.url = url;
     viewerResource.filename = filename || "image";
+    viewerAnimatedRaster = /\.(gif|apng)(\?|#|$)/i.test(url) || /\.(gif|apng)$/i.test(filename || "");
     const controller = new AbortController();
     viewerResource.abortController = controller;
     // the display img (video/fallback shell) and the canvas both stay hidden
@@ -6030,11 +5786,13 @@ function loadViewerRaster(url, filename) {
     // draws atomically once decoded). Stage 1 is the server's display-size
     // copy; stage 2 swaps in the original for full-res zooming. Same aspect
     // ratio and the same uncapped fit → the box never moves.
+    let painted = false;
     const revealViewer = async (src, keepZoom) => {
         const image = await preloadViewerRaster(src);
         if (generation !== viewerResource.generation || controller.signal.aborted) return;
         if (!image || !image.naturalWidth) throw new Error("Image load failed");
         viewerStageImage = image;
+        painted = true;
         viewerNaturalWidth = image.naturalWidth;
         viewerNaturalHeight = image.naturalHeight;
 
@@ -6098,6 +5856,13 @@ function loadViewerRaster(url, filename) {
         return null;
     })().catch((err) => {
         if (generation === viewerResource.generation && err && err.name !== "AbortError") {
+            // stage 2 (original) can fail to decode after stage 1 already
+            // painted — the picture IS on screen, so don't toast a failure;
+            // console keeps the detail for format debugging
+            if (painted) {
+                console.warn("Original failed to decode; display copy stays:", err);
+                return Promise.resolve();
+            }
             let msg2 = err.message || "Image load failed";
             return Promise.resolve().then(async () => {
                 try {
@@ -6120,7 +5885,15 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     if (dp && deletedPaths.has(dp)) { showToast("Image was deleted", { warn: true, icon: WARN_ICON }); return; }
     const viewer = document.getElementById("galleryViewer");
     const viewerImg = document.getElementById("galleryViewerImg");
-    closeGalleryViewer();
+    // switching inside an already-open single viewer must hold the current
+    // frame and the ±1 preload cache — full teardown would blank the canvas
+    // and drop the neighbor warm right before it's needed. Gallery mode has
+    // always switched without tearing down (showViewerImage); this matches it.
+    const reSwitch = viewerSingle && viewer.style.display !== 'none';
+    if (!reSwitch) {
+        closeGalleryViewer();
+        _viewerOpen();  // single-log opens own the decode cores too
+    }
     viewerSingle = true;
     viewerSingleBoxId = boxId || null;
     viewerSingleList = Array.isArray(list) && idx >= 0 ? list : [];
@@ -6129,9 +5902,20 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     viewerSingleFilename = filename || "image";
     viewer.classList.add("single");
     viewer.classList.toggle("has-list", viewerSingleList.length > 1);
+    // leftovers a skipped teardown would strand (same as showViewerImage)
+    const oldWrap = viewer.querySelector('.gallery-video-wrap');
+    if (oldWrap) oldWrap.remove();
+    viewerDrag.active = false;
+    viewerZoom = 1;
     const ext = ((filename || "").split('.').pop() || "").toLowerCase();
     if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) {
+        // abort any in-flight raster load — its late reveal would paint the
+        // canvas over the video (gallery's video path clears too, at 6495)
+        clearViewerResource();
         viewerImg.style.display = 'none';
+        // the canvas holds the previous raster — hide it so the video owns the stage
+        const cv = document.getElementById("galleryViewerCanvas");
+        if (cv) cv.style.display = 'none';
         const wrap = document.createElement('div');
         wrap.className = 'gallery-video-wrap';
         const video = document.createElement('video');
@@ -6150,10 +5934,17 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     if (metaPanel) {
         const emptyEntry = { filename: filename, filepath: "", site: "", tags: {} };
         const fillMeta = (entry) => {
-            metaPanel.innerHTML = viewerMetaHtml(entry, true);
-            document.getElementById("galleryViewerFav").innerHTML = heartIcon(!!entry.favourite);
+            renderViewerMeta(entry, galleryPathFromUrl(viewerSingleUrl));
         };
-        const lookup = () => (typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === filename) : null);
+        const lookup = () => {
+            if (typeof imageHistory === "undefined") return null;
+            const hit = imageHistory.find(i => i.filename === filename);
+            if (hit) return hit;
+            // auto-JXL renames the file (and its history row) right after the
+            // log card carried the original extension — match the twin by stem
+            const stem = (filename || "").replace(/\.[^.]+$/, "");
+            return stem && stem !== filename ? imageHistory.find(i => (i.filename || "").replace(/\.[^.]+$/, "") === stem) || null : null;
+        };
         const found = lookup();
         if (found) fillMeta(found);
         else if (viewerMetaMisses.has(filename)) fillMeta(emptyEntry);
@@ -6179,21 +5970,9 @@ function viewerMetaHtml(img, tagsClickable) {
     TAG_CATEGORIES.forEach(c => { if (_viewerTd[c]) _viewerAllTags.push(..._viewerTd[c]); });
     let pLow = ((img.filepath || "") + " " + _viewerAllTags.join(' ')).toLowerCase();
     let vSiteLower = (img.site || "").toLowerCase();
-    if (vSiteLower === "rule34") {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-    } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-    } else if (pLow.includes('/r18g/')) {
-        // pixiv r18g = NSFW, r18 = questionable — r18g before r18
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-    } else if (pLow.includes('/r18/')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-    } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
-    } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-    } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:g')) {
-        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
+    const _cr = classifyRating(pLow, vSiteLower);
+    if (_cr) {
+        ratingHtml = `<span style="background:${_cr.bg}; color:${_cr.fg}; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">${_cr.label}</span>`;
     }
     let _srcLabels = (Array.isArray(img.sources) && img.sources.length ? img.sources : [img.site])
         .filter(Boolean).map(siteLabel);
@@ -6219,6 +5998,27 @@ function toggleSourceBox(el) {
     el.textContent = open ? el.dataset.collapsed : el.dataset.list;
     el.dataset.open = open ? "0" : "1";
 }
+let _metaFillSeq = 0;
+function renderViewerMeta(entry, filepath) {
+    // one paint only: the file's embedded site is read BEFORE the panel
+    // renders, so the badge never flashes from a folder-derived site to the
+    // real one. Files without metadata (or videos) keep the stored row's site.
+    const mp = document.getElementById("galleryViewerMeta");
+    const fav = document.getElementById("galleryViewerFav");
+    if (!mp) return;
+    const seq = ++_metaFillSeq;
+    const paint = (site) => {
+        if (seq !== _metaFillSeq) return;
+        mp.innerHTML = viewerMetaHtml(Object.assign({}, entry, { site: site }), true);
+        if (fav) fav.innerHTML = heartIcon(!!entry.favourite);
+    };
+    const ext = ((filepath || "").split('.').pop() || "").toLowerCase();
+    if (!filepath || ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) return paint(entry.site);
+    fetch("/api/gallery/embedded_site?filepath=" + encodeURIComponent(filepath))
+        .then(r => r.ok ? r.json() : null)
+        .then(d => paint(d && d.site ? d.site : entry.site))
+        .catch(() => paint(entry.site));
+}
 function showViewerImage() {
     const viewer = document.getElementById("galleryViewer");
     viewer.classList.remove("single");
@@ -6229,7 +6029,7 @@ function showViewerImage() {
     let vw = document.querySelector('.gallery-video-wrap');
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
-    const fullSrc = safeFp ? `/api/gallery/file/${safeFp.split('/').map(encodeURIComponent).join('/')}` : '';
+    const fullSrc = safeFp ? `/api/gallery/file/${safeFp.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : '';
     const ext = ((img.filename || '').split('.').pop() || '').toLowerCase();
     const isVideo = ['mp4','webm','mov','avi','mkv'].includes(ext);
     viewerImg.className = '';
@@ -6368,14 +6168,75 @@ function showViewerImage() {
     // === پنل اطلاعات و تگ‌ها پایین صفحه ===
     const metaPanel = document.getElementById("galleryViewerMeta");
     if(metaPanel) {
-        metaPanel.innerHTML = viewerMetaHtml(img, true);
+        renderViewerMeta(img, img.filepath);
     }
 
     viewer.style.display = 'flex';
     updateViewerNav();
     prefetchViewerNeighbors();
 }
+let _viewerLease = null, _viewerLeaseTimer = null, _viewerClosing = false;
+const _thumbDeferred = new Set();  // thumbs that 503'd while viewing, retried on close
+const _thumbRetryN = new Map();   // post-close 503 races: bounded second chances
+function _viewerOpen() {
+    // the server mutes background thumb/preview generation for this image:
+    // the request owns the cores until close or lease expiry
+    _viewerClosing = false;
+    fetch('/api/gallery/viewing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 1 }) }).then(r => r.ok ? r.json() : null).then(d => {
+        // the open can resolve after a quick exit: a lease born then is orphaned —
+        // the server already cleared leases, so never adopt or heartbeat it
+        if (_viewerClosing) return;
+        if (d && d.ok && d.lease) {
+            _viewerLease = d.lease;
+            clearInterval(_viewerLeaseTimer);
+            _viewerLeaseTimer = setInterval(() => {
+                if (!_viewerLease) return;
+                fetch('/api/gallery/viewing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ state: 1, lease: _viewerLease }), keepalive: true }).catch(() => {});
+            }, 15000);
+        }
+    }).catch(() => {});
+}
+function _viewerClose() {
+    _viewerClosing = true;
+    clearInterval(_viewerLeaseTimer); _viewerLeaseTimer = null;
+    const lease = _viewerLease; _viewerLease = null;
+    if (lease) fetch('/api/gallery/viewing', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 0, lease: lease }), keepalive: true }).catch(() => {});
+    // 503-held thumbs can generate now: requeue the deferred ones once
+    for (const url of _thumbDeferred) {
+        if (!galleryThumbQueued.has(url) && galleryThumbQueue.length < 128) {
+            galleryThumbQueued.add(url);
+            galleryThumbQueue.push(url);
+        }
+    }
+    _thumbDeferred.clear();
+    pumpGalleryThumbnails();
+    revokeMutedThumbs();
+}
+
+// grid cards hidden by 503s during the session: unhide them and re-request —
+// the server just unmuted, the thumb either regenerates or retries below
+function revokeMutedThumbs() {
+    document.querySelectorAll('.gallery-card').forEach(card => {
+        const im = card.querySelector('img');
+        if (!im || im.style.display !== 'none') return;
+        const u = im.getAttribute('src');
+        if (!u || !u.includes('/api/gallery/thumb/')) return;
+        card.classList.remove('thumb-muted');
+        card.dataset.thumbRetry = 0;
+        // failed thumbs must hide, not paint the ?-glyph: the card's inline
+        // onerror was consumed by the first failure, restore a hiding one
+        im.onerror = function(){ this.style.display = 'none'; };
+        im.style.display = '';
+        im.removeAttribute('src');
+        im.setAttribute('src', u);
+    });
+}
+
 function closeGalleryViewer() {
+    _viewerClose();
     // a paging key still held when the viewer was closed (its ←/→ repeats)
     // must not page the gallery until the key is released
     _viewerKeyCooldown = true;
@@ -6389,14 +6250,14 @@ function closeGalleryViewer() {
         loadGalleryPage(currentGalleryPage);
     }
     _viewerOpenedPage = null;
-    clearViewerResource(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
+    clearViewerResource(); flushPendingThumbs(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
 function updateViewerNav() {
     // boundary buttons: no prev on the first image, no next on the last one
     const v = document.getElementById("galleryViewer");
     if (!v) return;
     if (viewerSingle) {
         const moreHistory = viewerSingleBoxId === "imageHistoryUI"
-            && imageHistoryVisible < imgHistFiltered.length;
+            && (imageHistoryVisible < imgHistFiltered.length || imgHistHasMore());
         v.classList.toggle("at-start", viewerSingleIdx <= 0);
         v.classList.toggle("at-end", viewerSingleList.length > 0
             && viewerSingleIdx >= viewerSingleList.length - 1 && !moreHistory);
@@ -6434,8 +6295,15 @@ function viewerNav(dir) {
         refreshViewerSingleList();
         // stepping past the last rendered archive card pulls the next page in
         if (dir > 0 && viewerSingleBoxId === "imageHistoryUI"
-                && viewerSingleIdx >= viewerSingleList.length - 1
-                && imageHistoryVisible < imgHistFiltered.length) {
+                && viewerSingleIdx >= viewerSingleList.length - 1) {
+            if (imageHistoryVisible >= imgHistFiltered.length && imgHistHasMore()) {
+                // wait for the server rows rather than stepping into a stale list
+                fetchImgHistPage(imageHistory.length).then(() => {
+                    renderImageHistory();
+                    refreshViewerSingleList();
+                });
+                return;
+            }
             imageHistoryVisible += 30;
             renderImageHistory();
             refreshViewerSingleList();
@@ -6453,11 +6321,12 @@ function viewerNav(dir) {
     const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
 function toggleViewerFav() {
     if (viewerSingle) {
-        fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) })
+        fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename, filepath: galleryPathFromUrl(viewerSingleUrl) }) })
         .then(r => r.json()).then(data => {
             if (data.success) {
                 document.getElementById("galleryViewerFav").innerHTML = heartIcon(data.favourite);
-                const h = typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filename === viewerSingleFilename) : null;
+                const viewerPath = galleryPathFromUrl(viewerSingleUrl);
+                const h = typeof imageHistory !== "undefined" ? imageHistory.find(i => i.filepath === viewerPath) : null;
                 if (h) h.favourite = data.favourite;
             }
         }).catch(e => console.error("Fav toggle error:", e));
@@ -6472,30 +6341,40 @@ function toggleViewerFav() {
         }
     }
     function clipboardRelPath(url, filename) {
-        if (url && url.startsWith("/api/gallery/file/")) return decodeURIComponent(url.slice("/api/gallery/file/".length));
-        if (url && url.startsWith("/api/thumb_by_name/")) return decodeURIComponent(url.slice("/api/thumb_by_name/".length));
+        const u = stripBase(url);
+        for (const pre of ["/api/gallery/file/", "/api/gallery/display/"]) {
+            if (u && u.startsWith(pre)) return decodeURIComponent(u.slice(pre.length).split("?")[0]);
+        }
+        if (u && u.startsWith("/api/thumb_by_name/")) return decodeURIComponent(u.slice("/api/thumb_by_name/".length));
         return filename || "";
     }
     function saveAsDownload(url, filename) {
         const a = document.createElement('a');
-        a.href = /\.jxl$/i.test(filename || '') && url.startsWith('/api/gallery/file/') ? url + (url.includes('?') ? '&' : '?') + 'download=1' : url;
+        const u = stripBase(url);
+        a.href = /\.jxl$/i.test(filename || '') && u.startsWith('/api/gallery/file/') ? withBase(u + (u.includes('?') ? '&' : '?') + 'download=1') : withBase(u);
         a.download = filename || 'file';
         document.body.appendChild(a);
         a.click();
         a.remove();
-        showToast("Clipboard refused this file type — saved to your PC instead", { warn: true, sticky: true, icon: WARN_ICON });
+        showToast("Clipboard refused this file type - saved to your PC instead", { warn: true, sticky: true, icon: WARN_ICON });
     }
     async function copyToClipboard(url, filename) {
-        // 1. Try native backend clipboard (file copy across Win/Mac/Linux)
-        try {
-            const rel = clipboardRelPath(url, filename);
-            if (rel) {
-                await writeClipboardPath(rel);
-                showToast("Image copied to clipboard", { icon: COPY_ICON });
-                return;
+        // the native backend writes the SERVER's clipboard — only useful when
+        // the browser runs on the same machine (localhost); a remote client
+        // over plain HTTP has no navigator.clipboard either
+        const localUi = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+        if (localUi) {
+            // 1. Try native backend clipboard (file copy across Win/Mac/Linux)
+            try {
+                const rel = clipboardRelPath(url, filename);
+                if (rel) {
+                    await writeClipboardPath(rel);
+                    showToast("Image copied to clipboard", { icon: COPY_ICON });
+                    return;
+                }
+            } catch (nativeErr) {
+                console.warn("Native clipboard write failed, trying web clipboard:", nativeErr);
             }
-        } catch (nativeErr) {
-            console.warn("Native clipboard write failed, trying web clipboard:", nativeErr);
         }
 
         // 2. Try standard browser clipboard API
@@ -6504,8 +6383,38 @@ function toggleViewerFav() {
             await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
             showToast("Image copied to clipboard", { icon: COPY_ICON });
         } catch (webErr) {
-            // 3. Fallback to download
-            saveAsDownload(url, filename);
+            // 3. insecure context (remote over plain HTTP): legacy canvas copy
+            try {
+                let blob = (viewerResource && viewerResource.blob) || await fetch(url).then(r => {
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    return r.blob();
+                });
+                const bmp = await createImageBitmap(blob);
+                const canvas = document.createElement('canvas');
+                canvas.width = bmp.width;
+                canvas.height = bmp.height;
+                canvas.getContext('2d').drawImage(bmp, 0, 0);
+                bmp.close();
+                const holder = document.createElement('div');
+                holder.contentEditable = 'true';
+                holder.style.position = 'fixed';
+                holder.style.opacity = '0';
+                holder.appendChild(canvas);
+                document.body.appendChild(holder);
+                const range = document.createRange();
+                range.selectNode(holder);
+                const sel = getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                const ok = document.execCommand('copy');
+                sel.removeAllRanges();
+                holder.remove();
+                if (!ok) throw new Error("legacy copy refused");
+                showToast("Image copied to clipboard", { icon: COPY_ICON });
+            } catch (legacyErr) {
+                // 4. Fallback to download
+                saveAsDownload(url, filename);
+            }
         }
     }
     async function copyViewerImage() {
@@ -6521,7 +6430,7 @@ function toggleViewerFav() {
                 const img = galleryState.images[viewerIndex];
                 if (!img) return;
                 const rel = (img.filepath || "").replace(/\\/g, '/');
-                url = rel ? `/api/gallery/file/${rel.split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(img.filename || '')}`;
+                url = rel ? `/api/gallery/file/${rel.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/')}` : `/api/thumb_by_name/${encodeURIComponent(img.filename || '')}`;
                 filename = img.filename;
             }
             if (/\.(mp4|webm|mov|avi|mkv)$/i.test(filename || "") || (!viewerResource.blob && !viewerResource.loadPromise)) {
@@ -6533,13 +6442,13 @@ function toggleViewerFav() {
                 try {
                     await viewerResource.loadPromise;
                 } catch (err) {
-                    if (generation !== viewerResource.generation) showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON });
+                    if (generation !== viewerResource.generation) showToast("Image changed - press Copy again", { warn: true, icon: WARN_ICON });
                     else showToast("Copy failed: image did not load", { warn: true, icon: WARN_ICON });
                     return;
                 }
             }
-            if (generation !== viewerResource.generation) { showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON }); return; }
-            await copyToClipboard(viewerResource.url || url, viewerResource.filename || filename);
+            if (generation !== viewerResource.generation) { showToast("Image changed - press Copy again", { warn: true, icon: WARN_ICON }); return; }
+            await copyToClipboard(url, filename);
         } catch (e) { showToast("Copy failed: " + (e && e.message || e), { warn: true, icon: WARN_ICON }); }
         finally { _copyBusy = false; }
     }
@@ -6639,6 +6548,9 @@ function toggleViewerFav() {
         if (!canvas || canvas.style.display === 'none') return;
         const L = viewerLayoutState();
         if (L.vw < 1 || L.vh < 1 || L.zoom <= 0 || viewerNaturalWidth <= 0) return;
+        // animated rasters reuse the image-fallback painter: a live <img>
+        // element keeps animating, a canvas draw would freeze on frame 0
+        if (viewerAnimatedRaster) { viewerImageFallback(canvas, L); return; }
         const surface = allocateViewerSurface(canvas, L.vw, L.vh);
         if (!surface) { viewerImageFallback(canvas, L); return; }
         const {ctx, dpr, bw, bh} = surface;
@@ -6968,8 +6880,12 @@ function toggleViewerFav() {
     document.getElementById("galleryViewerCanvas").addEventListener('mousedown', function(e) { if (viewerZoom <= 1.001 || e.button !== 0) return; e.preventDefault(); viewerDrag.active = true; viewerDrag.startX = e.clientX; viewerDrag.startY = e.clientY; const t = getViewerTransform(); viewerDrag.imgX = t[0]; viewerDrag.imgY = t[1]; this.classList.add('dragging'); });
     document.addEventListener('mousemove', function(e) { if (!viewerDrag.active) return; e.preventDefault(); const dx = e.clientX - viewerDrag.startX; const dy = e.clientY - viewerDrag.startY; setViewerTransform(viewerDrag.imgX + dx, viewerDrag.imgY + dy); });
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
-    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(1); populateGallerySiteFilter(true); } } catch (e) { console.error("gallery import failed:", e); } }
-    async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.removed_records ?? 0} duplicate records.`, { key: "rescan" }); loadGallery(1); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
+    async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } } catch (e) { console.error("gallery import failed:", e); } }
+// --- extra gallery roots (folders outside the download folder) ---
+async function loadGalleryRoots() { try { const resp = await fetch('/api/gallery/roots'); const data = await resp.json(); const list = document.getElementById('galleryRootList'); if (!list) return; list.innerHTML = ''; const mkRow = (path, removable, badge) => { const row = document.createElement('div'); row.className = 'gallery-root-item'; const span = document.createElement('span'); span.className = 'gallery-root-path'; span.textContent = path; span.title = path; row.appendChild(span); if (badge) { const b = document.createElement('em'); b.className = 'gallery-root-badge'; b.textContent = badge; row.appendChild(b); } if (removable) { const del = document.createElement('button'); del.className = 'action-btn'; del.textContent = '\u2715'; del.title = 'Stop reading this folder (image records + hashes are kept)'; del.onclick = () => removeGalleryRoot(path); row.appendChild(del); } list.appendChild(row); }; if (data.master) mkRow(data.master, false, 'main'); if (!data.roots || !data.roots.length) { if (!data.master) list.innerHTML = '<div class="gallery-roots-empty">No extra folders yet. Add an HDD path; rescan then reads its images.</div>'; else list.appendChild(Object.assign(document.createElement('div'), { className: 'gallery-roots-empty', textContent: 'No extra folders yet. Add an HDD path; rescan then reads its images.' })); return; } data.roots.forEach(p => mkRow(p, true)); } catch (e) { showToast('Could not load gallery folders: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function addGalleryRoot() { const input = document.getElementById('galleryRootInput'); const path = input.value.trim(); if (!path) return; try { const resp = await fetch('/api/gallery/roots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not add the folder', { warn: true, icon: WARN_ICON }); return; } input.value = ''; showToast('Folder added — scanning it now', { key: 'rescan' }); loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not add the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function removeGalleryRoot(path) { try { const resp = await fetch('/api/gallery/roots', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not remove the folder', { warn: true, icon: WARN_ICON }); return; } loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not remove the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started - results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" }); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
     let _siteFilterSeq = 0;
     let _lastSourceFilterKey = null;
     async function populateGallerySiteFilter(force) {
@@ -7090,11 +7006,11 @@ function toggleViewerFav() {
         if (viewerSingle) {
             if (!await customConfirm("Are you sure you want to delete this image? It will be removed from disk.", "Delete")) return;
             try {
-                let resp = await fetch("/api/gallery/delete_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename }) });
+                let resp = await fetch("/api/gallery/delete_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: viewerSingleFilename, filepath: galleryPathFromUrl(viewerSingleUrl) }) });
                 let data = await resp.json().catch(() => ({}));
                 if (resp.ok) {
                     markDeleted(galleryPathFromUrl(viewerSingleUrl), viewerSingleFilename);
-                    if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
+                    if (data.dedup_warning) showToast("Image deleted - duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                     else showToast("Image deleted completely!", { icon: TRASH_ICON });
                     closeGalleryViewer();
                     loadGallery();
@@ -7112,9 +7028,9 @@ function toggleViewerFav() {
             let data = await resp.json().catch(() => ({}));
             if (resp.ok) {
                 markDeleted(img.filepath, img.filename);
-                if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
+                if (data.dedup_warning) showToast("Image deleted - duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                 else showToast("Image deleted completely!", { icon: TRASH_ICON });
-                let card = document.querySelector(`.gallery-card[onclick="openGalleryViewer('${escJs(img.id)}')"]`);
+                let card = document.querySelector(`.gallery-card[data-id="${CSS.escape(String(img.id))}"]`);
                 if (card) card.remove();
                 galleryState.images.splice(viewerIndex, 1);
                 if (galleryState.images.length > 0) {
@@ -7143,15 +7059,14 @@ function toggleViewerFav() {
     }
 
     document.addEventListener("DOMContentLoaded", function() {
-        // ponytail: Enter in any tag box starts its worker (rule34 input keeps
-        // its own add-tag-on-Enter handler, so it's excluded here)
+        // ponytail: Enter in any tag box starts its worker — but only inputs
+        // WITHOUT their own add-tag-on-Enter handler (those inputs' inline
+        // onkeydown already runs, so mapping them here would do both)
         const ENTER_TO_WORKER = {
-            zeroTag: 'zero', safeTag: 'safe',
-            gelbooruTag: 'gelbooru', gsbooruTag: 'gsbooru', yandeTag: 'yande',
-            danTag: 'dan', konaTag: 'kona', sankakuTag: 'sankaku',
+            zeroTag: 'zero', danTag: 'dan',
             animeDlTag: 'anime_dl', pinterestTag: 'pinterest', pixivTag: 'pixiv',
-            eshuushuuTag: 'eshuushuu', eshuushuuUser: 'eshuushuu',
-            nekosapiTag: 'nekosapi', nekosiaTag: 'nekosia'
+            eshuushuuUser: 'eshuushuu',
+            nekosapiTag: 'nekosapi', xTag: 'x'
         };
         document.addEventListener("keydown", function(e) {
             if (e.key !== "Enter") return;

@@ -62,47 +62,29 @@ class GelbooruWorker(BaseWorker):
         # (v1-migration era) silently left the rest uncategorized — and that
         # state got frozen into image metadata, image_history and the gallery
         # at download time, so later cache heals never repaired those files
-        uncached = [t for t in tag_names if t not in self.tag_cache]
-        if not uncached:
-            return
-        sem = asyncio.Semaphore(32)
-        async def query_one(tag_name):
-            async with sem:
-                params = {"page": "dapi", "s": "tag", "q": "index", "name": tag_name, "json": 1, "limit": 50}
-                if api_key and user_id:
-                    params["api_key"] = api_key
-                    params["user_id"] = user_id
-                # ponytail: 3 attempts — a transient 429/network fluke must not
-                # leave a tag miscategorized for this whole run
-                for attempt in range(3):
-                    fetched = False
-                    try:
-                        resp = await self.session.get("https://gelbooru.com/index.php", params=params)
-                        if resp.status == 200:
-                            data = await resp.json()
-                            tags = data.get("tag") or []
-                            # ponytail: only trust the exact tag, never a near miss
-                            # gelbooru entity-encodes response names (kal&#039;tsit_...)
-                            match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
-                            if match is not None:
-                                self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                            fetched = True  # 200 processed: match OR genuinely absent
-                    except Exception:
-                        fetched = False
-                    if fetched:
-                        break
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                # ponytail: a tag that never comes back stays uncached —
-                # caching a failure would mislabel it forever; next run retries
-                await asyncio.sleep(0.2)
-        await asyncio.gather(*[query_one(t) for t in uncached])
-        still = [t for t in uncached if t not in self.tag_cache]
+
+        async def attempt_one(tag_name):
+            params = {"page": "dapi", "s": "tag", "q": "index", "name": tag_name, "json": 1, "limit": 50}
+            if api_key and user_id:
+                params["api_key"] = api_key
+                params["user_id"] = user_id
+            async with self.session.get("https://gelbooru.com/index.php", params=params) as resp:
+                if resp.status != 200:
+                    return False
+                data = await resp.json()
+                tags = data.get("tag") or []
+                # ponytail: only trust the exact tag, never a near miss
+                # gelbooru entity-encodes response names (kal&#039;tsit_...)
+                match = next((t for t in tags if html.unescape(str(t.get("name", ""))).lower() == tag_name.lower()), None)
+                if match is not None:
+                    self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                return True  # 200 processed: match OR genuinely absent
+
+        await self._run_tag_fetch(tag_names, attempt_one, TAG_TYPES_FILE, sem_limit=32)
+        still = [t for t in tag_names if t not in self.tag_cache]
         if still:
             self.log(f"⚠️ {len(still)} tag(s) still uncategorized after 3 retries "
                      f"— downloads this run will store them as general tags.")
-        # ponytail: two concurrent gelbooru workers can overwrite each other's
-        # save — worst case those tags refetch on a later run
-        await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
 
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
@@ -113,6 +95,7 @@ class GelbooruWorker(BaseWorker):
         pid = 0
 
         consecutive_errors = 0
+        retried_rate_limit = False
         made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
@@ -123,16 +106,24 @@ class GelbooruWorker(BaseWorker):
                     params["api_key"] = api_key
                     params["user_id"] = user_id
 
-                resp = await self.session.get("https://gelbooru.com/index.php", params=params)
-                if resp.status == 401:
-                    self.log("ERROR 401: Unauthorized! Enter API Key in Options.")
-                    break
-                elif resp.status in [403, 429]:
-                    self.log(f"ERROR {resp.status}. Change proxy or slow down.")
-                    break
+                async with self.session.get("https://gelbooru.com/index.php", params=params) as resp:
+                    if resp.status == 401:
+                        self.log("ERROR 401: Unauthorized! Enter API Key in Options.")
+                        break
+                    elif resp.status in [403, 429]:
+                        # one transient rate-limit hit should not kill a long
+                        # run — pause once, refetch the same page
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {pid}")
+                            await asyncio.sleep(30)
+                            continue
+                        self.log(f"ERROR {resp.status}. Change proxy or slow down.")
+                        break
 
-                resp.raise_for_status()
-                data = await resp.json()
+                    resp.raise_for_status()
+                    data = await resp.json()
+
                 posts = data.get("post", [])
 
                 if not posts:
@@ -150,6 +141,7 @@ class GelbooruWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             all_tags = set()
             for post in posts:
                 if isinstance(post, dict):

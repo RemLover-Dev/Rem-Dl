@@ -48,9 +48,7 @@ from dataclasses import dataclass
 from PIL import Image, ImageChops, ImageOps
 
 # --- paths, following the same convention as core/database.py -------------
-
 from core.runtime_paths import app_base_dir as _app_base_dir
-
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 DEDUP_DB_FILE = os.path.join(DATABASE_DIR, "dedup.sqlite3")
@@ -312,6 +310,9 @@ class DedupResult:
     # set when the new file was a duplicate but larger: it is kept
     # (is_duplicate=False) and this smaller stored file was replaced by it
     replaced_path: str | None = None
+    # (mtime_ns, size) captured before unlink; versioned cache eviction can
+    # still derive the old cache keys after the source file is gone.
+    replaced_stat: tuple[int, int] | None = None
 
 
 # --- color histogram / correlation helpers --------------------------------
@@ -382,10 +383,32 @@ def _content_bbox(rgb: Image.Image):
     return diff.point([0] * (BORDER_TOL + 1) + [255] * (255 - BORDER_TOL)).getbbox()
 
 
+# optional callback (path, PIL.Image) executed inside the decode worker while
+# the image is still open — lets the thumbnail pipeline share the dedup decode
+_thumb_hook = None
+
+
+def set_rescan_thumb_hook(fn) -> None:
+    """Register/clear (None) the shared-decode thumbnail builder."""
+    global _thumb_hook
+    _thumb_hook = fn
+
+
 def _load_content(path: str) -> Image.Image:
     """RGB image of just the picture: EXIF-rotated, flattened on white, margins trimmed."""
+
+    hook = _thumb_hook
     with Image.open(path) as img:
         img.load()
+        # one decode, several products: the backfill pass hands the freshly
+        # decoded source to a registered callback (thumbnail builder) so a
+        # cold cache doesn't decode the same 33MP image twice — the signature
+        # job decodes it once, the thumbnail reuses that decode
+        if hook is not None:
+            try:
+                hook(path, img)
+            except Exception:
+                pass
         try:
             if img.getexif().get(0x0112, 1) != 1:
                 img = ImageOps.exif_transpose(img)
@@ -575,9 +598,7 @@ def _is_full_duplicate(sig_a: Signature, sig_b: Signature) -> bool:
     if _hist_corr(sig_a.color_hist, sig_b.color_hist) < COLOR_SIM_THRESHOLD:
         return False
     local_sims = [_hist_corr(a, b) for a, b in zip(sig_a.grid_hists, sig_b.grid_hists)]
-    if local_sims and min(local_sims) < LOCAL_COLOR_SIM_THRESHOLD:
-        return False
-    return True
+    return not (local_sims and min(local_sims) < LOCAL_COLOR_SIM_THRESHOLD)
 
 
 # --- (de)serialization helpers for storing a Signature in SQLite ----------
@@ -623,7 +644,7 @@ class DedupStore:
     and safely purges ghost records if an original file was removed by the user.
     """
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         # resolved here, not in the signature: def-arg defaults are bound at
         # import time, so a later redirect of DEDUP_DB_FILE would be ignored
         # and a test would write into the app's real dedup db
@@ -636,6 +657,8 @@ class DedupStore:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
         self._phash_index = self._load_phash_index()  # {id: int}
+        # writes since the last commit — see _maybe_commit_locked
+        self._pending_writes = 0
         # in-flight source-md5 claims: {md5: filepath} + reverse, guarded by _lock
         self._claims: dict = {}
         self._claims_by_fp: dict = {}
@@ -729,25 +752,39 @@ class DedupStore:
             )
             self._conn.commit()
 
+    def _maybe_commit_locked(self):
+        """One fsync per downloaded image makes batches crawl. Commit every
+        32 writes instead; close() flushes the rest. A crash mid-batch loses
+        at most 32 dedup rows — the rescan backfill re-hashes them."""
+        self._pending_writes += 1
+        if self._pending_writes >= 32:
+            self._conn.commit()
+            self._pending_writes = 0
+
     def _load_phash_index(self):
         with self._lock:
             cur = self._conn.execute("SELECT id, phash FROM image_hashes")
             index = {}
+            dropped = 0
             for row in cur.fetchall():
                 try:
                     index[row["id"]] = int(str(row["phash"]), 16)
                 except Exception:
-                    pass
+                    dropped += 1
+            if dropped:
+                # unparseable rows are excluded from matching — say so once
+                # instead of silently shrinking the dedup coverage
+                print(f"[DEDUP] {dropped} rows with unparseable phash skipped at startup")
             return index
 
     def _candidate_ids(self, phash) -> list[int]:
         target = int(phash) if isinstance(phash, PureHash) else int(str(phash), 16)
-        with self._lock:
-            items = list(self._phash_index.items())
         out = []
-        for row_id, ph in items:
-            if (target ^ ph).bit_count() <= PREFILTER_MARGIN:
-                out.append(row_id)
+        with self._lock:
+            # iterate the live dict — no list copy of ~1M pairs per image
+            for row_id, ph in self._phash_index.items():
+                if (target ^ ph).bit_count() <= PREFILTER_MARGIN:
+                    out.append(row_id)
         return out
 
     def _prune_ids(self, ids: list[int]):
@@ -795,8 +832,8 @@ class DedupStore:
 
         return matched_row
 
-    def add(self, filepath: str, sig: Signature, site: str = None, post_id: str = None,
-            source_md5: str = None, generated_hashes: dict = None) -> int:
+    def add(self, filepath: str, sig: Signature, site: str | None = None, post_id: str | None = None,
+            source_md5: str | None = None, generated_hashes: dict | None = None) -> int:
         src = normalize_any_source_hash(source_md5)
         extras = normalize_generated_hashes(generated_hashes)
         data = _sig_to_row(sig)
@@ -817,7 +854,7 @@ class DedupStore:
                 self._add_source_hash_locked(new_id, site, src[1], src[0])
             for algo, value in extras.items():
                 self._add_source_hash_locked(new_id, site, value, algo)
-            self._conn.commit()
+            self._maybe_commit_locked()
         return new_id
 
     def _add_source_hash_locked(self, image_id: int, site: str, digest: str,
@@ -914,8 +951,8 @@ class DedupStore:
             return (w * h, size)
         return image_quality(path)
 
-    def check_and_add(self, filepath: str, site: str = None, post_id: str = None,
-                      source_md5: str = None, generated_hashes: dict = None,
+    def check_and_add(self, filepath: str, site: str | None = None, post_id: str | None = None,
+                      source_md5: str | None = None, generated_hashes: dict | None = None,
                       signature=None) -> DedupResult:
         """
         Check the candidate against source hashes (when provided) and perceptual
@@ -1011,6 +1048,11 @@ class DedupStore:
         Caller holds the lock.
         """
         old_path = match["filepath"]
+        try:
+            old_st = os.stat(old_path)
+            old_stat = (int(old_st.st_mtime_ns), int(old_st.st_size))
+        except OSError:
+            old_stat = None
         data = _sig_to_row(sig)
         new_site = site if site is not None else match["site"]
         new_pid = post_id if site is not None else match["post_id"]
@@ -1032,15 +1074,22 @@ class DedupStore:
                 is_duplicate=True, filepath=new_path, matched_path=old_path,
                 matched_site=match["site"], matched_post_id=match["post_id"])
         self._phash_index[match["id"]] = int(data["phash"], 16)
+        replaced_path = None
+        replaced_stat = None
         if DELETE_REPLACED:
             try:
                 os.remove(old_path)
+                replaced_path = old_path
+                replaced_stat = old_stat
             except OSError as e:
+                # The DB points at the larger new file, but the stale file may
+                # still be present. Do not announce a completed replacement
+                # cleanup until its physical removal actually succeeded.
                 print(f"[DEDUP] could not remove replaced file {old_path}: {e}")
         return DedupResult(
             is_duplicate=False, filepath=new_path, matched_path=old_path,
             matched_site=match["site"], matched_post_id=match["post_id"],
-            replaced_path=old_path)
+            replaced_path=replaced_path, replaced_stat=replaced_stat)
 
     def check_and_add_many(self, entries, workers=None, executor=None, progress=None) -> list:
         """check_and_add for many images, hashing them in parallel.
@@ -1187,7 +1236,12 @@ class DedupStore:
         added = 0
         gen = iter_signatures([fp for fp, _ in todo], workers)
         try:
-            for (fp, site), (_p, sig, err) in zip(todo, gen):
+            # pace the backfill: sleep between signatures hands cores back to
+            # thumbnail decodes — the user's first gallery view must not wait
+            # minutes behind 100MB of perceptual hashing (startup only)
+            for i, ((fp, site), (_p, sig, err)) in enumerate(zip(todo, gen)):
+                if i and i % 4 == 0:
+                    time.sleep(0.03)
                 if sig is None:
                     print(f"[DEDUP] backfill failed for {fp}: {err}")
                     continue
@@ -1276,27 +1330,18 @@ class DedupStore:
                     for i in ids:
                         self._phash_index.pop(i, None)
             except Exception as e:
+                # half a prune must never ride the next unrelated commit
+                self._conn.rollback()
                 print(f"[DEDUP] Error removing filepath: {e}")
 
-    def remove_missing_files(self) -> int:
-        """Delete records whose file no longer exists on disk. Returns count removed."""
+    def count_missing_files(self) -> int:
+        """Count records whose file is gone from disk. On request they are
+        KEPT: a moved or re-added image must retain its hash/name identity
+        (its thumb cache, dedup match and tags). A matching re-add prunes a
+        ghost record on lookup instead. Returns the missing count."""
         with self._lock:
             rows = self._conn.execute("SELECT id, filepath FROM image_hashes").fetchall()
-        # stat outside the lock
-        missing = [r["id"] for r in rows if not os.path.isfile(r["filepath"])]
-        if not missing:
-            return 0
-        with self._lock:
-            for start in range(0, len(missing), 500):
-                batch = missing[start:start + 500]
-                placeholders = ",".join("?" * len(batch))
-                self._conn.execute(f"DELETE FROM image_hashes WHERE id IN ({placeholders})", batch)
-                self._conn.execute(
-                    f"DELETE FROM source_hashes WHERE image_id IN ({placeholders})", batch)
-            self._conn.commit()
-            for i in missing:
-                self._phash_index.pop(i, None)
-        return len(missing)
+        return sum(1 for r in rows if not os.path.isfile(r["filepath"]))
 
     def count(self) -> int:
         with self._lock:
@@ -1313,6 +1358,11 @@ class DedupStore:
         with self._lock:
             self._claims.clear()
             self._claims_by_fp.clear()
+            try:
+                self._conn.commit()
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except Exception:
+                pass
             try:
                 self._conn.close()
             except Exception:

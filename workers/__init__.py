@@ -56,19 +56,19 @@ class BaseWorker(BaseDownloader, ABC):
             else: general.append(t)
         return general, artists, characters, copyrights, metadata_tags
 
-    async def _run_tag_fetch(self, tag_names, attempt_one, types_file):
-        """Shared tag-fetch skeleton (yande/safebooru): uncached filter →
-        Semaphore(4) → 3-attempt retry with backoff → gather →
-        persist. attempt_one(tag) returns True once a 200 was processed
-        (exact match stored or genuinely absent); non-200/exception retries
-        and a tag that never comes back stays uncached."""
+    async def _run_tag_fetch(self, tag_names, attempt_one, types_file, sem_limit=4):
+        """Shared tag-fetch skeleton (yande/safebooru/konachan/gelbooru):
+        uncached filter → Semaphore(sem_limit) → 3-attempt retry with backoff
+        → gather → persist. attempt_one(tag) returns True once a 200 was
+        processed (exact match stored or genuinely absent); non-200/exception
+        retries and a tag that never comes back stays uncached."""
         # no cap: capping made every tag past #150 feed the folder
-        # classifier as a miscategorized "tag"; Semaphore(4) keeps the pace
+        # classifier as a miscategorized "tag"; the semaphore keeps the pace
         uncached = [t for t in tag_names if t not in self.tag_cache]
         if not uncached:
             return self.tag_cache
         # ponytail: concurrent — sequential per-tag requests stalled every page
-        sem = asyncio.Semaphore(4)
+        sem = asyncio.Semaphore(sem_limit)
 
         async def query_one(tag_name):
             async with sem:

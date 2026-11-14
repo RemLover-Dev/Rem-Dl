@@ -16,6 +16,9 @@ from core.database import DatabaseManager
 
 FOLLOW_ENDPOINT = "/v2/illust/follow"
 
+# pixiv's own accounts (campaign/news posts in the following feed) — never notify
+SKIP_ARTIST_NAMES = {"pixiv", "pixiv事務局"}
+
 STATE = {
     "watching": False,
     "checking": False,
@@ -101,6 +104,9 @@ def ingest(works):
     """works: raw illust dicts, newest first. Returns the new entries."""
     entries = []
     for w in works:
+        u = w.get("user") or {}
+        if (u.get("name") or "").strip().lower() in SKIP_ARTIST_NAMES:
+            continue
         e = entry_from_work(w)
         if e["work_id"]:
             e["external_id"] = e["work_id"]

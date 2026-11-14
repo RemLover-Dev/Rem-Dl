@@ -1,12 +1,15 @@
 import atexit
 import json
+import logging
 import os
 import threading
 import time
+import uuid
 
-
-from core.runtime_paths import app_base_dir as _app_base_dir
 from core.atomic_io import write_json, write_lines
+from core.runtime_paths import app_base_dir as _app_base_dir
+
+logger = logging.getLogger("RemsDl.Database")
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 
@@ -20,6 +23,7 @@ FAV_TAGS_FILE = os.path.join(DATABASE_DIR, "fav_tags.json")
 IMAGE_HISTORY_FILE = os.path.join(DATABASE_DIR, "image_history.json")
 UI_CONFIG_FILE = os.path.join(DATABASE_DIR, "ui_config.json")
 LEARNED_TAGS_FILE = os.path.join(DATABASE_DIR, "user_learned_tags.json")
+PLANNING_FILE = os.path.join(DATABASE_DIR, "planning_list.json")
 
 # image history lives in gallery.db now. There is deliberately no parsed
 # copy in memory: the old _hist_cache was read in full once and kept forever,
@@ -121,7 +125,14 @@ class DatabaseManager:
                     DatabaseManager._quarantine(filepath)
                     write_json(filepath, obj)
                     return obj
-                except Exception:
+                except Exception as e:
+                    # non-parse read failure (OSError, UnicodeDecodeError):
+                    # returning [] would let the next read-modify-write save
+                    # an empty store — try the .bak instead of wiping
+                    restore = DatabaseManager._recover_bak(filepath)
+                    if restore is not None:
+                        return restore
+                    logger.error("[DB] %s unreadable and no .bak: %s", filepath, e)
                     return []
             return []
 
@@ -194,6 +205,102 @@ class DatabaseManager:
     def clear_tag_history():
         DatabaseManager.save_tag_history([])
 
+    # --- Download Planning List ---
+    @staticmethod
+    def load_planning_list():
+        return DatabaseManager.load_json(PLANNING_FILE)
+
+    @staticmethod
+    def save_planning_list(data):
+        DatabaseManager.save_json(PLANNING_FILE, data)
+
+    @staticmethod
+    def add_planning_entry(site, tags, rating="", note=""):
+        with _DB_LOCK:
+            site = str(site or "").strip().lower()
+            tags = str(tags or "").strip()
+            if not site or not tags:
+                return None
+            # identical site+tags+rating already planned -> flag, don't duplicate
+            key = (site, tags, rating or "", str(note or "").strip())
+            entries = DatabaseManager.load_planning_list()
+            if any((p.get("site"), p.get("tags"), p.get("rating") or "",
+                    p.get("note") or "") == key for p in entries):
+                return None
+            entry = {"id": uuid.uuid4().hex[:10], "site": site, "tags": tags,
+                     "rating": rating or "", "note": str(note or "").strip(),
+                     "created_at": time.time(), "completed": False,
+                     "completed_at": 0}
+            entries.insert(0, entry)
+            DatabaseManager.save_planning_list(entries)
+            return entry
+
+    @staticmethod
+    def update_planning_entry(entry_id, patch):
+        """Whitelisted patch of one entry. manual_recheck=True completed->pending
+        reset clears completed_at instead of leaving a stale timestamp."""
+        allowed = {"site", "tags", "rating", "note"}
+        with _DB_LOCK:
+            entries = DatabaseManager.load_planning_list()
+            entry = next((e for e in entries if isinstance(e, dict) and e.get("id") == entry_id), None)
+            if not entry:
+                return None
+            if "completed" in patch:
+                want = bool(patch["completed"])
+                if want and not entry.get("completed"):
+                    entry["completed"] = True
+                    entry["completed_at"] = time.time()
+                elif not want:
+                    # manual requeue must clear the old date — it's edited by hand otherwise
+                    entry["completed"] = False
+                    entry["completed_at"] = 0
+            for field in allowed:
+                if field in patch and isinstance(patch[field], str):
+                    value = patch[field].strip()
+                    if field == "site":
+                        value = value.lower()
+                    if field in ("site", "tags") and not value:
+                        return None  # would make the entry meaningless
+                    entry[field] = value
+            DatabaseManager.save_planning_list(entries)
+            return entry
+
+    @staticmethod
+    def remove_planning_entry(entry_id):
+        with _DB_LOCK:
+            entries = DatabaseManager.load_planning_list()
+            remaining = [e for e in entries if not (isinstance(e, dict) and e.get("id") == entry_id)]
+            if len(remaining) != len(entries):
+                DatabaseManager.save_planning_list(remaining)
+                return True
+            return False
+
+    @staticmethod
+    def clear_planning_list(mode="all"):
+        """mode 'all': wipe, 'completed': keep pending, 'duplicates':
+        drop later copies of an identical (site, tags, rating, note) entry."""
+        with _DB_LOCK:
+            entries = DatabaseManager.load_planning_list()
+            removed = 0
+            if mode == "duplicates":
+                # the list is stored newest-first — keep the original copy,
+                # drop every later duplicate
+                seen, remaining = set(), []
+                for e in reversed(entries):
+                    key = (str(e.get("site") or ""), str(e.get("tags") or ""),
+                           str(e.get("rating") or ""), str(e.get("note") or "").strip())
+                    if key in seen:
+                        removed += 1
+                        continue
+                    seen.add(key)
+                    remaining.append(e)
+                remaining.reverse()
+            else:
+                remaining = [e for e in entries if not e.get("completed")] if mode == "completed" else []
+                removed = len(entries) - len(remaining)
+            DatabaseManager.save_planning_list(remaining)
+            return removed
+
     # --- Image History ---
     @staticmethod
     def load_image_history():
@@ -203,6 +310,11 @@ class DatabaseManager:
         """
         with _DB_LOCK:
             return _store().history_all()
+
+    @staticmethod
+    def image_history_page(limit, offset, terms=None, from_ts=None, to_ts=None):
+        with _DB_LOCK:
+            return _store().history_page(limit, offset, terms, from_ts, to_ts)
 
     @staticmethod
     def save_image_history(data):
@@ -232,8 +344,26 @@ class DatabaseManager:
 
     @staticmethod
     def remove_image_history(filename):
+        """Legacy basename removal; use the exact ID/path helpers in routes."""
         with _DB_LOCK:
-            _store().history_delete(filename)
+            return _store().history_delete(filename)
+
+    @staticmethod
+    def remove_image_history_by_id(history_id):
+        with _DB_LOCK:
+            return _store().history_delete_by_id(history_id)
+
+    @staticmethod
+    def remove_image_history_by_filepath(filepath, site=None):
+        with _DB_LOCK:
+            if site is not None:
+                return _store().history_delete_by_site_filepath(site, filepath)
+            return _store().history_delete_by_filepath(filepath)
+
+    @staticmethod
+    def count_image_history_by_filename(filename):
+        with _DB_LOCK:
+            return _store().history_count_by_filename(filename)
 
     @staticmethod
     def clear_image_history():
@@ -310,8 +440,8 @@ class DatabaseManager:
             if changed:
                 try:
                     DatabaseManager.save_ui_config(config)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[UI-CONFIG] migration save failed: {e}")
             return config
 
     @staticmethod
@@ -334,6 +464,7 @@ class DatabaseManager:
             "performance_mode": "lite",
             "mute_auth_warnings": False,
             "pixiv_watch_minutes": 90,
+            "gallery_roots": [],
             "wallpapers": {
                 "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"},
                 "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"},
@@ -485,7 +616,9 @@ class SettingsManager:
             "PIXIV_COOKIE": data.get("pixiv_cookie", ""),
             "DANBOORU_LOGIN": data.get("danbooru_login", ""),
             "DANBOORU_API_KEY": data.get("danbooru_api_key", ""),
-            "GSBOORU_API_KEY": data.get("gsbooru_api_key", "")
+            "GSBOORU_API_KEY": data.get("gsbooru_api_key", ""),
+            "X_COOKIES": data.get("x_cookies", ""),
+            "X_USERNAME": data.get("x_username", "")
         }
         self._upsert_env_keys(env_keys)
         for k, v in env_keys.items():
@@ -515,7 +648,9 @@ class SettingsManager:
             "pixiv_cookie": resolved.get("PIXIV_COOKIE", ""),
             "danbooru_login": resolved.get("DANBOORU_LOGIN", ""),
             "danbooru_api_key": resolved.get("DANBOORU_API_KEY", ""),
-            "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", "")
+            "gsbooru_api_key": resolved.get("GSBOORU_API_KEY", ""),
+            "x_cookies": resolved.get("X_COOKIES", ""),
+            "x_username": resolved.get("X_USERNAME", "")
         }
 
 

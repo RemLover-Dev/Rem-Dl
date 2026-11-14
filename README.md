@@ -26,6 +26,10 @@ Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Nekos.best, Nekos.life,
 - **Packaging & Desktop Automation:** Automated Inno Setup installer builds, bundled `vc_redist.x64.exe` inside portable Windows releases, and automated Linux desktop integration script `install-desktop.sh`.
 - **Safe Folder Rename Protection:** Two-step renaming for case-only changes on case-insensitive filesystems (Windows/macOS) preventing data loss.
 - **Cross-Platform Clipboard & Security:** Literal path escaping for PowerShell/macOS clipboards, plus thread-safe SSRF-guarded notification thumbnail proxying.
+- **Duplicate-Proof Downloads & JXL-Synced Cards:** Cross-site perceptual-hash dedup keeps the larger copy of a duplicated image and merges the duplicate's tags. Download cards (log, history, gallery) publish only once the copy will actually survive — after a short grace window for dedup swaps, and (with auto-convert to JXL on) only after that image's own conversion finishes; a failed conversion still publishes the original image.
+- **Conversion Progress Bar:** With auto-JXL on, the finished bar becomes a live "Converting" gauge that fills as each image commits, and the success message lands only after the last image card publishes.
+- **Instant History Tab:** The history archive pages server-side and searches in the database, so opening and searching a 22k-image history is instant instead of shipping ~14MB of JSON per tab switch.
+- **Smarter Tag Display & Search:** Tags capitalize after `:` ("Cyberpunk: edgerunners" → "Edgerunners"), emoticon tags keep their underscores (`>_<`, `^_^`), stored `\u003C`-style escapes render decoded, and searching `">_<",` in the gallery finds those images.
 
 ## ✨ New in Version 5.3 (Rem 5.3)
 - **PyInstaller Metadata Fix (`rule34Py`):** Resolved startup failure in frozen standalone/portable builds by packaging distribution metadata and implementing runtime safeguards.
@@ -86,11 +90,15 @@ RULE34_API_KEY=your_api_key_here
 RULE34_USER_ID=your_user_id_here
 USE_PROXY=false
 PROXY_URL=http://127.0.0.1:10808
-VERIFY_TLS=false
+VERIFY_TLS=true
 API_TIMEOUT=10
 RETRY_WAIT=5
 ANTI_BAN_PAUSE=3.0
 ```
+
+Keep `VERIFY_TLS=true` during normal use. If a local proxy intercepts HTTPS,
+install and trust that proxy's CA certificate instead of disabling certificate
+verification; `VERIFY_TLS=false` should be a temporary troubleshooting exception.
 
 ### 4. Run
 
@@ -148,6 +156,7 @@ Entering credentials in the **Settings** tab unlocks higher API limits and restr
 - **Proxy Support** -- Full proxy configuration from the UI (v2rayN, Clash, etc.)
 - **API Key Management** -- Manage Rule34 credentials directly from the Web UI
 - **Tag Auto-Suggest** -- Live autocomplete for all platforms including offline Konachan tag DB
+- **Duplicate-Proof Downloads** -- Perceptual-hash + source-hash dedup across sites: duplicated images are downloaded once, the larger copy survives, and the duplicate's tags are merged into the kept entry
 - **Hydrus Sidecar Files** -- Auto-generates `.filename.txt` sidecar files with tags, artists, and source for Hydrus Network import
 - **Persistent Settings** -- Proxy, API keys, and download settings saved in `.env`
 
@@ -316,22 +325,90 @@ python Rems_Dl.py
 - **Missing WebKitGTK?** No problem! If `pywebview` or WebKitGTK is not installed on your system, Rems Dl will automatically notify you and launch smoothly in your default web browser at `http://127.0.0.1:<port>`.
 - **Headless Server / Remote VPS / SSH:** Run without opening a window:
   ```bash
-  REMS_HEADLESS=1 python Rems_Dl.py
+  REMS_HEADLESS=1 PORT=5000 python Rems_Dl.py
   # or
-  python Rems_Dl.py --headless
+  PORT=5000 python Rems_Dl.py --headless
   ```
-  The app will bind to `0.0.0.0:$PORT` (default: 5000) and allow external access from any device on your network. Closing browser tabs will **not** terminate the server.
+  The app binds to `127.0.0.1:$PORT` by default. Set `PORT=5000` as above (or use the actual selected port) before creating the SSH tunnel:
+  ```bash
+  ssh -L 5000:127.0.0.1:5000 user@server
+  ```
+  Then open `http://127.0.0.1:5000` locally. Closing browser tabs will **not** terminate the server.
+
+  Direct network binding is opt-in and requires a 32+ character `REMS_ACCESS_TOKEN` plus an explicit `REMS_ALLOWED_HOSTS` allowlist. Only expose it behind a firewall/reverse proxy you control:
+  ```bash
+  REMS_HEADLESS=1 REMS_HOST=0.0.0.0 PORT=5000 \
+    REMS_ACCESS_TOKEN='replace-with-a-random-32-plus-character-secret' \
+    REMS_ALLOWED_HOSTS='rems.example.com,192.0.2.10' python Rems_Dl.py
+  ```
+  Behind a reverse proxy, the proxy must pass the original `Host` header (nginx: `proxy_set_header Host $host;`) — see the Docker section for a full nginx example. Do not put the access token in shell history or logs. If omitted, a generated token is saved to `database/rems_access_token` with mode `0600`; read it locally with `cat database/rems_access_token` and enter it on the login page. The value itself is never printed to service logs.
 
 ### 6. Running with Docker (Zero Host Dependencies)
 Pull and run the official image:
 ```bash
 docker pull ghcr.io/remlover-dev/rems-dl:latest
-docker run -d -p 5000:5000 \
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_HOST=0.0.0.0 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
   -v "$(pwd)/Rems Dl:/app/Rems Dl" \
   -v "$(pwd)/database:/app/database" \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
-Then open `http://localhost:5000` in your browser. (The container runs persistently in headless mode and stays active across tab disconnects).
+The container listens internally on all interfaces, but Docker publishes it only on the host loopback address. Reach it remotely through `ssh -L 5000:127.0.0.1:5000 user@server`, then open `http://localhost:5000`. The container persists across browser-tab disconnects.
+
+#### Public website behind a reverse proxy
+
+Keep the loopback publish and put nginx in front; allowlist the public hostname and pass the original `Host` header:
+
+```bash
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=rems.example.com \
+  -v "$(pwd)/Rems Dl:/app/Rems Dl" \
+  -v "$(pwd)/database:/app/database" \
+  --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
+```
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name rems.example.com;
+  # ssl_certificate     /etc/letsencrypt/live/rems.example.com/fullchain.pem;
+  # ssl_certificate_key /etc/letsencrypt/live/rems.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;              # the app allowlists this host
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;   # socket.io websocket
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 60s;
+  }
+}
+```
+
+Open `https://rems.example.com` and enter the `REMS_ACCESS_TOKEN` value on the login page once. The session cookie is `HttpOnly` + `SameSite=Strict` and becomes `Secure` on HTTPS. Do not publish port 5000 on `0.0.0.0` directly, and pass the token via `--env-file` rather than the shell if you want it out of your history.
+
+#### Serving under a URL subpath
+
+To host the app at `https://example.com/remdl/` instead of its own domain, set `REMS_BASE_PATH=/remdl` and have nginx strip the prefix:
+
+```nginx
+location = /remdl { return 301 /remdl/; }
+location /remdl/ {
+  proxy_pass http://127.0.0.1:5000/;        # trailing slash strips /remdl/
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Upgrade $http_upgrade;   # socket.io websocket
+  proxy_set_header Connection "upgrade";
+  proxy_read_timeout 60s;
+}
+```
+
+The app then prefixes every URL it hands to the browser (links, fetches, socket.io, cookies) with `/remdl`, while Flask routes stay unchanged. Leave `REMS_BASE_PATH` unset for root deployments.
 
 ---
 
@@ -361,7 +438,7 @@ cp database/*.json dist/Rems_Dl/database/
 ```
 The Linux build lands in `dist/Rems_Dl/Rems_Dl` (no `.exe` extension). Notes:
 - Build **inside WSL**, never on Windows, when the target is Linux.
-- On a headless server, skip `pywebview` -- run with `REMS_HEADLESS=1` (or `--headless`) so the app serves on `0.0.0.0:$PORT` instead of opening a window.
+- On a headless server, skip `pywebview` -- run with `REMS_HEADLESS=1` (or `--headless`). The default bind is loopback; use SSH forwarding for remote access. A non-loopback `REMS_HOST` requires `REMS_ACCESS_TOKEN` and `REMS_ALLOWED_HOSTS`.
 - For servers/containers, the Docker image (see above) is usually simpler than a binary.
 
 > You don't need to build by hand for every release: pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the Windows `.exe`, the Linux binary, and the Docker image, then attaches the archives to the GitHub Release and pushes the image to GHCR.

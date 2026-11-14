@@ -1,18 +1,18 @@
 import json
-import stat
-import threading
-from urllib.parse import urlsplit, urljoin
 import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
+import threading
 import zipfile
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from core.extensions import EXTENSIONS_DIR, get_extension_manager
+from core.extensions import EXTENSIONS_DIR, get_extension_manager, _log_safe
 
 logger = logging.getLogger("RemsDl.ExtensionDownloader")
 
@@ -102,7 +102,7 @@ def fetch_release_info(repo: str) -> dict[str, Any]:
                     "published_at": data.get("published_at", "")
                 }
     except Exception as e:
-        logger.warning(f"Failed to fetch GitHub release for {repo}: {e}")
+        logger.warning(f"Failed to fetch GitHub release for {_log_safe(repo)}: {_log_safe(e)}")
 
     # Fallback: Main branch zipball
     fallback_url = GITHUB_ARCHIVE_URL.format(repo=repo)
@@ -168,7 +168,9 @@ def _install_source(local_path, ext_id):
         raise SecurityError("Invalid extension ID")
     root = os.path.realpath(EXTENSIONS_DIR)
     os.makedirs(root, exist_ok=True)
-    target = os.path.join(root, ext_id)
+    target = os.path.realpath(os.path.join(root, ext_id))
+    if os.path.commonpath([root, target]) != root:
+        raise SecurityError("Extension target escapes extension directory")
     if os.path.islink(target):
         raise SecurityError("Extension target cannot be a symbolic link")
     with _INSTALL_LOCK, tempfile.TemporaryDirectory(prefix=".install-", dir=root) as work:
@@ -224,11 +226,20 @@ def _install_source(local_path, ext_id):
 
 
 def install_from_local_path(local_path: str, ext_id: str) -> tuple[bool, str]:
+    # Arbitrary user-picked paths are the feature; validate shape, not location.
+    if not isinstance(local_path, str) or not local_path or "\x00" in local_path:
+        return False, "Invalid local path."
+    local_path = os.path.realpath(os.path.abspath(local_path))
+    if not os.path.exists(local_path):
+        return False, "Local path does not exist."
     try:
-        return _install_source(os.path.abspath(local_path), ext_id)
+        return _install_source(local_path, ext_id)
+    except SecurityError as exc:
+        # curated validation message — safe to show
+        return False, str(exc)
     except Exception as exc:
         logger.warning("Local extension installation failed: %s", exc)
-        return False, str(exc)
+        return False, "Extension installation failed."
 
 
 def install_from_github(repo: str, ext_id: str | None = None) -> tuple[bool, str]:
@@ -250,9 +261,11 @@ def install_from_github(repo: str, ext_id: str | None = None) -> tuple[bool, str
                             raise SecurityError("Extension archive exceeds download limit")
                         stream.write(chunk)
             return _install_source(archive, ext_id)
+    except SecurityError as exc:
+        return False, str(exc)
     except Exception as exc:
         logger.warning("GitHub extension installation failed: %s", exc)
-        return False, str(exc)
+        return False, "Extension installation from GitHub failed."
 
 
 def check_for_updates(ext_id: str, repo: str) -> dict[str, Any]:

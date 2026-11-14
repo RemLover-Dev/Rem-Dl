@@ -1,19 +1,19 @@
 """Bounded parallel conversion queue; cancellation owns staging and native process."""
 import atexit
 import copy
+import hashlib
 import importlib.util
 import json
-import hashlib
-import shutil
 import os
-from pathlib import Path
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 from core.runtime_paths import resource_root
 
@@ -361,7 +361,7 @@ class JxlService:
 
     def run(self, source, mode, quality, effort, recursive):
         from core.jxl_cpu import parallel_threads
-        from core.jxl_resources import memory_budget, estimate_memory, MIB
+        from core.jxl_resources import MIB, estimate_memory, memory_budget
         active = []
         try:
             files = self.discover(source, mode, recursive)

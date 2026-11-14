@@ -198,7 +198,7 @@ def test_derive_img_url_never_returns_source_page():
 def test_scraper_no_detail_fetch_no_sleeps_and_strips_dotfiles(tmp_path, monkeypatch):
     """Enqueue inline from the listing: no per-post detail request, no
     anti-ban sleeps, probe-derived filenames must not stay hidden dotfiles."""
-    w, logs = _worker(tmp_path, monkeypatch)
+    w, _logs = _worker(tmp_path, monkeypatch)
     assert not hasattr(w, "_curl_post_detail")
 
     sleeps = []

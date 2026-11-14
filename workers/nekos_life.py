@@ -33,16 +33,19 @@ class NekosLifeWorker(BaseWorker):
         collected_count = 0
         consecutive_failures = 0
         max_retries = 3
+        # random API, no cursor: end after 20 consecutive all-duplicate rounds
+        dead_rounds = 0
 
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log("Scanning API...")
-                resp = await self.session.get(self.fetch_url)
-                if resp.status in [403, 429]:
-                    self.log(f"API BAN ({resp.status}). Change VPN node.")
-                    break
-                resp.raise_for_status()
-                data = await resp.json()
+                async with self.session.get(self.fetch_url) as resp:
+                    if resp.status in [403, 429]:
+                        self.log(f"API BAN ({resp.status}). Change VPN node.")
+                        break
+                    resp.raise_for_status()
+                    data = await resp.json()
+
                 url = data.get("url")
                 if not url:
                     self.log("No URL in response.")
@@ -60,6 +63,7 @@ class NekosLifeWorker(BaseWorker):
             if self.stop_event.is_set():
                 break
 
+            before = collected_count
             raw_filename = url.split('/')[-1]
             filename = sanitize_filename(raw_filename, fallback="neko.jpg")
             is_gif = filename.lower().endswith(".gif")
@@ -78,6 +82,14 @@ class NekosLifeWorker(BaseWorker):
 
             if await self.enqueue_download(url, filepath, filename, [self.category], []):
                 collected_count += 1
+
+            if before == collected_count:
+                dead_rounds += 1
+                if dead_rounds >= 20:
+                    self.log("API keeps returning duplicates — pool exhausted, skipping.")
+                    break
+            else:
+                dead_rounds = 0
 
             if not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
                 await asyncio.sleep(self.anti_ban_pause)

@@ -1,7 +1,7 @@
 """Header-only raster estimates and portable available-memory budgeting."""
 import os
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 MAX_PIXELS = 160_000_000
 MIB = 1024 * 1024

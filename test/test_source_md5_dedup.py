@@ -696,7 +696,8 @@ class TestAdapters:
         w.log = lambda m: None
         w.download_queue = asyncio.Queue()
 
-        async def fake_download(url, filepath, filename, tags_list, artists, file_size=0):
+        async def fake_download(url, filepath, filename, tags_list, artists, file_size=0,
+                                characters=None, copyrights=None, metadata_tags=None):
             # claim must still be held while the (immediate) download runs
             assert store.claimed_source_md5(filepath) is not None
             return True
@@ -722,7 +723,8 @@ class TestAdapters:
         monkeypatch.setattr(adm, "save_history", lambda *a, **k: None)
         from workers.anime_dl import AnimeDlWorker
         w = AnimeDlWorker("rem", 10, {})
-        w.log = lambda m: None
+        wlog = []
+        w.log = wlog.append
         w.download_queue = asyncio.Queue()
 
         payload = _img_bytes(30)
@@ -733,6 +735,7 @@ class TestAdapters:
             def iter_content(self):
                 yield payload[:mid]
                 yield payload[mid:]
+            def close(self): pass
         w.curl_session = type("CS", (), {"get": lambda self, *a, **k: Resp()})()
 
         md5 = "a1b2c3d4" + "0" * 24

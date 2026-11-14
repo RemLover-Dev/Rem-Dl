@@ -80,8 +80,6 @@ class TestSettingsManager:
 
 
 def test_jxl_settings_defaults(tmp_path):
-    import importlib
-    import os
     monkey = __import__("pytest").MonkeyPatch()
     monkey.delenv("AUTO_CONVERT_JXL", raising=False)
     monkey.delenv("JXL_EFFORT", raising=False)

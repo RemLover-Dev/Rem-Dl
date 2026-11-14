@@ -92,9 +92,12 @@ class PinterestWorker(BaseWorker):
 
         cleaned = url_or_query.strip().lower().replace("https://", "").replace("http://", "").replace("/", "_")
         safe_name = folder_component(cleaned[:60], fallback="pinterest_query")
-        self.site_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
-        safe_ensure_dir(self.site_root)
-        self.tag_dir = self.site_root
+        # BaseWorker already points site_root at the worker-wide Pinterest
+        # folder and loads its download_history.json there. Keep query-specific
+        # media directories separate so searches share one history across runs.
+        self.query_root = os.path.join(shared.MASTER_FOLDER, "Pinterest", safe_name)
+        safe_ensure_dir(self.query_root)
+        self.tag_dir = self.query_root
 
     async def _create_session(self):
         """Pinterest uses its own library, not aiohttp – return None."""
@@ -163,12 +166,34 @@ class PinterestWorker(BaseWorker):
     async def scraper_task(self):
         self.log(f"Initializing Pinterest worker for: '{self.url_or_query[:80]}' ({'search' if self.is_search else 'url scrape'})")
 
-        if self.net_config.get("use_proxy"):
-            os.environ["HTTP_PROXY"] = self.net_config["proxy_url"]
-            os.environ["HTTPS_PROXY"] = self.net_config["proxy_url"]
-        else:
-            os.environ.pop("HTTP_PROXY", None)
-            os.environ.pop("HTTPS_PROXY", None)
+        def _set_proxy_env():
+            if self.net_config.get("use_proxy"):
+                os.environ["HTTP_PROXY"] = self.net_config["proxy_url"]
+                os.environ["HTTPS_PROXY"] = self.net_config["proxy_url"]
+            else:
+                os.environ.pop("HTTP_PROXY", None)
+                os.environ.pop("HTTPS_PROXY", None)
+
+        def _restore_proxy_env(saved):
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        # pinterest_dl's ApiScraper reads proxy config only from the process
+        # env (no parameter). Scope the env swap to each call instead of the
+        # whole run: another worker creating its session mid-run must not
+        # pick up or lose our proxy. The MediaDownloader path gets its proxy
+        # explicitly via _apply_proxy.
+        def _with_proxy_env(fn, *a, **kw):
+            keys = ("HTTP_PROXY", "HTTPS_PROXY")
+            saved = {k: os.environ.get(k) for k in keys}
+            _set_proxy_env()
+            try:
+                return fn(*a, **kw)
+            finally:
+                _restore_proxy_env(saved)
 
         from pinterest_dl import PinterestDL
         from pinterest_dl.download import MediaDownloader
@@ -189,7 +214,8 @@ class PinterestWorker(BaseWorker):
         email = self.net_config.get("pinterest_email", "")
         password = self.net_config.get("pinterest_password", "")
         # browser launch + cookie-file IO can take minutes — keep it off the loop
-        have_auth = await asyncio.to_thread(self._do_login, client, cookies_path, email, password)
+        have_auth = await asyncio.to_thread(_with_proxy_env, self._do_login,
+                                            client, cookies_path, email, password)
 
         if not have_auth:
             self.log("No auth — public content only")
@@ -219,9 +245,9 @@ class PinterestWorker(BaseWorker):
 
         try:
             if self.is_search:
-                await asyncio.to_thread(client.search, query=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
+                await asyncio.to_thread(_with_proxy_env, client.search, query=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
             else:
-                await asyncio.to_thread(client.scrape, url=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
+                await asyncio.to_thread(_with_proxy_env, client.scrape, url=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
         except Exception as e:
             self.log(f"Scrape error: {e}")
             return
@@ -254,7 +280,7 @@ class PinterestWorker(BaseWorker):
                 continue
 
             try:
-                path = await asyncio.to_thread(downloader.download, media, Path(self.site_root), download_streams=True)
+                path = await asyncio.to_thread(downloader.download, media, Path(self.tag_dir), download_streams=True)
                 filename = os.path.basename(path)
 
                 # media.alt is the pin's written description — an explanation,

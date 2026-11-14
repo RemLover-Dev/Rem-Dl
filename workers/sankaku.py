@@ -92,7 +92,8 @@ class SankakuWorker(BaseWorker):
         self.enqueued_count += 1
         # Download immediately — Sankaku signed URLs expire before queued download starts
         try:
-            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0,
+                                                   characters, copyrights, metadata_tags)
         finally:
             # no worker loop owns this item — the outcome is known right here
             self._release_source_claims((filepath,))
@@ -116,6 +117,7 @@ class SankakuWorker(BaseWorker):
         page = 1
 
         consecutive_errors = 0
+        retried_rate_limit = False
         made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
@@ -130,17 +132,25 @@ class SankakuWorker(BaseWorker):
                 if tags_param:
                     params["tags"] = tags_param
 
-                resp = await self.session.get(f"{API_BASE}/posts", params=params)
-                if resp.status in [403, 429]:
-                    try:
-                        err = await resp.json()
-                        self.log(f"API error: {err.get('error') or err.get('errors', [str(resp.status)])[0]}")
-                    except Exception:
-                        self.log(f"ERROR {resp.status}. Check proxy/credentials.")
-                    break
-                resp.raise_for_status()
+                async with self.session.get(f"{API_BASE}/posts", params=params) as resp:
+                    if resp.status in [403, 429]:
+                        # one transient rate-limit hit should not kill a long
+                        # run — pause once, refetch the same page
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {page}")
+                            await asyncio.sleep(30)
+                            continue
+                        try:
+                            err = await resp.json()
+                            self.log(f"API error: {err.get('error') or err.get('errors', [str(resp.status)])[0]}")
+                        except Exception:
+                            self.log(f"ERROR {resp.status}. Check proxy/credentials.")
+                        break
+                    resp.raise_for_status()
 
-                data = await resp.json()
+                    data = await resp.json()
+
                 if isinstance(data, dict):
                     posts = data.get("data") or data.get("posts") or []
                 elif isinstance(data, list):
@@ -168,6 +178,7 @@ class SankakuWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             await asyncio.sleep(0.25)
 
             had_valid = False

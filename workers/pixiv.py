@@ -248,6 +248,7 @@ class PixivWorker(BaseDownloader):
         collected = 0
         page = 0
         MAX_PAGES = 100
+        no_new_pages = 0
         while (need == 0 or collected < need) and not self.stop_event.is_set() and page < MAX_PAGES:
             try:
                 # ponytail: 3 attempts — a transient API blip must not kill
@@ -273,6 +274,10 @@ class PixivWorker(BaseDownloader):
             if not works:
                 self.log("No more posts found.")
                 break
+            # stop when the tag has nothing left this run doesn't already
+            # have: two consecutive pages that added zero new images mean
+            # the rest is duplicates — don't page through all of them
+            page_new = 0
             # page-local index: `collected < len(works)` compared the RUNNING
             # total against one page's size, so pacing stopped entirely after
             # page 1 and later pages downloaded with no anti-ban pause
@@ -281,20 +286,34 @@ class PixivWorker(BaseDownloader):
                     break
                 # pass the running headroom down: a 40-page manga work must
                 # not march past the quota on its own file list
-                collected += await self._process_work(
-                    work, (need - collected) if need else 0)
+                try:
+                    added = await self._process_work(
+                        work, (need - collected) if need else 0)
+                    collected += added
+                    page_new += added
+                except Exception as e:
+                    # one malformed work must not kill the whole scan
+                    self.log(f"Skipped malformed work {work.get('id')}: {e}")
+                    continue
                 if page_i + 1 < len(works) and (need == 0 or collected < need):
                     await asyncio.sleep(self.anti_ban_pause)
             if need and collected >= need:
                 break
+            if page_new == 0:
+                no_new_pages += 1
+                if no_new_pages >= 2:
+                    self.log("No new images left for this tag — stopping (rest are duplicates).")
+                    break
+            else:
+                no_new_pages = 0
             nxt = data.get("next_url") if isinstance(data, dict) else None
             if not nxt:
                 break
             qs = nxt.rpartition("?")[2]
-            params = dict(
-                (k, unquote(v)) for part in qs.split("&") if "=" in part
+            params = {
+                k: unquote(v) for part in qs.split("&") if "=" in part
                 for k, v in [part.split("=", 1)]
-            )
+            }
             page += 1
             if not self.stop_event.is_set():
                 await asyncio.sleep(self.anti_ban_pause)

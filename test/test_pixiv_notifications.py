@@ -3,6 +3,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # import Rems_Dl with the same env snapshot/restore dance as
 # test_download_queue, so load_dotenv side effects don't leak into test_settings
 _ENV_KEYS = [
@@ -185,6 +187,14 @@ def test_timer_counts_while_closed(store, monkeypatch):
     # checked 3 h ago (PC was off) -> overdue, scan at once
     pn._stamp_check(time.time() - 180 * 60)
     assert pn.seconds_until_due() == 0
+
+
+def test_official_pixiv_account_not_notified(store):
+    fresh = pn.ingest([_work(1, name="pixiv事務局"), _work(2, name="Rem"),
+                       _work(3, name="Pixiv")])
+    assert [e["work_id"] for e in fresh] == ["2"]
+    # skipped works stay unknown-but-unrecorded: no notification on rescans either
+    assert pn.ingest([_work(1, name="pixiv事務局")]) == []
 
 
 def test_navigation_payload_artist_id(store):

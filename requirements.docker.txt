@@ -15,3 +15,10 @@ curl_cffi
 rule34Py
 gallery-dl
 pinterest-dl
+# X (Twitter) worker: twscrape runs on httpx; socks extra for socks5:// proxies
+twscrape
+httpx[socks]
+# JXL pipeline + perceptual-hash dedup + x_twitter worker logging
+pillow-jxl-plugin
+imagehash
+loguru

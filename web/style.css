@@ -258,6 +258,21 @@ input[type="number"].queue-pos {
 .tab-btn:active { transform: scale(0.98); }
 .notif-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff4757; margin-left: 3px; vertical-align: top; box-shadow: 0 0 4px rgba(255, 71, 87, 0.85); }
 .notif-list { display: flex; flex-direction: column; gap: 10px; }
+/* planning rows: toggle button is display-hidden (reflows so tags slide into
+   its spot) and the 'added' date is visibility-hidden until hover */
+.plan-toggle { display: none; }
+.plan-item:hover .plan-toggle { display: inline-flex; }
+.plan-added { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.plan-item:hover .plan-added { visibility: visible; opacity: 1; }
+/* history ('.hist-item') and planning ('.plan-item') rows hide their
+   compact action buttons until the row is hovered */
+.hist-actions, .plan-actions { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.hist-time { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.hist-item:hover .hist-actions, .plan-item:hover .plan-actions { visibility: visible; opacity: 1; }
+.hist-item:hover .hist-time { visibility: visible; opacity: 0.5; }
+/* archive cards: delete/favourite buttons appear on card hover only */
+.image-card-log .img-card-btn { visibility: hidden; opacity: 0; transition: opacity 0.15s ease; }
+.image-card-log:hover .img-card-btn { visibility: visible; opacity: 1; }
 
 /* ===== MAIN CONTENT AREA ===== */
 .tab-container { flex: 1; min-height: 0; overflow: hidden; height: 100%; padding: 2px; }
@@ -376,6 +391,11 @@ input:focus, select:focus {
     margin: 4px 0;
 }
 .progress-bar-fill { height: 100%; border-radius: 6px; transition: width 0.3s ease; width: 0%; }
+/* converting window: the encoder is a single blocking call, so while the
+   width itself can't move, a soft sweep keeps the bar visibly alive */
+.cv-shimmer { position: relative; overflow: hidden; }
+.cv-shimmer::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.45) 50%, transparent 100%); transform: translateX(-100%); animation: cvSweep 1.6s ease-in-out infinite; }
+@keyframes cvSweep { to { transform: translateX(100%); } }
 .dl-fill { background: linear-gradient(90deg, #00d2d3, #00e8e8); }
 
 @keyframes progressShimmer {
@@ -768,6 +788,8 @@ select option:hover, select option:checked { background: var(--title-color); col
 
 /* ===== GALLERY TAB ===== */
 .gallery-tab {
+    /* anchor for the floating .gallery-select-bar */
+    position: relative;
     background: #0f1420;
     border: 1px solid transparent;
     box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.3);
@@ -795,6 +817,18 @@ select option:hover, select option:checked { background: var(--title-color); col
 .gallery-dropdown-menu .dd-item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; padding: 6px 12px; font-size: 13px; color: #ccc; cursor: pointer; user-select: none; }
 .gallery-dropdown-menu .dd-item:hover { background: rgba(45, 212, 191, 0.12); color: #fff; }
 .gallery-dropdown-menu .dd-item input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; accent-color: #2dd4bf; }
+/* light theme: same panel as the light inputs instead of the hardcoded darks */
+[data-theme="light"] .gallery-dropdown-btn {
+    color: #1a1a2e;
+    background: rgba(255, 255, 255, 0.8);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+[data-theme="light"] .gallery-dropdown-menu {
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+[data-theme="light"] .gallery-dropdown-menu .dd-item { color: #1a1a2e; }
+[data-theme="light"] .gallery-dropdown-menu .dd-item:hover { background: rgba(0, 210, 211, 0.15); color: #000; }
 /* excluded waifu tag: the X lives INSIDE the checkbox, which turns red —
    the row text stays normal so the list doesn't read as one red block */
 .gallery-dropdown-menu .dd-item.dd-excl input[type="checkbox"] {
@@ -913,16 +947,28 @@ select option:hover, select option:checked { background: var(--title-color); col
     pointer-events: auto;
 }
 
+/* floating pill over the grid's bottom edge, out of the toolbar flow:
+   as a toolbar item it wrapped onto its own row, the toolbar grew, the
+   flex:1 grid shrank, and the grid's ResizeObserver re-measured row height
+   + per-page — every preview resized, jumped and repainted on select.
+   Out of flow it can appear/disappear with zero layout change anywhere. */
 .gallery-select-bar {
+    position: absolute;
+    left: 50%;
+    bottom: 64px;
+    transform: translateX(-50%);
+    z-index: 80;
     display: flex;
     flex-wrap: wrap;
+    justify-content: center;
     gap: 6px;
     align-items: center;
-    padding: 3px 8px;
-    margin-left: auto;
-    background: rgba(45, 212, 191, 0.08);
-    border: 1px solid rgba(45, 212, 191, 0.25);
-    border-radius: 8px;
+    padding: 6px 10px;
+    max-width: calc(100% - 24px);
+    background: rgba(10, 22, 26, 0.96);
+    border: 1px solid rgba(45, 212, 191, 0.45);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
     flex-shrink: 0;
 }
 .gallery-select-bar .action-btn { padding: 3px 10px; font-size: 12px; border-radius: 6px; }
@@ -933,14 +979,10 @@ select option:hover, select option:checked { background: var(--title-color); col
     margin-right: 6px;
 }
 
-/* edit mode: top bar compacts so the select bar costs no grid height */
-.gallery-tab.select-active .gallery-toolbar { padding-bottom: 4px; gap: 6px; }
-.gallery-tab.select-active .gallery-toolbar .gallery-dropdown-btn,
-.gallery-tab.select-active .gallery-toolbar input { padding: 3px 8px; font-size: 12px; }
-#Gallery.select-active .gallery-toolbar input#gallerySearch { padding: 3px 8px !important; font-size: 12px !important; min-width: 0 !important; }
-.gallery-tab.select-active .gallery-toolbar .gallery-blur-btn,
-.gallery-tab.select-active .gallery-toolbar .gallery-fav-btn,
-.gallery-tab.select-active .gallery-toolbar .action-btn { padding: 3px 8px; font-size: 12px; }
+/* no select-mode toolbar compaction: shrinking the toolbar controls in
+   edit mode changed the toolbar's height itself, which is the same grid
+   resize/flash through the other door — the floating select bar above
+   makes it unnecessary */
 
 .gallery-card img {
     position: absolute;
@@ -1338,8 +1380,8 @@ body { transition: color 0.3s ease; }
 /* ===== SMART HOVER META PANEL ===== */
 .gallery-viewer-meta { position: absolute; bottom: 30px; left: 0; right: 0; width: fit-content; min-width: 320px; max-width: 80%; margin: 0 auto; transform: none; background: rgba(15, 18, 25, 0.92); /* no backdrop-filter: WebKitGTK re-rasterizes the blur surface on the hover height change and everything painted into it blinks */ border: 1px solid transparent; border-radius: 24px; padding: 10px 20px; display: flex; flex-direction: column; z-index: 10010; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.15); /* height only: animating `all` repaints the shadow/background every frame — the expansion crawled on WebKitGTK; opacity keeps focus-mode's fade */ transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease; overflow: hidden; height: 44px; }
 .gallery-viewer-meta:hover { height: 300px; border-radius: 16px; background: rgba(15, 18, 25, 0.98); box-shadow: 0 10px 40px rgba(0, 210, 211, 0.2), 0 0 0 1px var(--title-color); transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
-.g-meta-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 24px; }
-.g-meta-title { font-weight: 600; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; max-width: 480px; }
+.g-meta-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 24px; flex-shrink: 0; line-height: 1; }
+.g-meta-title { font-weight: 600; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; max-width: 480px; display: flex; align-items: center; }
 .g-meta-badges { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .g-meta-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 15px; padding: 15px 4px 4px; border-top: 1px dashed rgba(255,255,255,0.15); overflow-y: auto; height: calc(100% - 40px); opacity: 0; align-content: flex-start; /* no fade: WebKitGTK blinks the fade while the panel's backdrop-filter layer re-rasterizes during the height expansion; the panel's own animation is the entrance */ will-change: opacity; transform: translateZ(0); backface-visibility: hidden; }
 .gallery-viewer-meta:hover .g-meta-tags { opacity: 1; }
@@ -1351,27 +1393,27 @@ body { transition: color 0.3s ease; }
 .g-tag-pill:hover { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
 
 /* Tag category colors */
-.tag-artist { background: rgba(255, 140, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.4); color: #e67e00; }
+.tag-artist { background: rgba(255, 140, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.4); color: #ffc069; }
 .tag-artist:hover { background: #e67e00; color: #000; box-shadow: 0 0 0 1px #e67e00; }
-.tag-character { background: rgba(0, 128, 0, 0.15); box-shadow: 0 0 0 1px rgba(0, 128, 0, 0.4); color: #228b22; }
+.tag-character { background: rgba(0, 128, 0, 0.15); box-shadow: 0 0 0 1px rgba(0, 128, 0, 0.4); color: #7ce47c; }
 .tag-character:hover { background: #228b22; color: #000; box-shadow: 0 0 0 1px #228b22; }
-.tag-copyright { background: rgba(255, 105, 180, 0.15); box-shadow: 0 0 0 1px rgba(255, 105, 180, 0.4); color: #ff69b4; }
+.tag-copyright { background: rgba(255, 105, 180, 0.15); box-shadow: 0 0 0 1px rgba(255, 105, 180, 0.4); color: #ffa4d1; }
 .tag-copyright:hover { background: #ff69b4; color: #000; box-shadow: 0 0 0 1px #ff69b4; }
-.tag-metadata { background: rgba(255, 165, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 165, 0, 0.4); color: #ffa500; }
+.tag-metadata { background: rgba(255, 165, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 165, 0, 0.4); color: #ffd07a; }
 .tag-metadata:hover { background: #ffa500; color: #000; box-shadow: 0 0 0 1px #ffa500; }
-.tag-tag { background: rgba(0, 255, 255, 0.1); box-shadow: 0 0 0 1px rgba(0, 255, 255, 0.3); color: #00e5e5; }
+.tag-tag { background: rgba(0, 255, 255, 0.1); box-shadow: 0 0 0 1px rgba(0, 255, 255, 0.3); color: #7df2f2; }
 .tag-tag:hover { background: #00e5e5; color: #000; box-shadow: 0 0 0 1px #00e5e5; }
-.tag-mangaka { background: rgba(255, 69, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 69, 0, 0.4); color: #ff4500; }
+.tag-mangaka { background: rgba(255, 69, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 69, 0, 0.4); color: #ff8a5c; }
 .tag-mangaka:hover { background: #ff4500; color: #000; box-shadow: 0 0 0 1px #ff4500; }
-.tag-game { background: rgba(138, 43, 226, 0.15); box-shadow: 0 0 0 1px rgba(138, 43, 226, 0.4); color: #b266e6; }
+.tag-game { background: rgba(138, 43, 226, 0.15); box-shadow: 0 0 0 1px rgba(138, 43, 226, 0.4); color: #d29af2; }
 .tag-game:hover { background: #8a2be2; color: #000; box-shadow: 0 0 0 1px #8a2be2; }
-.tag-outfit { background: rgba(219, 112, 147, 0.15); box-shadow: 0 0 0 1px rgba(219, 112, 147, 0.4); color: #db7093; }
+.tag-outfit { background: rgba(219, 112, 147, 0.15); box-shadow: 0 0 0 1px rgba(219, 112, 147, 0.4); color: #f2a0b8; }
 .tag-outfit:hover { background: #db7093; color: #000; box-shadow: 0 0 0 1px #db7093; }
-.tag-theme { background: rgba(65, 105, 225, 0.15); box-shadow: 0 0 0 1px rgba(65, 105, 225, 0.4); color: #6495ed; }
+.tag-theme { background: rgba(65, 105, 225, 0.15); box-shadow: 0 0 0 1px rgba(65, 105, 225, 0.4); color: #9ab4f5; }
 .tag-theme:hover { background: #4169e1; color: #000; box-shadow: 0 0 0 1px #4169e1; }
-.tag-source { background: rgba(169, 169, 169, 0.15); box-shadow: 0 0 0 1px rgba(169, 169, 169, 0.4); color: #a9a9a9; }
+.tag-source { background: rgba(169, 169, 169, 0.15); box-shadow: 0 0 0 1px rgba(169, 169, 169, 0.4); color: #d6d6d6; }
 .tag-source:hover { background: #a9a9a9; color: #000; box-shadow: 0 0 0 1px #a9a9a9; }
-.tag-meta { background: rgba(128, 128, 128, 0.15); box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.4); color: #999; }
+.tag-meta { background: rgba(128, 128, 128, 0.15); box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.4); color: #cfcfcf; }
 .tag-meta:hover { background: #808080; color: #000; box-shadow: 0 0 0 1px #808080; }
 .tag-vtuber { background: rgba(255, 110, 199, 0.15); box-shadow: 0 0 0 1px rgba(255, 110, 199, 0.4); color: #ff6ec7; }
 .tag-vtuber:hover { background: #ff6ec7; color: #000; box-shadow: 0 0 0 1px #ff6ec7; }
@@ -1386,7 +1428,7 @@ body { transition: color 0.3s ease; }
 .tag-eyes { background: rgba(251, 191, 36, 0.15); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4); color: #fbbf24; }
 .tag-eyes:hover { background: #fbbf24; color: #000; box-shadow: 0 0 0 1px #fbbf24; }
 
-.g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-block;}
+.g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-flex; align-items: center; line-height: 1.4; }
 .gallery-viewer-meta:hover .g-expand-hint { display: none; }
 @keyframes gPulse { 0% {opacity: 0.4;} 50% {opacity: 1;} 100% {opacity: 0.4;} }
 
@@ -1795,3 +1837,13 @@ input[type="number"]:focus::-webkit-outer-spin-button {
 .ux-connection { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 29000; display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 40px); width: max-content; box-sizing: border-box; padding: 12px 16px; border-radius: 10px; border: 1px solid #c79847; background: #292215; color: #fff0d2; box-shadow: 0 4px 16px #0004; font-size: 13px; }
 .ux-connection[hidden], .ux-connection button[hidden], #settingsDirtyMark[hidden] { display: none !important; }
 @media (max-width: 600px) { .ux-connection { flex-wrap: wrap; } }
+
+/* extra gallery roots (HDD folders read by the gallery) */
+.gallery-roots-menu { left: auto; right: 0; width: min(420px, 90vw); padding: 10px; }
+.gallery-roots-add { display: flex; gap: 6px; margin-bottom: 8px; }
+.gallery-roots-add input { flex: 1; min-width: 0; background: #0d1117; border: 1px solid rgba(45,212,191,.35); color: #e6e6e6; border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+.gallery-root-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; font-size: 13px; color: #e6e6e6; overflow-wrap: anywhere; }
+.gallery-root-item .gallery-root-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.gallery-root-item button { flex: none; }
+.gallery-root-badge { flex: none; font-size: 11px; font-style: normal; color: #2dd4bf; border: 1px solid rgba(45,212,191,.35); border-radius: 4px; padding: 1px 6px; }
+.gallery-roots-empty { padding: 6px 8px; font-size: 12px; opacity: .75; }

@@ -1,5 +1,9 @@
+import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 import os
 import sys
+
 from PIL import Image
 
 

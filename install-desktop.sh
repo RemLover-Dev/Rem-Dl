@@ -43,7 +43,7 @@ Path=$SCRIPT_DIR
 Icon=$INSTALLED_ICON
 Terminal=false
 Categories=Graphics;Network;
-StartupWMClass=Rems Dl
+StartupWMClass=Rems_Dl
 StartupNotify=true
 EOF
 

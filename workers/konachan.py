@@ -40,42 +40,21 @@ class KonachanWorker(BaseWorker):
         safe_ensure_dir(self.tag_dir)
 
     async def _fetch_tag_types(self, tag_names):
-        # no cap: capping made every tag past #150 feed the folder
-        # classifier as a miscategorized "tag"; Semaphore(4) keeps the pace
-        uncached = [t for t in tag_names if t not in self.tag_cache]
-        if not uncached:
-            return
-        sem = asyncio.Semaphore(4)
-        async def query_one(tag_name):
-            async with sem:
-                # ponytail: 3 attempts — a transient failure must not leave a
-                # tag miscategorized for this whole run
-                for attempt in range(3):
-                    fetched = False
-                    try:
-                        resp = await self.session.get(
-                            "https://konachan.com/tag.json",
-                            params={"name": tag_name, "order": "count", "limit": 50}
-                        )
-                        if resp.status == 200:
-                            tags = await resp.json() or []
-                            # ponytail: scan every row for the exact tag
-                            match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
-                            if match is not None:
-                                self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
-                            fetched = True  # 200 processed: match OR genuinely absent
-                    except Exception:
-                        fetched = False
-                    if fetched:
-                        break
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                # ponytail: a tag that never comes back stays uncached —
-                # caching a failure would mislabel it forever; next run retries
-                await asyncio.sleep(0.2)
-        await asyncio.gather(*[query_one(t) for t in uncached])
-        # ponytail: concurrent workers may overwrite each other's save —
-        # worst case those tags refetch on a later run
-        await asyncio.to_thread(DatabaseManager.save_json, TAG_TYPES_FILE, self.tag_cache)
+        async def attempt_one(tag_name):
+            async with self.session.get(
+                "https://konachan.com/tag.json",
+                params={"name": tag_name, "order": "count", "limit": 50}
+            ) as resp:
+                if resp.status != 200:
+                    return False
+                tags = await resp.json() or []
+                # ponytail: scan every row for the exact tag
+                match = next((t for t in tags if str(t.get("name", "")).lower() == tag_name.lower()), None)
+                if match is not None:
+                    self.tag_cache[tag_name] = TAG_TYPE_MAP.get(match.get("type", 0), "tag")
+                return True  # 200 processed: match OR genuinely absent
+
+        await self._run_tag_fetch(tag_names, attempt_one, TAG_TYPES_FILE)
 
     async def scraper_task(self):
         self.log(f"Initializing worker for tag: '{self.original_tag}'" + (f" (rating: {self.rating_display})" if self.rating_display else ""))
@@ -94,29 +73,36 @@ class KonachanWorker(BaseWorker):
         page = 1
 
         consecutive_errors = 0
+        retried_rate_limit = False
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
                 limit_val = min(100, self.amount - collected_count if self.amount > 0 else 100)
 
-                resp = await self.session.get("https://konachan.com/post.json", params={"tags": self.api_tag, "page": page, "limit": limit_val, **auth})
-                if resp.status in [403, 429]:
-                    self.log(f"ERROR {resp.status}. Change proxy.")
-                    break
-                resp.raise_for_status()
+                async with self.session.get("https://konachan.com/post.json", params={"tags": self.api_tag, "page": page, "limit": limit_val, **auth}) as resp:
+                    if resp.status in [403, 429]:
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {page}")
+                            await asyncio.sleep(30)
+                            continue
+                        self.log(f"ERROR {resp.status}. Change proxy.")
+                        break
+                    resp.raise_for_status()
 
-                text_resp = (await resp.text()).strip()
-                if not text_resp or text_resp == "[]" or text_resp == "null":
-                    if page == 1:
-                        self.log(f"ZERO images found for '{self.api_tag}'.")
-                        if self.rating_allowed & {"q", "e"}:
-                            if auth:
-                                self.log("Authenticated, got 0 non-safe posts. Check 'Show explicit content' is enabled in your konachan.com profile settings.")
-                            else:
-                                self.log("No Konachan credentials configured (Options tab) - non-safe content needs a logged-in account.")
-                    break
+                    text_resp = (await resp.text()).strip()
+                    if not text_resp or text_resp == "[]" or text_resp == "null":
+                        if page == 1:
+                            self.log(f"ZERO images found for '{self.api_tag}'.")
+                            if self.rating_allowed & {"q", "e"}:
+                                if auth:
+                                    self.log("Authenticated, got 0 non-safe posts. Check 'Show explicit content' is enabled in your konachan.com profile settings.")
+                                else:
+                                    self.log("No Konachan credentials configured (Options tab) - non-safe content needs a logged-in account.")
+                        break
 
-                raw_data = await resp.json()
+                    raw_data = await resp.json()
+
                 if isinstance(raw_data, dict):
                     if "success" in raw_data and not raw_data["success"]:
                         self.log(f"API Alert: {raw_data.get('message', 'Unknown Error')}")
@@ -144,6 +130,7 @@ class KonachanWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
 
             had_valid = False
 

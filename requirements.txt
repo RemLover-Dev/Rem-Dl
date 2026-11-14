@@ -9,3 +9,12 @@ Pillow>=10.4,<13
 aiohttp>=3.12,<4
 curl-cffi>=0.11,<1
 rule34Py>=4.2,<5
+twscrape>=0.20,<1
+# httpx[socks]: twscrape runs on httpx; the socks extra enables socks5:// proxies
+httpx[socks]>=0.26,<1
+# JXL pipeline: registers the Pillow JPEG XL codec + native decoder
+pillow-jxl-plugin>=1.3,<2
+# perceptual-hash dedup (keep-larger merge)
+imagehash>=4.3,<5
+# X (Twitter) worker loguru wiring
+loguru>=0.7,<1

@@ -22,6 +22,8 @@ _env_before = {k: os.environ.get(k) for k in _ENV_KEYS}
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 import Rems_Dl
 from core.gallery_store import get_store, use_store_path
 
@@ -62,7 +64,7 @@ def seeded(tmp_path):
     for e in IMAGES + BRA:
         store.insert_entry({
             "id": e["id"], "filename": e["filename"],
-            "filepath": "%s/%s" % (e["site"], e["filename"]),
+            "filepath": "{}/{}".format(e["site"], e["filename"]),
             "site": e["site"], "favourite": False,
             "downloaded_at": "2026-01-01T00:00:00", "tags": e["tags"],
         })

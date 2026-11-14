@@ -3,9 +3,9 @@
 Keep existing portable data in place. REMS_DATA_DIR permits a writable data
 location for protected installations without changing packaged resource paths.
 """
+import math
 import os
 import sys
-import math
 from functools import lru_cache
 
 

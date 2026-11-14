@@ -104,7 +104,9 @@ class AnimeDlWorker(BaseDownloader):
                 resp = await asyncio.to_thread(
                     self.curl_session.get,
                     url,
-                    timeout=600,
+                    # stream mode: curl_cffi maps the tuple's second value to
+                    # the LOW_SPEED stall bound — a dead stream can't hang 10m
+                    timeout=(10, 30),
                     stream=True,
                     headers={"Referer": "https://anime-pictures.net/"}
                 )
@@ -119,21 +121,24 @@ class AnimeDlWorker(BaseDownloader):
                 def _stream_body():
                     chunks = []
                     got = 0
-                    with open(part_path, "wb") as f:
-                        # curl ignores chunk_size and picks its own chunking
-                        for chunk in resp.iter_content():
-                            if not chunk:
-                                continue
-                            if self.stop_event.is_set():
-                                break
-                            f.write(chunk)
-                            chunks.append(chunk)
-                            got += len(chunk)
-                            now = time.monotonic()
-                            if total and now - self._last_progress_emit >= 0.2:
-                                self._last_progress_emit = now
-                                self._inflight[filepath] = got / total
-                                loop.call_soon_threadsafe(self._emit_progress)
+                    try:
+                        with open(part_path, "wb") as f:
+                            # curl ignores chunk_size and picks its own chunking
+                            for chunk in resp.iter_content():
+                                if not chunk:
+                                    continue
+                                if self.stop_event.is_set():
+                                    break
+                                f.write(chunk)
+                                chunks.append(chunk)
+                                got += len(chunk)
+                                now = time.monotonic()
+                                if total and now - self._last_progress_emit >= 0.2:
+                                    self._last_progress_emit = now
+                                    self._inflight[filepath] = got / total
+                                    loop.call_soon_threadsafe(self._emit_progress)
+                    finally:
+                        resp.close()
                     return b"".join(chunks)
 
                 content = await asyncio.to_thread(_stream_body)
@@ -160,7 +165,7 @@ class AnimeDlWorker(BaseDownloader):
                         pass
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
-                    self._remember_filename(filename)
+                    await asyncio.to_thread(self._remember_filename, filename)
                     await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
                                             artists, characters, copyrights,
                                             metadata_tags, outfits, groups, hair, eyes)
