@@ -221,6 +221,7 @@ def _api_json_500(e):
 
 from core.web_security import AccessGuard
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.utils import safe_join
 
 access_guard = AccessGuard(app.wsgi_app)
 # Honor X-Forwarded-Proto/Host/Prefix from the reverse proxy before the access
@@ -2809,6 +2810,20 @@ def _allowed_image_dir(full):
     return any(full.startswith(b + os.sep) for b in base)
 
 
+def _safe_gallery_path(filepath):
+    """safe_join resolves the relative case and rejects traversal, absolute
+    and (Windows) backslash paths before any os call sees user input.
+    Absolute candidates (rows stored with HDD-root filepaths — posix or
+    Windows drive form) re-resolve directly; the caller's _allowed_image_dir
+    guard still decides what leaves the library."""
+    safe = safe_join(MASTER_FOLDER, filepath)
+    if safe is not None:
+        return os.path.realpath(safe)
+    if os.path.isabs(filepath) or filepath.startswith("/"):
+        return os.path.realpath(filepath)
+    return None
+
+
 def _recover_abs_filepath(full, filepath):
     """werkzeug's slash-merge rewrites "/api/...//mnt/x" URLs to "mnt/x"
     (leading slash eaten by the 308), so rows stored with absolute filepaths
@@ -2881,11 +2896,12 @@ def gallery_roots_manage():
 
 @app.route("/api/gallery/file/<path:filepath>")
 def gallery_file(filepath):
-    # realpath: normpath+startswith lets "../<prefix-sibling>" through when a
+    # safe_join first (traversal/absolute rejection), then realpath+guard:
+    # normpath+startswith alone lets "../<prefix-sibling>" through when a
     # root's name prefixes another directory (foo vs foobar) — the guard is
     # sep-suffixed and covers master + extra gallery roots
-    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
-    if not _allowed_image_dir(full):
+    full = _safe_gallery_path(filepath)
+    if full is None or not _allowed_image_dir(full):
         return "Forbidden", 403
     if not os.path.isfile(full):
         # downloads convert to JXL after the history row was already written
@@ -2917,6 +2933,8 @@ def gallery_file(filepath):
                          as_attachment=request.args.get('download') == '1',
                          mimetype='image/jxl' if full.lower().endswith('.jxl') else None)
     resp.headers["Cache-Control"] = "private, no-cache"
+    # a disguised payload must never be content-sniffed into HTML/JS
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 @app.route("/api/gallery/preview/<path:filepath>")
@@ -2926,8 +2944,8 @@ def gallery_preview(filepath):
     # the remux is generated OFF the request: an inline ffmpeg (up to 120s) froze
     # the first hover after launch — that hover gets an empty reply instead and
     # the warm pool has the copy ready for the next one
-    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
-    if not _allowed_image_dir(full):
+    full = _safe_gallery_path(filepath)
+    if full is None or not _allowed_image_dir(full):
         return "Forbidden", 403
     if not os.path.isfile(full):
         full = _recover_abs_filepath(full, filepath)
@@ -2942,6 +2960,7 @@ def gallery_preview(filepath):
         return "", 204
     resp = send_file(dst, mimetype="video/mp4", conditional=True)
     resp.headers["Cache-Control"] = "private, no-cache"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 @app.route("/api/gallery/viewing", methods=["POST"])
@@ -2984,8 +3003,8 @@ def gallery_display(filepath):
     # background. Generated inline per request — neighbor prefetches land on
     # separate request threads, so several originals decode across cores in
     # parallel. Cached on disk under display_cache (evicted with the file).
-    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
-    if not _allowed_image_dir(full):
+    full = _safe_gallery_path(filepath)
+    if full is None or not _allowed_image_dir(full):
         return "Forbidden", 403
     if not os.path.isfile(full):
         # same converted-sibling fallback as gallery_file: the viewer's first
@@ -3295,8 +3314,8 @@ def _make_display_copy(full):
 
 @app.route("/api/thumb_by_name/<filename>")
 def thumb_by_name(filename):
-    full = os.path.realpath(os.path.join(MASTER_FOLDER, filename))
-    if not _allowed_image_dir(full):
+    full = _safe_gallery_path(filename)
+    if full is None or not _allowed_image_dir(full):
         return "Forbidden", 403
     png_cache = _thumb_cache_path(full, ".png")
     if not os.path.isfile(full) and os.path.isfile(png_cache):
@@ -3769,6 +3788,7 @@ def _send_thumb(cache_path, mimetype="image/jpeg"):
     but revalidates, so a deleted source 404s instead of showing a ghost."""
     resp = send_file(cache_path, mimetype=mimetype, conditional=True)
     resp.headers["Cache-Control"] = "private, no-cache"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 
@@ -3807,8 +3827,8 @@ def redirect_to_thumb(full_path):
 
 @app.route("/api/gallery/thumb/<path:filepath>")
 def gallery_thumb(filepath):
-    full = os.path.realpath(os.path.join(MASTER_FOLDER, filepath))
-    if not _allowed_image_dir(full):
+    full = _safe_gallery_path(filepath)
+    if full is None or not _allowed_image_dir(full):
         return "Forbidden", 403
     # ponytail: cached thumb still beats a broken icon when the source was
     # deleted outside the app, so the stale fallback runs before isfile
@@ -3857,8 +3877,10 @@ def gallery_thumb(filepath):
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         # non-media (planted .html/.svg) must not render inline on our origin
-        return send_file(full, as_attachment=(
+        resp = send_file(full, as_attachment=(
             os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO)))
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
 
 @app.route("/api/gallery/warm_thumbs", methods=["POST"])
 def warm_thumbs():
@@ -3873,8 +3895,8 @@ def warm_thumbs():
     for fp in fps[:64]:
         if not isinstance(fp, str) or not fp:
             continue
-        full = os.path.realpath(os.path.join(MASTER_FOLDER, fp))
-        if not _allowed_image_dir(full) or not os.path.isfile(full):
+        full = _safe_gallery_path(fp)
+        if full is None or not _allowed_image_dir(full) or not os.path.isfile(full):
             continue
         if _thumb_want_fast(full):
             continue  # already cached — the retry refetch answers instantly
@@ -3905,8 +3927,8 @@ def gallery_embedded_site():
     rel = (request.args.get("filepath") or "").replace("\\", "/")
     if not rel:
         return jsonify({"sites": [], "site": ""})
-    full = os.path.realpath(os.path.join(MASTER_FOLDER, rel))
-    if not _allowed_image_dir(full) or not os.path.isfile(full):
+    full = _safe_gallery_path(rel)
+    if not full or not _allowed_image_dir(full) or not os.path.isfile(full):
         return jsonify({"sites": [], "site": ""})
     ext = os.path.splitext(full)[1].lower()
     if ext not in EXTENSIONS_IMAGE:

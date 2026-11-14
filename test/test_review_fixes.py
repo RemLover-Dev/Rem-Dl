@@ -88,11 +88,19 @@ def test_gallery_file_downloads_planted_html_inline_png(lib, client):
     r_png = client.get(f"/api/gallery/file/gelbooru/{FOLDER}/safe.png")
     assert r_png.status_code == 200
     assert "attachment" not in r_png.headers.get("Content-Disposition", "")
+    # a disguised payload must never be content-sniffed into HTML/JS
+    assert r_png.headers.get("X-Content-Type-Options") == "nosniff"
 
     r_html = client.get(f"/api/gallery/file/gelbooru/{FOLDER}/evil.html")
     # non-media files never leave the library — 403, no body, no download
     assert r_html.status_code == 403
     assert b"alert" not in r_html.data
+
+    # traversal dies at safe_join before any os call sees it
+    r_esc = client.get("/api/gallery/file/%2e%2e%2f%2e%2e%2fdatabase%2fgallery.db")
+    assert r_esc.status_code == 403
+    r_esc = client.get("/api/gallery/file/gelbooru/%2e%2e%2f%2e%2e%2fdatabase%2fgallery.db")
+    assert r_esc.status_code == 403
 
 
 def _jpg(lib, name, tags, artists):
