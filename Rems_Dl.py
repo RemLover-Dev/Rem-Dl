@@ -2766,7 +2766,9 @@ def gallery_roots_manage():
             return jsonify(error="Folder is not on the root list"), 404
         link = os.path.join(MASTER_FOLDER, _ROOTS_LINK_DIR, _root_key(p))
         try:
-            if os.path.islink(link) and os.readlink(link) == p:
+            # realpath comparison instead of readlink: ntpath.readlink returns
+            # the stored string unnormalized, which misses on Windows
+            if os.path.islink(link) and os.path.realpath(link) == p:
                 try:
                     os.remove(link)
                 except OSError:
