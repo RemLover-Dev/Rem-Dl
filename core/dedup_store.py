@@ -657,6 +657,8 @@ class DedupStore:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
         self._phash_index = self._load_phash_index()  # {id: int}
+        # writes since the last commit — see _maybe_commit_locked
+        self._pending_writes = 0
         # in-flight source-md5 claims: {md5: filepath} + reverse, guarded by _lock
         self._claims: dict = {}
         self._claims_by_fp: dict = {}
@@ -750,25 +752,39 @@ class DedupStore:
             )
             self._conn.commit()
 
+    def _maybe_commit_locked(self):
+        """One fsync per downloaded image makes batches crawl. Commit every
+        32 writes instead; close() flushes the rest. A crash mid-batch loses
+        at most 32 dedup rows — the rescan backfill re-hashes them."""
+        self._pending_writes += 1
+        if self._pending_writes >= 32:
+            self._conn.commit()
+            self._pending_writes = 0
+
     def _load_phash_index(self):
         with self._lock:
             cur = self._conn.execute("SELECT id, phash FROM image_hashes")
             index = {}
+            dropped = 0
             for row in cur.fetchall():
                 try:
                     index[row["id"]] = int(str(row["phash"]), 16)
                 except Exception:
-                    pass
+                    dropped += 1
+            if dropped:
+                # unparseable rows are excluded from matching — say so once
+                # instead of silently shrinking the dedup coverage
+                print(f"[DEDUP] {dropped} rows with unparseable phash skipped at startup")
             return index
 
     def _candidate_ids(self, phash) -> list[int]:
         target = int(phash) if isinstance(phash, PureHash) else int(str(phash), 16)
-        with self._lock:
-            items = list(self._phash_index.items())
         out = []
-        for row_id, ph in items:
-            if (target ^ ph).bit_count() <= PREFILTER_MARGIN:
-                out.append(row_id)
+        with self._lock:
+            # iterate the live dict — no list copy of ~1M pairs per image
+            for row_id, ph in self._phash_index.items():
+                if (target ^ ph).bit_count() <= PREFILTER_MARGIN:
+                    out.append(row_id)
         return out
 
     def _prune_ids(self, ids: list[int]):
@@ -838,7 +854,7 @@ class DedupStore:
                 self._add_source_hash_locked(new_id, site, src[1], src[0])
             for algo, value in extras.items():
                 self._add_source_hash_locked(new_id, site, value, algo)
-            self._conn.commit()
+            self._maybe_commit_locked()
         return new_id
 
     def _add_source_hash_locked(self, image_id: int, site: str, digest: str,
@@ -1314,6 +1330,8 @@ class DedupStore:
                     for i in ids:
                         self._phash_index.pop(i, None)
             except Exception as e:
+                # half a prune must never ride the next unrelated commit
+                self._conn.rollback()
                 print(f"[DEDUP] Error removing filepath: {e}")
 
     def count_missing_files(self) -> int:
@@ -1340,6 +1358,11 @@ class DedupStore:
         with self._lock:
             self._claims.clear()
             self._claims_by_fp.clear()
+            try:
+                self._conn.commit()
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except Exception:
+                pass
             try:
                 self._conn.close()
             except Exception:

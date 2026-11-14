@@ -27,6 +27,9 @@ Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Nekos.best, Nekos.life,
 - **Safe Folder Rename Protection:** Two-step renaming for case-only changes on case-insensitive filesystems (Windows/macOS) preventing data loss.
 - **Cross-Platform Clipboard & Security:** Literal path escaping for PowerShell/macOS clipboards, plus thread-safe SSRF-guarded notification thumbnail proxying.
 - **Duplicate-Proof Downloads & JXL-Synced Cards:** Cross-site perceptual-hash dedup keeps the larger copy of a duplicated image and merges the duplicate's tags. Download cards (log, history, gallery) publish only once the copy will actually survive — after a short grace window for dedup swaps, and (with auto-convert to JXL on) only after that image's own conversion finishes; a failed conversion still publishes the original image.
+- **Conversion Progress Bar:** With auto-JXL on, the finished bar becomes a live "Converting" gauge that fills as each image commits, and the success message lands only after the last image card publishes.
+- **Instant History Tab:** The history archive pages server-side and searches in the database, so opening and searching a 22k-image history is instant instead of shipping ~14MB of JSON per tab switch.
+- **Smarter Tag Display & Search:** Tags capitalize after `:` ("Cyberpunk: edgerunners" → "Edgerunners"), emoticon tags keep their underscores (`>_<`, `^_^`), stored `\u003C`-style escapes render decoded, and searching `">_<",` in the gallery finds those images.
 
 ## ✨ New in Version 5.3 (Rem 5.3)
 - **PyInstaller Metadata Fix (`rule34Py`):** Resolved startup failure in frozen standalone/portable builds by packaging distribution metadata and implementing runtime safeguards.

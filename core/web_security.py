@@ -155,10 +155,14 @@ class AccessGuard:
             import time as _time
             client_ip = (req.remote_addr or 'unknown')[:64]
             fails = self._auth_fails.get(client_ip, 0)
+            # cap: a longer sleep pins a threading-mode thread longer per hit
             if fails >= 5:
-                _time.sleep(min(2 ** (fails - 5), 30))
+                _time.sleep(min(2 ** (fails - 5), 10))
             if len(self._auth_fails) > 1000:
-                self._auth_fails.clear()
+                # trim oldest, never bulk-clear: a reset lets an attacker
+                # clear their own backoff by spamming past the cap
+                for k in list(self._auth_fails)[:len(self._auth_fails) - 500]:
+                    self._auth_fails.pop(k, None)
             if not self._valid(candidate, self.token):
                 self._auth_fails[client_ip] = fails + 1
                 return respond(Response('Unauthorized', status=401))
@@ -176,6 +180,13 @@ class AccessGuard:
         authorization = req.headers.get('Authorization', '')
         if authorization.startswith('Bearer '):
             authenticated = authenticated or self._valid(authorization[7:], self.token)
+        if not authenticated:
+            # The app is a local desktop tool: anything connecting from this
+            # machine (127.0.0.1/::1, socket-verified, not spoofable) skips the
+            # token so the user never signs in. Remote clients still need it.
+            # Host/Origin/cross-site checks above still apply to loopback.
+            if (req.remote_addr or '') in ('127.0.0.1', '::1'):
+                authenticated = True
         if not authenticated:
             if req.path == '/' and req.method == 'GET':
                 page = LOGIN_PAGE.replace('__REMS_BASE__', self.base_path)

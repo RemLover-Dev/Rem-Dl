@@ -178,7 +178,7 @@ function normalizeTags(tagsInput) {
 // so "iii" doesn't become "Iii". Validated roman so "filmi"/"cd-ish" junk is safe.
 const _ROMAN_RE = /^m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
 // leading "-" (exclude markers) must not block the first-letter cap: -kafka -> -Kafka
-function cleanTagDisplay(t) { const s = String(t || "").replace(/_/g, ' ').replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return s.replace(/^([^\p{L}]*)(\p{L})/u, (_, pre, c) => pre + c.toUpperCase()).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()); }
+function cleanTagDisplay(t) { let s = String(t || "").replace(/\\[uU]([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16))); if (/\p{L}/u.test(s)) s = s.replace(/_/g, ' '); const s2 = s.replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return s2.replace(/^([^\p{L}]*)(\p{L})/u, (_, pre, c) => pre + c.toUpperCase()).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()).replace(/:([ ]*)([a-z])/g, (_, sp, c) => ':' + sp + c.toUpperCase()); }
 // history rows & queue pills: zero is comma-joined; free-text/pick sites
 // (anime_dl, eshuushuu, pixiv, pinterest, nekosapi) keep spaces INSIDE one tag
 // — only comma-split them; underscore-joined boorus are space-joined, split on
@@ -197,6 +197,23 @@ function siteLabel(site) {
     if (SITE_DISPLAY_NAMES[s]) return SITE_DISPLAY_NAMES[s];
     return (s === "dan" ? "Danbooru" : s === "eshuushuu" ? "e-shuushuu" : s.replace(/_/g, " ")).replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase());
 }
+// classify rating from a lowercase path+tag haystack and site name — the
+// single rule set behind the log card, history row and viewer badges
+function classifyRating(pLow, siteLower) {
+    const NSFW = {label: "NSFW", fg: "#e74c3c", bg: "rgba(231, 76, 60, 0.15)", rating: "explicit"};
+    const QUES = {label: "Questionable", fg: "#f39c12", bg: "rgba(243, 156, 18, 0.15)", rating: "questionable"};
+    const SENS = {label: "Sensitive", fg: "#9b59b6", bg: "rgba(155, 89, 182, 0.15)", rating: "sensitive"};
+    const SAFE = {label: "Safe", fg: "#2ecc71", bg: "rgba(46, 204, 113, 0.15)", rating: "safe"};
+    if (siteLower === "rule34" || pLow.includes('rule34')) return NSFW;
+    if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) return NSFW;
+    if (pLow.includes('/r18g/')) return NSFW;
+    if (pLow.includes('/r18/')) return QUES;
+    if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) return SENS;
+    if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) return QUES;
+    if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g') || pLow.includes('safebooru')) return SAFE;
+    return null;
+}
+
 function escJs(s) {
     return escapeHtml(String(s == null ? "" : s).replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
 }
@@ -631,6 +648,13 @@ const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Nek
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
+// ponytail: JXL conversion window — gear marks the bar while cards are held
+const GEAR_SVG = `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M10.166 1.6a1 1 0 0 1 .99-.84h1.688a1 1 0 0 1 .99.84l.3 1.86c.597.202 1.16.47 1.685.797l1.696-.727a1 1 0 0 1 1.22.356l.844 1.24a1 1 0 0 1-.13 1.253l-1.33 1.315c.113.435.19.884.225 1.345l1.7.763a1 1 0 0 1 .584 1.147l-.358 1.647a1 1 0 0 1-1.038.785l-1.876-.108a8.16 8.16 0 0 1-.87 1.12l.635 1.766a1 1 0 0 1-.436 1.194l-1.433.831a1 1 0 0 1-1.23-.213l-1.226-1.416a8.05 8.05 0 0 1-1.42.003l-1.225 1.413a1 1 0 0 1-1.23.213l-1.433-.831a1 1 0 0 1-.436-1.194l.634-1.764a8.16 8.16 0 0 1-.871-1.121l-1.874.107a1 1 0 0 1-1.038-.785l-.358-1.647a1 1 0 0 1 .583-1.147l1.699-.762c.035-.462.112-.911.225-1.346L2.11 7.744a1 1 0 0 1-.13-1.253l.844-1.24a1 1 0 0 1 1.22-.356l1.694.726a8.02 8.02 0 0 1 1.687-.796l.3-1.865ZM12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/></svg>`;
+// worker -> true while its batch's JXL conversions still hold the cards
+const _convertingBar = {};
+// per-worker elapsed timer for the in-flight conversion (self-clears when the
+// window ends — _convertingBar[worker] goes false)
+const _cvTimer = {};
 
 function updateProgressBar(worker, msg) {
     let key = WORKER_TO_TAB[worker];
@@ -638,12 +662,17 @@ function updateProgressBar(worker, msg) {
     let container = document.getElementById("dualProgress_" + key);
     if (!container) return;
 
+    // 0. conversion window: transient card/percent messages must not stomp
+    // the converting bar — only the final "---" lines end the window
+    if (_convertingBar[worker] && !(typeof msg === "string" && msg.startsWith("---"))) return;
+    _convertingBar[worker] = false;
+
     // 1. نمایش پیام پایانی بزرگ و زیبا و حذف نوارها
     if (msg.includes("Queue finished")) {
         workerRunning[worker] = false; renderRunBtn(worker);
         const m = msg.match(/Queue finished: (\d+) tasks(?:, (\d+) downloaded)?(?:, (\d+) failed)?/);
         const jobs = m ? m[1] : "", d = m && m[2] ? m[2] : "0", f = m && m[3] ? m[3] : "0";
-        let endText = `${CHECK_SVG} Queue finished: ${jobs} tasks — ${d} downloaded`;
+        let endText = `${CHECK_SVG} Queue finished: ${jobs} tasks - ${d} downloaded`;
         if (f !== "0") endText += `, <span style="color: #e74c3c;">${f} failed</span>`;
         container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: #2ecc71; text-shadow: 0 0 10px rgba(46, 204, 113, 0.5);">${endText}</div>`;
         return;
@@ -701,6 +730,41 @@ function updateProgressBar(worker, msg) {
         }
         return;
     }
+}
+// JXL conversion window: downloads done, image cards still publishing —
+// the bar becomes a purple-to-pink "Converting" gauge until the last card
+// lands (then the backend re-emits worker_finished / the completion log)
+function renderConvertingBar(worker, done, total, current) {
+    let key = WORKER_TO_TAB[worker];
+    if (!key) return;
+    let container = document.getElementById("dualProgress_" + key);
+    if (!container) return;
+    _convertingBar[worker] = true;
+    if (workerRunning[worker] !== false) { workerRunning[worker] = false; renderRunBtn(worker); }
+    const pct = total > 0 ? Math.max(0, Math.min(100, Math.round(done * 100 / total))) : 0;
+    const label = current ? `${GEAR_SVG} Converting <span style="opacity:.85">${escapeHtml(current)}</span>` : `${GEAR_SVG} Converting...`;
+    container.innerHTML = `
+    <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:10px; margin-bottom:5px;">
+    <span>${label}</span>
+    <span id="cvText_${key}">${pct}%</span>
+    </div>
+    <div class="progress-bar-bg"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
+    `;
+    container.style.display = "block";
+    // the encoder is one blocking call with no intra-encode progress — tick
+    // the elapsed time per file so the bar stays visibly alive while it runs
+    if (!_cvTimer[worker] || _cvTimer[worker].key !== current) {
+        if (_cvTimer[worker]) clearInterval(_cvTimer[worker].iv);
+        _cvTimer[worker] = { key: current, t0: Date.now(), iv: 0 };
+    }
+    const t0 = _cvTimer[worker].t0;
+    clearInterval(_cvTimer[worker].iv);
+    _cvTimer[worker].iv = setInterval(() => {
+        if (!_convertingBar[worker]) { clearInterval(_cvTimer[worker].iv); return; }
+        const el = document.getElementById("cvText_" + key);
+        if (el) el.textContent = `${pct}% (${Math.round((Date.now() - t0) / 1000)}s)`;
+        else clearInterval(_cvTimer[worker].iv);
+    }, 1000);
 }
 // --- Ultimate GUI Log Parser ---
 function capConsole(cb, max) {
@@ -817,34 +881,12 @@ function logToConsole(tabID, msg) {
         let ratingHtml = "";
         let logRating = "";
         let pLow = rawPath.toLowerCase().replace(/\\/g, '/');
-        if (pLow.includes('/rule34/') || pLow.includes('\\rule34\\') || pLow.includes('rule34')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
-            logRating = "explicit";
-        }
-        else if (pLow.includes('/nsfw') || pLow.includes('explicit')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
-            logRating = "explicit";
-        }
-        // pixiv stores files under <tag>/R18/ and <tag>/R18G/ — r18g before r18
-        else if (pLow.includes('/r18g/')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(231, 76, 60, 0.15); color:#e74c3c;">NSFW</div>`;
-            logRating = "explicit";
-        }
-        else if (pLow.includes('/r18/')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
-            logRating = "questionable";
-        }
-        else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(155, 89, 182, 0.15); color:#9b59b6;">Sensitive</div>`;
-            logRating = "sensitive";
-        }
-        else if (pLow.includes('moderate') || pLow.includes('questionable')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(243, 156, 18, 0.15); color:#f39c12;">Questionable</div>`;
-            logRating = "questionable";
-        }
-        else if (pLow.includes('/safe') || pLow.includes('/general') || pLow.includes('safebooru')) {
-            ratingHtml = `<div class="img-card-rating" style="background:rgba(46, 204, 113, 0.15); color:#2ecc71;">Safe</div>`;
-            logRating = "safe";
+        // one rule set for the log card, history rows and the viewer
+        // (r18g before r18 — pixiv stores files under <tag>/R18/ and <tag>/R18G/)
+        const _cr = classifyRating(pLow, "");
+        if (_cr) {
+            ratingHtml = `<div class="img-card-rating" style="background:${_cr.bg}; color:${_cr.fg};">${_cr.label}</div>`;
+            logRating = _cr.rating;
         }
         // ponytail: badge only matters when the tab's rating filter doesn't pin it down
         const _ratingInputByWorker = RATING_INPUT_BY_WORKER;
@@ -966,44 +1008,54 @@ function renderRule34Tags() {
 }
 
 // --- Gelbooru interactive tags (mirrors rule34; joined with ' ' for the worker) ---
-let currentGelbooruTags = [];
-let gelbooruSubTags = new Set();
-function addGelbooruTag() {
-    let input = document.getElementById("gelbooruTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: read via danTagForRequest, not input.value — the box shows
-    // pretty text ("reze (chainsaw man)") while dataset.raw holds the real
-    // tag ("reze_(chainsaw_man)"); splitting pretty text shreds it into chips
-    chipsFromTyped(danTagForRequest('gelbooruTag')).forEach(function(val) {
-        if (!currentGelbooruTags.includes(val)) {
-            currentGelbooruTags.push(val);
-            if (val === raw) gelbooruSubTags.add(val);
-            added = true;
+// --- Booru chip rows: one factory, eight tag boxes --------------------------
+// add/remove/render were per-site copy-paste; payload join, tab-clear and
+// restore paths keep working through the returned object (chips.tags etc.)
+function makeChips(name) {
+    const chips = {
+        tags: [],
+        subTags: new Set(),
+        add() {
+            let input = document.getElementById(name + "Tag");
+            if (!input) return;
+            let added = false;
+            let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
+            // pretty box ("reze (chainsaw man)") vs raw tag ("reze_(chainsaw_man)"):
+            // danTagForRequest reads dataset.raw so pretty text isn't shredded
+            chipsFromTyped(danTagForRequest(name + "Tag")).forEach(function(val) {
+                if (!chips.tags.includes(val)) {
+                    chips.tags.push(val);
+                    if (val === raw) chips.subTags.add(val);
+                    added = true;
+                }
+            });
+            if (added) { input.value = ""; delete input.dataset.raw; chips.render(); }
+        },
+        remove(tag) {
+            chips.tags = chips.tags.filter(function(t) { return t !== tag; });
+            chips.subTags.delete(tag);
+            chips.render();
+        },
+        render() {
+            let container = document.getElementById(name + "TagsContainer");
+            if (!container) return;
+            container.innerHTML = chips.tags.map(function(t, idx) {
+                let isNeg = t.startsWith('-');
+                let text = isNeg ? t.substring(1) : t;
+                // negatives stay warning; first pill main, dropdown picks sub,
+                // typed neutral
+                let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (chips.subTags.has(t) ? 'sub' : 'neutral'));
+                let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
+                let safeT = escJs(t);
+                return '<span class="v-tag ' + cls + '" onclick="' + name + 'Chips.remove(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
+            }).join('');
         }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderGelbooruTags(); }
+    };
+    return chips;
 }
-function removeGelbooruTag(tag) {
-    currentGelbooruTags = currentGelbooruTags.filter(function(t) { return t !== tag; });
-    gelbooruSubTags.delete(tag);
-    renderGelbooruTags();
-}
-function renderGelbooruTags() {
-    let container = document.getElementById("gelbooruTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentGelbooruTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        // ponytail: zerochan-style pills — negatives stay warning; else first
-        // pill is main, dropdown picks are sub, typed are neutral
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (gelbooruSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeGelbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+
+const gelbooruChips = makeChips("gelbooru");
+function addGelbooruTag() { gelbooruChips.add(); }
 // --- NekosAPI tag dropdown (flat ~50-tag vocabulary, laid out in columns) ---
 let currentNekosapiTags = []; // tokens: 'tag' = include, '-tag' = exclude
 let nekosapiTagList = [];
@@ -1129,7 +1181,7 @@ async function saveGelWatcher() {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const d = await r.json();
     if (!r.ok) { showToast(d.error || "Failed to save watcher", { warn: true }); return; }
-    showToast(editingWatcherId ? "Watcher updated — fresh baseline on next check" : "Watcher added — baseline on first check");
+    showToast(editingWatcherId ? "Watcher updated - fresh baseline on next check" : "Watcher added - baseline on first check");
     cancelGelWatcherEdit();
     await loadGelWatchers();
 }
@@ -1194,8 +1246,7 @@ function checkGelWatchersNow() {
 }
 
 // --- E-Shuushuu interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentEshuushuuTags = [];
-let eshuushuuSubTags = new Set();
+const eshuushuuChips = makeChips("eshuushuu");
 function addEshuushuuTag() {
     let input = document.getElementById("eshuushuuTag");
     if (!input) return;
@@ -1211,247 +1262,39 @@ function addEshuushuuTag() {
         vals = full.split(',').map(s => s.trim()).filter(Boolean);
     }
     vals.forEach(function(val) {
-        if (!currentEshuushuuTags.includes(val)) {
-            currentEshuushuuTags.push(val);
-            if (val === raw) eshuushuuSubTags.add(val);
+        if (!eshuushuuChips.tags.includes(val)) {
+            eshuushuuChips.tags.push(val);
+            if (val === raw) eshuushuuChips.subTags.add(val);
             added = true;
         }
     });
-    if (added) { input.value = ""; delete input.dataset.raw; renderEshuushuuTags(); }
+    if (added) { input.value = ""; delete input.dataset.raw; eshuushuuChips.render(); }
 }
-function removeEshuushuuTag(tag) {
-    currentEshuushuuTags = currentEshuushuuTags.filter(function(t) { return t !== tag; });
-    eshuushuuSubTags.delete(tag);
-    renderEshuushuuTags();
-}
-function renderEshuushuuTags() {
-    let container = document.getElementById("eshuushuuTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentEshuushuuTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (eshuushuuSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeEshuushuuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+eshuushuuChips.add = addEshuushuuTag;
 
 // --- Gsbooru interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentGsbooruTags = [];
-let gsbooruSubTags = new Set();
-function addGsbooruTag() {
-    let input = document.getElementById("gsbooruTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    chipsFromTyped(danTagForRequest('gsbooruTag')).forEach(function(val) {
-        if (!currentGsbooruTags.includes(val)) {
-            currentGsbooruTags.push(val);
-            if (val === raw) gsbooruSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderGsbooruTags(); }
-}
-function removeGsbooruTag(tag) {
-    currentGsbooruTags = currentGsbooruTags.filter(function(t) { return t !== tag; });
-    gsbooruSubTags.delete(tag);
-    renderGsbooruTags();
-}
-function renderGsbooruTags() {
-    let container = document.getElementById("gsbooruTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentGsbooruTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (gsbooruSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeGsbooruTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const gsbooruChips = makeChips("gsbooru");
+function addGsbooruTag() { gsbooruChips.add(); }
 
 // --- Konachan interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentKonaTags = [];
-let konaSubTags = new Set();
-function addKonaTag() {
-    let input = document.getElementById("konaTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    chipsFromTyped(danTagForRequest('konaTag')).forEach(function(val) {
-        if (!currentKonaTags.includes(val)) {
-            currentKonaTags.push(val);
-            if (val === raw) konaSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderKonaTags(); }
-}
-function removeKonaTag(tag) {
-    currentKonaTags = currentKonaTags.filter(function(t) { return t !== tag; });
-    konaSubTags.delete(tag);
-    renderKonaTags();
-}
-function renderKonaTags() {
-    let container = document.getElementById("konaTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentKonaTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (konaSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeKonaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const konaChips = makeChips("kona");
+function addKonaTag() { konaChips.add(); }
 
 // --- Nekosia interactive tags (mirrors gelbooru; first chip is the category) ---
-let currentNekosiaTags = [];
-let nekosiaSubTags = new Set();
-function addNekosiaTag() {
-    let input = document.getElementById("nekosiaTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    chipsFromTyped(danTagForRequest('nekosiaTag')).forEach(function(val) {
-        if (!currentNekosiaTags.includes(val)) {
-            currentNekosiaTags.push(val);
-            if (val === raw) nekosiaSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderNekosiaTags(); }
-}
-function removeNekosiaTag(tag) {
-    currentNekosiaTags = currentNekosiaTags.filter(function(t) { return t !== tag; });
-    nekosiaSubTags.delete(tag);
-    renderNekosiaTags();
-}
-function renderNekosiaTags() {
-    let container = document.getElementById("nekosiaTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentNekosiaTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (nekosiaSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeNekosiaTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const nekosiaChips = makeChips("nekosia");
+function addNekosiaTag() { nekosiaChips.add(); }
 
 // --- Safebooru interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentSafeTags = [];
-let safeSubTags = new Set();
-function addSafeTag() {
-    let input = document.getElementById("safeTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    chipsFromTyped(danTagForRequest('safeTag')).forEach(function(val) {
-        if (!currentSafeTags.includes(val)) {
-            currentSafeTags.push(val);
-            if (val === raw) safeSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderSafeTags(); }
-}
-function removeSafeTag(tag) {
-    currentSafeTags = currentSafeTags.filter(function(t) { return t !== tag; });
-    safeSubTags.delete(tag);
-    renderSafeTags();
-}
-function renderSafeTags() {
-    let container = document.getElementById("safeTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentSafeTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (safeSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeSafeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const safeChips = makeChips("safe");
+function addSafeTag() { safeChips.add(); }
 
 // --- Sankaku interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentSankakuTags = [];
-let sankakuSubTags = new Set();
-function addSankakuTag() {
-    let input = document.getElementById("sankakuTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    chipsFromTyped(danTagForRequest('sankakuTag')).forEach(function(val) {
-        if (!currentSankakuTags.includes(val)) {
-            currentSankakuTags.push(val);
-            if (val === raw) sankakuSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderSankakuTags(); }
-}
-function removeSankakuTag(tag) {
-    currentSankakuTags = currentSankakuTags.filter(function(t) { return t !== tag; });
-    sankakuSubTags.delete(tag);
-    renderSankakuTags();
-}
-function renderSankakuTags() {
-    let container = document.getElementById("sankakuTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentSankakuTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (sankakuSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeSankakuTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const sankakuChips = makeChips("sankaku");
+function addSankakuTag() { sankakuChips.add(); }
 
 // --- Yande.re interactive tags (mirrors gelbooru; joined with ' ' for the worker) ---
-let currentYandeTags = [];
-let yandeSubTags = new Set();
-function addYandeTag() {
-    let input = document.getElementById("yandeTag");
-    if (!input) return;
-    let added = false;
-    let raw = ((input.dataset && input.dataset.raw) || "").trim().toLowerCase();
-    // ponytail: same pretty-box/raw-tag split as the other chip tabs
-    chipsFromTyped(danTagForRequest('yandeTag')).forEach(function(val) {
-        if (!currentYandeTags.includes(val)) {
-            currentYandeTags.push(val);
-            if (val === raw) yandeSubTags.add(val);
-            added = true;
-        }
-    });
-    if (added) { input.value = ""; delete input.dataset.raw; renderYandeTags(); }
-}
-function removeYandeTag(tag) {
-    currentYandeTags = currentYandeTags.filter(function(t) { return t !== tag; });
-    yandeSubTags.delete(tag);
-    renderYandeTags();
-}
-function renderYandeTags() {
-    let container = document.getElementById("yandeTagsContainer");
-    if (!container) return;
-    container.innerHTML = currentYandeTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (yandeSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeYandeTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
-}
+const yandeChips = makeChips("yande");
+function addYandeTag() { yandeChips.add(); }
 
 // --- Zerochan interactive tags (mirrors rule34; joined with ',' for the worker) ---
 let currentZerochanTags = [];
@@ -1512,8 +1355,6 @@ async function showZeroSubtags(dropdown, input) {
     const items = (zeroSubtagCache[key] || []).filter(s => s && s.name && !currentZerochanTags.includes(s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
-    zeroSuggestItems = items.map(s => s.name);
-    zeroSuggestActiveIndex = -1;
     items.forEach((s) => {
         let div = document.createElement("div");
         div.className = "autosuggest-item";
@@ -1530,352 +1371,145 @@ async function showZeroSubtags(dropdown, input) {
     dropdown.style.display = "block";
 }
 
-// --- Rule34 Autosuggest ---
-let r34SuggestTimer = null;
-let r34SuggestActiveIndex = -1;
-let r34SuggestItems = [];
+// --- Autosuggest: one engine, five tag boxes -------------------------------
+// debounce + in-flight-seq guard + keyboard nav + click-away; each site only
+// supplies its deltas (endpoint, pick behavior, subtag hook, item shaping)
+function initAutosuggest(cfg) {
+    let timer = null;
+    let activeIndex = -1;
+    document.addEventListener("DOMContentLoaded", function() {
+        let input = document.getElementById(cfg.inputId);
+        let dropdown = document.getElementById(cfg.dropdownId);
+        if (!input || !dropdown) return;
+        input.removeAttribute("onkeydown");
 
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("rule34TagInput");
-    let dropdown = document.getElementById("rule34Autosuggest");
-    if (!input || !dropdown) return;
-
-    // Remove inline onkeydown from HTML to prevent double trigger
-    input.removeAttribute("onkeydown");
-
-    input.addEventListener("input", function() {
-        clearTimeout(r34SuggestTimer);
-        let val = input.value.trim();
-
-        // Handle negative tags correctly for suggest (strip minus for query)
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (queryVal.length < 2) {
-            dropdown.style.display = "none";
-            return;
+        function setActive(items) {
+            for (let i = 0; i < items.length; i++) items[i].classList.remove("active");
+            if (activeIndex > -1 && items[activeIndex]) {
+                items[activeIndex].classList.add("active");
+                items[activeIndex].scrollIntoView({ block: "nearest" });
+            }
         }
+        function close() { dropdown.style.display = "none"; }
 
-        r34SuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/rule34", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (data && data.length > 0) {
-                    r34SuggestItems = data;
-                    r34SuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item, index) => {
-                        let finalTag = isNegative ? '-' + item : item;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = finalTag;
-                            dropdown.style.display = "none";
-                            input.focus();
-                            addRule34Tag();
-                        };
-                        dropdown.appendChild(div);
+        input.addEventListener("input", function() {
+            clearTimeout(timer);
+            if (cfg.clearOnInput) cfg.clearOnInput(input);
+            let val = input.value.trim();
+            let isNegative = val.startsWith('-');
+            let queryVal = isNegative ? val.substring(1) : val;
+            if (!queryVal) {
+                if (cfg.showSubtags) { cfg.showSubtags(dropdown, input); return; }
+                close();
+                return;
+            }
+            if (queryVal.length < 2) { close(); return; }
+            timer = setTimeout(async () => {
+                // latest keystroke wins — an in-flight older fetch
+                // must not overwrite the newer dropdown
+                input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
+                let mySeq = input.dataset.suggestSeq;
+                try {
+                    let resp = await fetch("/api/tags/" + cfg.endpoint, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                     });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
+                    let data = await resp.json();
+                    if (input.dataset.suggestSeq !== mySeq) return;
+                    if (cfg.skipIfEmptyInput && input.value.trim() === "") return;
+                    if (data && data.length > 0) {
+                        activeIndex = -1;
+                        dropdown.innerHTML = "";
+                        data.forEach((item) => {
+                            let name = cfg.itemName
+                                ? cfg.itemName(item)
+                                : (typeof item === "string" ? item : (item.tag || item.value || ""));
+                            if (!name) return;
+                            let finalTag = isNegative ? '-' + name : name;
+                            let div = document.createElement("div");
+                            div.className = "autosuggest-item";
+                            if (cfg.itemColor) div.style.color = cfg.itemColor(item) || '';
+                            div.textContent = cleanTagDisplay(finalTag);
+                            div.onclick = function() { cfg.pick(finalTag, input, dropdown); };
+                            dropdown.appendChild(div);
+                        });
+                        dropdown.style.display = "block";
+                    } else {
+                        close();
+                    }
+                } catch(e) {
+                    close();
                 }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400); // 400ms debounce
-    });
+            }, 400); // 400ms debounce
+        });
 
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                r34SuggestActiveIndex++;
-                if (r34SuggestActiveIndex >= items.length) r34SuggestActiveIndex = 0;
-                updateSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                r34SuggestActiveIndex--;
-                if (r34SuggestActiveIndex < 0) r34SuggestActiveIndex = items.length - 1;
-                updateSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (r34SuggestActiveIndex > -1 && items[r34SuggestActiveIndex]) {
-                    items[r34SuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addRule34Tag();
+        input.addEventListener("keydown", function(e) {
+            if (dropdown.style.display === "block") {
+                let items = dropdown.getElementsByClassName("autosuggest-item");
+                if (e.key === "ArrowDown") {
+                    activeIndex++;
+                    if (activeIndex >= items.length) activeIndex = 0;
+                    setActive(items);
+                    e.preventDefault();
+                } else if (e.key === "ArrowUp") {
+                    activeIndex--;
+                    if (activeIndex < 0) activeIndex = items.length - 1;
+                    setActive(items);
+                    e.preventDefault();
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (activeIndex > -1 && items[activeIndex]) {
+                        items[activeIndex].click();
+                    } else {
+                        close();
+                        cfg.enter();
+                    }
+                } else if (e.key === "Escape") {
+                    close();
                 }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addRule34Tag();
-            }
-        }
-    });
-
-    document.addEventListener("click", function(e) {
-        if (e.target !== input && e.target !== dropdown) {
-            dropdown.style.display = "none";
-        }
-    });
-
-    function updateSuggestActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (r34SuggestActiveIndex > -1 && items[r34SuggestActiveIndex]) {
-            items[r34SuggestActiveIndex].classList.add("active");
-            items[r34SuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
-    }
-});
-
-// --- E-Shuushuu Autosuggest (rows colored by tag type) ---
-let eshuSuggestTimer = null;
-let eshuSuggestActiveIndex = -1;
-const ESHU_TAG_COLOR = { 1: '#00e5e5', 2: '#ff69b4', 3: '#e67e00', 4: '#228b22' };
-
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("eshuushuuTag");
-    let dropdown = document.getElementById("eshuushuuAutosuggest");
-    if (!input || !dropdown) return;
-
-    // Remove inline onkeydown from HTML to prevent double trigger
-    input.removeAttribute("onkeydown");
-
-    input.addEventListener("input", function() {
-        clearTimeout(eshuSuggestTimer);
-        delete input.dataset.raw;
-        let val = input.value.trim();
-
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (queryVal.length < 2) {
-            dropdown.style.display = "none";
-            return;
-        }
-
-        eshuSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/eshuushuu", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (data && data.length > 0) {
-                    eshuSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let title = (item && item.title) || item;
-                        let finalTag = isNegative ? '-' + title : title;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        // ponytail: text color only, gallery-pill hues
-                        div.style.color = ESHU_TAG_COLOR[item && item.type] || '';
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = (isNegative ? '-' : '') + cleanTagDisplay(title);
-                            input.dataset.raw = finalTag;
-                            dropdown.style.display = "none";
-                            input.focus();
-                            if (typeof addEshuushuuTag === 'function') addEshuushuuTag();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
+            } else {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    cfg.enter();
+                } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "" && cfg.showSubtags) {
+                    e.preventDefault();
+                    cfg.showSubtags(dropdown, input);
                 }
-            } catch(e) {
-                dropdown.style.display = "none";
             }
-        }, 400); // 400ms debounce
+        });
+        if (cfg.showSubtags) {
+            input.addEventListener("focus", function() {
+                if (input.value.trim() === "") cfg.showSubtags(dropdown, input);
+            });
+        }
+        document.addEventListener("click", function(e) {
+            if (e.target !== input && e.target !== dropdown) close();
+        });
     });
+}
 
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                eshuSuggestActiveIndex++;
-                if (eshuSuggestActiveIndex >= items.length) eshuSuggestActiveIndex = 0;
-                updateEshuActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                eshuSuggestActiveIndex--;
-                if (eshuSuggestActiveIndex < 0) eshuSuggestActiveIndex = items.length - 1;
-                updateEshuActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (eshuSuggestActiveIndex > -1 && items[eshuSuggestActiveIndex]) {
-                    items[eshuSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addEshuushuuTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addEshuushuuTag();
-            }
-        }
-    });
+// pick adds the tag straight to the chip list and clears the box
+function pickAddTag(addFn) {
+    return function(finalTag, input, dropdown) {
+        input.value = "";
+        dropdown.style.display = "none";
+        addFn(finalTag);
+        input.focus();
+    };
+}
 
-    document.addEventListener("click", function(e) {
-        if (e.target !== input && e.target !== dropdown) {
-            dropdown.style.display = "none";
-        }
-    });
-
-    function updateEshuActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (eshuSuggestActiveIndex > -1 && items[eshuSuggestActiveIndex]) {
-            items[eshuSuggestActiveIndex].classList.add("active");
-            items[eshuSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
+initAutosuggest({
+    inputId: "rule34TagInput", dropdownId: "rule34Autosuggest", endpoint: "rule34",
+    enter: () => addRule34Tag(),
+    pick: function(finalTag, input, dropdown) {
+        input.value = finalTag;
+        dropdown.style.display = "none";
+        input.focus();
+        addRule34Tag();
     }
 });
 
 // --- Zerochan tag box: empty shows sub-tags of the last tag, typing suggests ---
-let zeroSuggestTimer = null;
-let zeroSuggestActiveIndex = -1;
-let zeroSuggestItems = [];
-
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("zeroTag");
-    let dropdown = document.getElementById("zeroAutosuggest");
-    if (!input || !dropdown) return;
-
-    input.addEventListener("input", function() {
-        clearTimeout(zeroSuggestTimer);
-        let val = input.value.trim();
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (!queryVal) { showZeroSubtags(dropdown, input); return; }
-        if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
-
-        zeroSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/zerochan", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (input.value.trim() === "") return;
-                if (data && data.length > 0) {
-                    zeroSuggestItems = data;
-                    zeroSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let finalTag = isNegative ? '-' + item : item;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = "";
-                            dropdown.style.display = "none";
-                            addZerochanTagName(finalTag);
-                            input.focus();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
-                }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400);
-    });
-
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                zeroSuggestActiveIndex++;
-                if (zeroSuggestActiveIndex >= items.length) zeroSuggestActiveIndex = 0;
-                updateZeroSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                zeroSuggestActiveIndex--;
-                if (zeroSuggestActiveIndex < 0) zeroSuggestActiveIndex = items.length - 1;
-                updateZeroSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (zeroSuggestActiveIndex > -1 && items[zeroSuggestActiveIndex]) {
-                    items[zeroSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addZerochanTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addZerochanTag();
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "") {
-                e.preventDefault();
-                showZeroSubtags(dropdown, input);
-            }
-        }
-    });
-
-    input.addEventListener("focus", function() {
-        if (input.value.trim() === "") showZeroSubtags(dropdown, input);
-    });
-
-        document.addEventListener("click", function(e) {
-            if (e.target !== input && e.target !== dropdown) {
-                dropdown.style.display = "none";
-            }
-        });
-
-        function updateZeroSuggestActive(items) {
-            for (let i = 0; i < items.length; i++) {
-                items[i].classList.remove("active");
-            }
-            if (zeroSuggestActiveIndex > -1 && items[zeroSuggestActiveIndex]) {
-                items[zeroSuggestActiveIndex].classList.add("active");
-                items[zeroSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-            }
-        }
-});
-
 // --- AnimeDL tag box: same pattern, joined with '&&', child tags standalone ---
 let currentAnimeDlTags = [];
 let animeDlSubtagCache = {};
@@ -1930,7 +1564,6 @@ async function showAnimeDlSubtags(dropdown, input) {
     const items = (animeDlSubtagCache[key] || []).filter(s => s && s.name && !currentAnimeDlTags.includes(s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
-    animeDlSuggestActiveIndex = -1;
     items.forEach((s) => {
         let div = document.createElement("div");
         div.className = "autosuggest-item";
@@ -1946,120 +1579,6 @@ async function showAnimeDlSubtags(dropdown, input) {
     });
     dropdown.style.display = "block";
 }
-
-let animeDlSuggestTimer = null;
-let animeDlSuggestActiveIndex = -1;
-
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("animeDlTag");
-    let dropdown = document.getElementById("animeDlAutosuggest");
-    if (!input || !dropdown) return;
-
-    input.addEventListener("input", function() {
-        clearTimeout(animeDlSuggestTimer);
-        let val = input.value.trim();
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
-
-        if (!queryVal) { showAnimeDlSubtags(dropdown, input); return; }
-        if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
-
-        animeDlSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/anime_dl", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (input.value.trim() === "") return;
-                if (data && data.length > 0) {
-                    animeDlSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let name = (typeof item === "string") ? item : (item.tag || item.value || "");
-                        if (!name) return;
-                        let finalTag = isNegative ? '-' + name : name;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = "";
-                            dropdown.style.display = "none";
-                            addAnimeDlTagName(finalTag);
-                            input.focus();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
-                }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400);
-    });
-
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                animeDlSuggestActiveIndex++;
-                if (animeDlSuggestActiveIndex >= items.length) animeDlSuggestActiveIndex = 0;
-                updateAnimeDlSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                animeDlSuggestActiveIndex--;
-                if (animeDlSuggestActiveIndex < 0) animeDlSuggestActiveIndex = items.length - 1;
-                updateAnimeDlSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (animeDlSuggestActiveIndex > -1 && items[animeDlSuggestActiveIndex]) {
-                    items[animeDlSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addAnimeDlTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addAnimeDlTag();
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "") {
-                e.preventDefault();
-                showAnimeDlSubtags(dropdown, input);
-            }
-        }
-    });
-
-    input.addEventListener("focus", function() {
-        if (input.value.trim() === "") showAnimeDlSubtags(dropdown, input);
-    });
-
-        document.addEventListener("click", function(e) {
-            if (e.target !== input && e.target !== dropdown) {
-                dropdown.style.display = "none";
-            }
-        });
-
-    function updateAnimeDlSuggestActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (animeDlSuggestActiveIndex > -1 && items[animeDlSuggestActiveIndex]) {
-            items[animeDlSuggestActiveIndex].classList.add("active");
-            items[animeDlSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
-    }
-});
 
 // --- Danbooru tag box: same pattern, joined with ' ', related tags as subs ---
 let currentDanTags = [];
@@ -2118,7 +1637,6 @@ async function showDanSubtags(dropdown, input) {
     const items = (danSubtagCache[key] || []).filter(s => s && (s.tag || s.name) && !currentDanTags.includes(s.tag || s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
-    danSuggestActiveIndex = -1;
     items.forEach((s) => {
         const nm = s.tag || s.name;
         let div = document.createElement("div");
@@ -2135,118 +1653,31 @@ async function showDanSubtags(dropdown, input) {
     dropdown.style.display = "block";
 }
 
-let danSuggestTimer = null;
-let danSuggestActiveIndex = -1;
 
-document.addEventListener("DOMContentLoaded", function() {
-    let input = document.getElementById("danTag");
-    let dropdown = document.getElementById("danAutosuggest");
-    if (!input || !dropdown) return;
+// Zerochan: empty input lists sub-tags of the last tag; typing suggests
+// (the old block pointed at "zerochanTag"/"zerochanAutosuggest" — ids that
+// exist nowhere — so the whole suggest never ran; these are the real ids)
+initAutosuggest({
+    inputId: "zeroTag", dropdownId: "zeroAutosuggest", endpoint: "zerochan",
+    skipIfEmptyInput: true, showSubtags: showZeroSubtags,
+    enter: () => addZerochanTag(),
+    pick: pickAddTag(addZerochanTagName)
+});
 
-    input.addEventListener("input", function() {
-        clearTimeout(danSuggestTimer);
-        let val = input.value.trim();
-        let isNegative = val.startsWith('-');
-        let queryVal = isNegative ? val.substring(1) : val;
+// AnimeDL: same pattern, joined with '&&', child tags standalone
+initAutosuggest({
+    inputId: "animeDlTag", dropdownId: "animeDlAutosuggest", endpoint: "anime_dl",
+    skipIfEmptyInput: true, showSubtags: showAnimeDlSubtags,
+    enter: () => addAnimeDlTag(),
+    pick: pickAddTag(addAnimeDlTagName)
+});
 
-        if (!queryVal) { showDanSubtags(dropdown, input); return; }
-        if (queryVal.length < 2) { dropdown.style.display = "none"; return; }
-
-        danSuggestTimer = setTimeout(async () => {
-            // latest keystroke wins — an in-flight older fetch
-            // must not overwrite the newer dropdown
-            input.dataset.suggestSeq = String((parseInt(input.dataset.suggestSeq || "0", 10) + 1));
-            let mySeq = input.dataset.suggestSeq;
-            try {
-                let resp = await fetch("/api/tags/dan", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
-                });
-                let data = await resp.json();
-                if (input.dataset.suggestSeq !== mySeq) return;
-                if (input.value.trim() === "") return;
-                if (data && data.length > 0) {
-                    danSuggestActiveIndex = -1;
-                    dropdown.innerHTML = "";
-                    data.forEach((item) => {
-                        let name = (typeof item === "string") ? item : (item.tag || item.value || "");
-                        if (!name) return;
-                        let finalTag = isNegative ? '-' + name : name;
-                        let div = document.createElement("div");
-                        div.className = "autosuggest-item";
-                        div.textContent = cleanTagDisplay(finalTag);
-                        div.onclick = function() {
-                            input.value = "";
-                            dropdown.style.display = "none";
-                            addDanTagName(finalTag);
-                            input.focus();
-                        };
-                        dropdown.appendChild(div);
-                    });
-                    dropdown.style.display = "block";
-                } else {
-                    dropdown.style.display = "none";
-                }
-            } catch(e) {
-                dropdown.style.display = "none";
-            }
-        }, 400);
-    });
-
-    input.addEventListener("keydown", function(e) {
-        if (dropdown.style.display === "block") {
-            let items = dropdown.getElementsByClassName("autosuggest-item");
-            if (e.key === "ArrowDown") {
-                danSuggestActiveIndex++;
-                if (danSuggestActiveIndex >= items.length) danSuggestActiveIndex = 0;
-                updateDanSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                danSuggestActiveIndex--;
-                if (danSuggestActiveIndex < 0) danSuggestActiveIndex = items.length - 1;
-                updateDanSuggestActive(items);
-                e.preventDefault();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                if (danSuggestActiveIndex > -1 && items[danSuggestActiveIndex]) {
-                    items[danSuggestActiveIndex].click();
-                } else {
-                    dropdown.style.display = "none";
-                    addDanTag();
-                }
-            } else if (e.key === "Escape") {
-                dropdown.style.display = "none";
-            }
-        } else {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                addDanTag();
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && input.value.trim() === "") {
-                e.preventDefault();
-                showDanSubtags(dropdown, input);
-            }
-        }
-    });
-
-    input.addEventListener("focus", function() {
-        if (input.value.trim() === "") showDanSubtags(dropdown, input);
-    });
-
-    document.addEventListener("click", function(e) {
-        if (e.target !== input && e.target !== dropdown) {
-            dropdown.style.display = "none";
-        }
-    });
-
-    function updateDanSuggestActive(items) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].classList.remove("active");
-        }
-        if (danSuggestActiveIndex > -1 && items[danSuggestActiveIndex]) {
-            items[danSuggestActiveIndex].classList.add("active");
-            items[danSuggestActiveIndex].scrollIntoView({ block: "nearest" });
-        }
-    }
+// Danbooru: same pattern, joined with ' ', related tags as subs
+initAutosuggest({
+    inputId: "danTag", dropdownId: "danAutosuggest", endpoint: "dan",
+    skipIfEmptyInput: true, showSubtags: showDanSubtags,
+    enter: () => addDanTag(),
+    pick: pickAddTag(addDanTagName)
 });
 
 
@@ -2520,9 +1951,14 @@ socket.on("python_log", function (data) {
     logToConsole(data.worker, data.msg);
 });
 
+socket.on("conversion_progress", function (data) {
+    if (!data || !data.worker) return;
+    renderConvertingBar(data.worker, data.done || 0, data.total || 0, data.current);
+});
+
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
-    if (!data || data.stopped || data.more) return;
+    if (!data || data.stopped || data.more || data.converting) return;
     const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
     const dup = z ? ` (${z} duplicates removed)` : "";
     const jobs = data.jobs || 1;
@@ -2706,7 +2142,7 @@ function renderQueueChip(data) {
         const text = document.createElement("span");
         if (acts.length) {
             text.textContent = `▶ ${siteLabel(site)}: ${displayTagList(acts[0].tag, site)}`;
-            text.title = `${acts[0].site} — ${acts[0].tag}`;
+            text.title = `${acts[0].site}: ${acts[0].tag}`;
         } else {
             text.textContent = `${siteLabel(site)}: ${items.length} queued`;
         }
@@ -2751,7 +2187,7 @@ function renderQueueChip(data) {
             const label = document.createElement("span");
             label.className = "queue-label";
             label.textContent = displayTagList(j.tag, j.site);
-            label.title = `${j.site} — ${j.tag}`;
+            label.title = `${j.site}: ${j.tag}`;
 
             const x = document.createElement("button");
             x.className = "queue-x";
@@ -3054,7 +2490,7 @@ async function saveProxySettings() {
         const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(globalNetConfig) });
         if (!r.ok) throw new Error("HTTP " + r.status);
         showToast("Proxy updated.", { icon: CHECK_ICON });
-    } catch (e) { showToast("Proxy save failed — check the connection", { warn: true, icon: WARN_ICON }); }
+    } catch (e) { showToast("Proxy save failed - check the connection", { warn: true, icon: WARN_ICON }); }
 }
 
 async function browseFolder() {
@@ -3137,7 +2573,7 @@ const GEL_RATING_LABEL = { g: "Safe", s: "Sensitive", q: "Questionable", e: "NSF
 const NOTIF_SOURCES = {
     gelbooru: {
         name: "Gelbooru",
-        empty: "No watcher notifications yet — matching posts from your Gelbooru watchers will appear here.",
+        empty: "No watcher notifications yet - matching posts from your Gelbooru watchers will appear here.",
         toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
         flash: n => gelbooruGotoFlash(n),
         card: (n, idx) => gelbooruNotifCard(n, idx),
@@ -3145,7 +2581,7 @@ const NOTIF_SOURCES = {
     },
     pixiv: {
         name: "Pixiv",
-        empty: "No notifications yet — new works from the artists you follow will appear here.",
+        empty: "No notifications yet - new works from the artists you follow will appear here.",
         toast: n => `${n} new artwork${n === 1 ? "" : "s"} from artists you follow`,
         flash: n => pixivGotoArtist(String(n.artist_id || "").replace(/[^0-9]/g, "")),
         card: (n, idx) => pixivNotifCard(n, idx),
@@ -3393,7 +2829,7 @@ window.addEventListener("error", function(e) {
     try {
         const stack = (e.error && e.error.stack ? String(e.error.stack) : "").split("\n").slice(0, 3).join(" | ");
         const where = (e.filename ? String(e.filename).split("/").pop() : "") + (e.lineno ? ":" + e.lineno : "");
-        showToast("Error: " + (e.message || "unknown") + (where ? " @" + where : "") + (stack ? " — " + stack : ""), { warn: true, sticky: true, icon: WARN_ICON });
+        showToast("Error: " + (e.message || "unknown") + (where ? " @" + where : "") + (stack ? " - " + stack : ""), { warn: true, sticky: true, icon: WARN_ICON });
     } catch (_) {}
 });
 
@@ -3450,14 +2886,14 @@ function buildWorkerPayload(workerName, allowEmpty) {
     if (workerName === 'zero') { payload.tag = currentZerochanTags.join(','); payload.limit = document.getElementById('zeroLimit').value; }
     else if (workerName === 'neko') { payload.category = document.getElementById('nekoCat').value; payload.limit = document.getElementById('nekoAmount').value; }
     else if (workerName === 'nekos_life') { payload.category = document.getElementById('nekosLifeCat').value; payload.limit = document.getElementById('nekosLifeAmount').value; payload.format = document.getElementById('nekosLifeFormat').value; }
-    else if (workerName === 'safe') { payload.tag = currentSafeTags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
-    else if (workerName === 'gelbooru') { payload.tag = currentGelbooruTags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !currentGelbooruTags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
-    else if (workerName === 'gsbooru') { payload.tag = currentGsbooruTags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
-    else if (workerName === 'yande') { payload.tag = currentYandeTags.join(' '); payload.limit = document.getElementById('yandeLimit').value; payload.rating = document.getElementById('yandeRating').value; }
+    else if (workerName === 'safe') { payload.tag = safeChips.tags.join(' '); payload.limit = document.getElementById('safeLimit').value; payload.exclusions = []; }
+    else if (workerName === 'gelbooru') { payload.tag = gelbooruChips.tags.join(' '); payload.limit = document.getElementById('gelbooruLimit').value; payload.rating = document.getElementById('gelbooruRating').value; let format = document.getElementById('gelFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } payload.exclusions = ex; if (document.getElementById('gelNoAI').checked && !gelbooruChips.tags.includes('-ai_generated')) payload.tag += " -ai_generated"; }
+    else if (workerName === 'gsbooru') { payload.tag = gsbooruChips.tags.join(' '); payload.limit = document.getElementById('gsbooruLimit').value; payload.rating = document.getElementById('gsbooruRating').value; }
+    else if (workerName === 'yande') { payload.tag = yandeChips.tags.join(' '); payload.limit = document.getElementById('yandeLimit').value; payload.rating = document.getElementById('yandeRating').value; }
     else if (workerName === 'dan') { payload.tag = currentDanTags.join(' '); payload.limit = document.getElementById('danLimit').value; payload.rating = document.getElementById('danRating').value; let format = document.getElementById('danFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('danExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
-    else if (workerName === 'kona') { payload.tag = currentKonaTags.join(' '); payload.limit = document.getElementById('konaLimit').value; payload.rating = document.getElementById('konaRating').value; let format = document.getElementById('konaFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('konaExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
+    else if (workerName === 'kona') { payload.tag = konaChips.tags.join(' '); payload.limit = document.getElementById('konaLimit').value; payload.rating = document.getElementById('konaRating').value; let format = document.getElementById('konaFormat').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('konaExGif').checked) ex.push('-gif'); payload.exclusions = ex; }
     else if (workerName === 'rule34') { payload.tag = currentRule34Tags.join(' '); payload.limit = document.getElementById('rule34Limit').value; payload.method = document.getElementById('rule34Method').value; payload.sort_type = document.getElementById('rule34SortType').value; payload.sort_order = document.getElementById('rule34SortOrder').value; let format = document.getElementById('rule34Format').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'gifs') { ex.push('-video'); ex.push('-image'); } else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('exGif').checked) ex.push('-gif'); if (document.getElementById('exComic').checked) ex.push('-comic'); if (document.getElementById('ex3D').checked) ex.push('-3d'); payload.exclusions = ex; payload.exclude_ai = document.getElementById('rule34-exclude-ai').checked; }
-    else if (workerName === 'sankaku') { payload.tag = currentSankakuTags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; if (document.getElementById('sankakuExcludeAi').checked && !currentSankakuTags.includes('-ai-created')) payload.tag += " -ai-created"; }
+    else if (workerName === 'sankaku') { payload.tag = sankakuChips.tags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; if (document.getElementById('sankakuExcludeAi').checked && !sankakuChips.tags.includes('-ai-created')) payload.tag += " -ai-created"; }
     else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join(' '); payload.limit = document.getElementById('animeDlLimit').value; }
     else if (workerName === 'pinterest') { payload.tag = document.getElementById('pinterestTag').value; payload.limit = document.getElementById('pinterestLimit').value; payload.is_search = document.getElementById('pinterestMode').value === 'search'; payload.min_w = parseInt(document.getElementById('pinterestMinW').value) || 0; payload.min_h = parseInt(document.getElementById('pinterestMinH').value) || 0; }
     else if (workerName === 'pixiv') {
@@ -3478,7 +2914,7 @@ function buildWorkerPayload(workerName, allowEmpty) {
         payload.exclusions = [];
     }
     else if (workerName === 'eshuushuu') {
-        payload.tag = currentEshuushuuTags.join(' ');
+        payload.tag = eshuushuuChips.tags.join(' ');
         payload.user_id = document.getElementById('eshuushuuUser').value;
         payload.limit = document.getElementById('eshuushuuLimit').value;
     }
@@ -3490,7 +2926,7 @@ function buildWorkerPayload(workerName, allowEmpty) {
     }
     else if (workerName === 'x') { payload.tag = document.getElementById('xTag').value; payload.limit = document.getElementById('xLimit').value; }
     else if (workerName === 'nekosia') {
-        payload.tag = currentNekosiaTags.join(' ');
+        payload.tag = nekosiaChips.tags.join(' ');
         payload.limit = document.getElementById('nekosiaLimit').value;
         payload.rating = document.getElementById('nekosiaRating').value;
     }
@@ -3502,12 +2938,12 @@ function buildWorkerPayload(workerName, allowEmpty) {
     const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia', 'x'];
     if (!allowEmpty && TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
-        logToConsole(workerName, "Error: tag is empty — nothing to search");
+        logToConsole(workerName, "Error: tag is empty - nothing to search");
         return null;
     }
     if (!allowEmpty && workerName === 'eshuushuu' && !(payload.tag || '').trim() && !(payload.user_id || '').trim()) {
         showToast("Enter a tag or user ID first");
-        logToConsole('eshuushuu', "Error: tag and user ID are both empty — nothing to search");
+        logToConsole('eshuushuu', "Error: tag and user ID are both empty - nothing to search");
         return null;
     }
 
@@ -3519,15 +2955,15 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'zero') { currentZerochanTags = []; zerochanSubTags.clear(); renderZerochanTags(); document.getElementById('zeroTag').value = ''; }
     if (workerName === 'anime_dl') { currentAnimeDlTags = []; animeDlSubTags.clear(); renderAnimeDlTags(); document.getElementById('animeDlTag').value = ''; }
     if (workerName === 'dan') { currentDanTags = []; danSubTags.clear(); renderDanTags(); document.getElementById('danTag').value = ''; }
-    if (workerName === 'gelbooru') { currentGelbooruTags = []; gelbooruSubTags.clear(); renderGelbooruTags(); document.getElementById('gelbooruTag').value = ''; }
+    if (workerName === 'gelbooru') { gelbooruChips.tags = []; gelbooruChips.subTags.clear(); gelbooruChips.render(); document.getElementById('gelbooruTag').value = ''; }
     if (workerName === 'nekosapi') { currentNekosapiTags = []; syncNekosapiTags(); }
-    if (workerName === 'eshuushuu') { currentEshuushuuTags = []; eshuushuuSubTags.clear(); renderEshuushuuTags(); document.getElementById('eshuushuuTag').value = ''; }
-    if (workerName === 'gsbooru') { currentGsbooruTags = []; gsbooruSubTags.clear(); renderGsbooruTags(); document.getElementById('gsbooruTag').value = ''; }
-    if (workerName === 'kona') { currentKonaTags = []; konaSubTags.clear(); renderKonaTags(); document.getElementById('konaTag').value = ''; }
-    if (workerName === 'nekosia') { currentNekosiaTags = []; nekosiaSubTags.clear(); renderNekosiaTags(); document.getElementById('nekosiaTag').value = ''; }
-    if (workerName === 'safe') { currentSafeTags = []; safeSubTags.clear(); renderSafeTags(); document.getElementById('safeTag').value = ''; }
-    if (workerName === 'sankaku') { currentSankakuTags = []; sankakuSubTags.clear(); renderSankakuTags(); document.getElementById('sankakuTag').value = ''; }
-    if (workerName === 'yande') { currentYandeTags = []; yandeSubTags.clear(); renderYandeTags(); document.getElementById('yandeTag').value = ''; }
+    if (workerName === 'eshuushuu') { eshuushuuChips.tags = []; eshuushuuChips.subTags.clear(); eshuushuuChips.render(); document.getElementById('eshuushuuTag').value = ''; }
+    if (workerName === 'gsbooru') { gsbooruChips.tags = []; gsbooruChips.subTags.clear(); gsbooruChips.render(); document.getElementById('gsbooruTag').value = ''; }
+    if (workerName === 'kona') { konaChips.tags = []; konaChips.subTags.clear(); konaChips.render(); document.getElementById('konaTag').value = ''; }
+    if (workerName === 'nekosia') { nekosiaChips.tags = []; nekosiaChips.subTags.clear(); nekosiaChips.render(); document.getElementById('nekosiaTag').value = ''; }
+    if (workerName === 'safe') { safeChips.tags = []; safeChips.subTags.clear(); safeChips.render(); document.getElementById('safeTag').value = ''; }
+    if (workerName === 'sankaku') { sankakuChips.tags = []; sankakuChips.subTags.clear(); sankakuChips.render(); document.getElementById('sankakuTag').value = ''; }
+    if (workerName === 'yande') { yandeChips.tags = []; yandeChips.subTags.clear(); yandeChips.render(); document.getElementById('yandeTag').value = ''; }
     // plain-text boxes (no tag-chip state): empty the field that was queued
     if (workerName === 'pixiv') document.getElementById('pixivTag').value = '';
     if (workerName === 'pinterest') document.getElementById('pinterestTag').value = '';
@@ -3654,7 +3090,7 @@ function _fillXCookie(path) {
     const field = document.getElementById("xCookies");
     field.value = path;
     field.dispatchEvent(new Event("input", { bubbles: true }));
-    showToast("Cookie file imported — press Save Settings");
+    showToast("Cookie file imported - press Save Settings");
 }
 
 async function importXCookie() {
@@ -3868,7 +3304,7 @@ function parseHistoryQuery(q) {
         range = { from: Date.now() - 86400000, to: Date.now() };
         toks = [];
     }
-    const terms = toks.map(t => t.replace(/_/g, " "));
+    const terms = toks.map(t => t.replace(/_/g, " ").replace(/"/g, ""));
     return { terms, range };
 }
 function dateFilterRange(f) {
@@ -3896,7 +3332,7 @@ function historySearchInput(v) {
     historyQuery = v;
     imageHistoryVisible = 30;
     renderHistory();
-    renderImageHistory();
+    reloadImgHist();
 }
 // custom date+time picker (native datetime-local has no time UI in webkit)
 const HP_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -4017,9 +3453,8 @@ function hpApply() {
     } else {
         historyDateFilter = f;
         dateBtnState(s.btn, true);
-        imageHistoryVisible = 30;
         renderHistory();
-        renderImageHistory();
+        reloadImgHist();
     }
     historyPickerClose();
 }
@@ -4033,9 +3468,8 @@ function hpClear() {
     } else {
         historyDateFilter = null;
         dateBtnState(s.btn, false);
-        imageHistoryVisible = 30;
         renderHistory();
-        renderImageHistory();
+        reloadImgHist();
     }
     historyPickerClose();
 }
@@ -4046,24 +3480,23 @@ function dateBtnState(btn, active) {
 async function loadTagsData() {
     try {
         // ponytail: independent reads — never serialize round trips
-        let [hist, favs, imgHist] = await Promise.all([
+        let [hist, favs] = await Promise.all([
             fetch("/api/history").then(r => r.json()),
-            fetch("/api/favorites").then(r => r.json()),
-            fetch("/api/image_history").then(r => r.json())
+            fetch("/api/favorites").then(r => r.json())
         ]);
         // refetch on tab open is only for staleness (favs toggled elsewhere) —
         // rebuild only the sections whose data actually changed, or the archive
         // replays its slide-in animation every time and looks like it reloaded
         const h = JSON.stringify(hist) !== JSON.stringify(historyTags);
         const f = JSON.stringify(favs) !== JSON.stringify(favoriteTags);
-        const i = JSON.stringify(imgHist) !== JSON.stringify(imageHistory);
-        if (!h && !f && !i) return;
         if (h) historyTags = hist;
         if (f) favoriteTags = favs;
-        if (i) imageHistory = imgHist;
         if (h || f) renderHistory();
         if (f) renderFavorites();
-        if (i) renderImageHistory();
+        // image history is paged (300 rows) — always refresh page 0 so new
+        // downloads show; already-rendered rows don't re-animate (_histAnimated)
+        await fetchImgHistPage(0);
+        renderImageHistory();
     } catch(e) { console.error("loadTagsData failed:", e); }
 }
 
@@ -4183,36 +3616,36 @@ function jumpToSite(site, tag, rating, excludeAI, filters) {
     } else if (site === "gelbooru") {
         // the saved tag carries the AI exclusion — map it to the checkbox, never a pill
         const hadAI = /\s*-ai[_ ]generated\b/i.test(tag || "");
-        currentGelbooruTags = String(tag || "").replace(/\s*-ai[_ ]generated\b/gi, "").trim().split(/\s+/).filter(Boolean);
-        renderGelbooruTags();
+        gelbooruChips.tags = String(tag || "").replace(/\s*-ai[_ ]generated\b/gi, "").trim().split(/\s+/).filter(Boolean);
+        gelbooruChips.render();
         const gelNoAI = document.getElementById('gelNoAI');
         if (gelNoAI) gelNoAI.checked = hadAI;
     } else if (site === "eshuushuu") {
         // e-shuushuu tags contain spaces ("fire keeper") — comma only, like zero
-        currentEshuushuuTags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
-        renderEshuushuuTags();
+        eshuushuuChips.tags = String(tag || "").split(",").map(t => t.trim()).filter(Boolean);
+        eshuushuuChips.render();
     } else if (site === "gsbooru") {
-        currentGsbooruTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderGsbooruTags();
+        gsbooruChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        gsbooruChips.render();
     } else if (site === "kona") {
-        currentKonaTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderKonaTags();
+        konaChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        konaChips.render();
     } else if (site === "nekosia") {
-        currentNekosiaTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderNekosiaTags();
+        nekosiaChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        nekosiaChips.render();
     } else if (site === "safe") {
-        currentSafeTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderSafeTags();
+        safeChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        safeChips.render();
     } else if (site === "sankaku") {
         // the saved tag carries the AI exclusion — map it to the checkbox, never a pill
         const sankHadAI = /\s*-ai-created\b/i.test(tag || "");
-        currentSankakuTags = String(tag || "").replace(/\s*-ai-created\b/gi, "").trim().split(/\s+/).filter(Boolean);
-        renderSankakuTags();
+        sankakuChips.tags = String(tag || "").replace(/\s*-ai-created\b/gi, "").trim().split(/\s+/).filter(Boolean);
+        sankakuChips.render();
         const sankNoAI = document.getElementById('sankakuExcludeAi');
         if (sankNoAI) sankNoAI.checked = sankHadAI;
     } else if (site === "yande") {
-        currentYandeTags = String(tag || "").split(/\s+/).filter(Boolean);
-        renderYandeTags();
+        yandeChips.tags = String(tag || "").split(/\s+/).filter(Boolean);
+        yandeChips.render();
     } else if (site === "anime_dl") {
         currentAnimeDlTags = String(tag || "").split("&&").map(t => t.trim()).filter(Boolean);
         renderAnimeDlTags();
@@ -4297,20 +3730,45 @@ function getSafeThumbUrl(filepath, filename) {
 // تابع جدید هیستوری که دقیقاً کپی عکسی هست که دادی
 let imageHistoryVisible = 30;
 let imgHistFiltered = [];
-function filteredImageHistory() {
+// ponytail: 22k history rows = 14MB + ~2s of server/parse per tab open —
+// the archive shows 30 rows at a time, so fetch it from the server in pages
+// (search + date filter run server-side; X-Total-Count bounds paging)
+const IMG_HIST_PAGE = 300;
+let imgHistTotal = Infinity;
+let imgHistParams = new URLSearchParams();
+let imgHistLoading = false;
+function imgHistQueryParams() {
     const { terms, range } = historyQueryParts();
-    return imageHistory.filter(img => {
-        if (range) {
-            const t = img.downloaded_at ? img.downloaded_at * 1000 : 0;
-            if (t < range.from || t > range.to) return false;
-        }
-        if (!terms.length) return true;
-        let allTags = [];
-        let tagsDict = normalizeTags(img.tags || {});
-        TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
-        const hay = ((img.site || "") + " " + (img.filepath || img.filename || "") + " " + allTags.join(" ")).toLowerCase().replace(/_/g, " ");
-        return terms.every(t => hay.includes(t));
-    });
+    const p = new URLSearchParams();
+    if (terms.length) p.set("q", terms.join(" "));
+    if (range) { p.set("from_ts", String(range.from / 1000)); p.set("to_ts", String(range.to / 1000)); }
+    return p;
+}
+function imgHistHasMore() { return imageHistory.length < imgHistTotal; }
+async function fetchImgHistPage(offset) {
+    if (imgHistLoading) return;
+    imgHistLoading = true;
+    try {
+        const p = new URLSearchParams(imgHistParams);
+        p.set("limit", IMG_HIST_PAGE);
+        p.set("offset", offset);
+        const r = await fetch("/api/image_history?" + p.toString());
+        imgHistTotal = +(r.headers.get("X-Total-Count") || 0) || Infinity;
+        const rows = await r.json();
+        if (Array.isArray(rows)) imageHistory = offset === 0 ? rows : imageHistory.concat(rows);
+    } catch (e) { console.error("image history page failed:", e); }
+    finally { imgHistLoading = false; }
+}
+async function reloadImgHist() {
+    imageHistoryVisible = 30;
+    imgHistParams = imgHistQueryParams();
+    await fetchImgHistPage(0);
+    renderImageHistory();
+}
+function filteredImageHistory() {
+    // server-side now: imgHistParams carried q/from_ts/to_ts on the page
+    // fetch, so the loaded rows are already the filtered set
+    return imageHistory;
 }
 function appendHistoryRows(n) {
     const ui = document.getElementById("imageHistoryUI");
@@ -4332,21 +3790,10 @@ function historyRowHtml(img) {
     TAG_CATEGORIES.forEach(c => { if (tagsDict[c]) allTags.push(...tagsDict[c]); });
     let pLow = ((img.filepath || img.filename) + " " + allTags.join(' ')).toLowerCase();
     let siteLower = (img.site || "").toLowerCase();
-    if (siteLower === "rule34") {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-        histRating = "explicit";
-    } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-        histRating = "explicit";
-    } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
-        histRating = "sensitive";
-    } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-        histRating = "questionable";
-    } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:s') || pLow.includes('rating:g')) {
-        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
-        histRating = "safe";
+    const _cr = classifyRating(pLow, siteLower);
+    if (_cr) {
+        ratingHtml = `<span style="background:${_cr.bg}; color:${_cr.fg}; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">${_cr.label}</span>`;
+        histRating = _cr.rating;
     }
 
     let thumbUrl = getSafeThumbUrl(img.filepath, img.filename);
@@ -4385,8 +3832,13 @@ function renderImageHistory() {
     if (scroller && !scroller.dataset.histScroll) {
         scroller.dataset.histScroll = "1";
         scroller.addEventListener("scroll", () => {
-            if (imageHistoryVisible >= imgHistFiltered.length) return;
-            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) appendHistoryRows(30);
+            if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 400) {
+                if (imageHistoryVisible >= imgHistFiltered.length) {
+                    if (imgHistHasMore()) fetchImgHistPage(imageHistory.length).then(() => { appendHistoryRows(IMG_HIST_PAGE); });
+                    return;
+                }
+                appendHistoryRows(30);
+            }
         });
     }
     let currentScroll = scroller ? scroller.scrollTop : 0;
@@ -4415,6 +3867,11 @@ function renderImageHistory() {
     // and leaves stale thumb paints on screen until the next forced repaint
     while (imageHistoryVisible < imgHistFiltered.length && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
         appendHistoryRows(30);
+    }
+    // local rows exhausted and the viewport still isn't full: pull the next
+    // server page, then re-render to append it
+    if (imgHistHasMore() && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
+        fetchImgHistPage(imageHistory.length).then(() => renderImageHistory());
     }
 }
 
@@ -5962,7 +5419,7 @@ async function selectCopy() {
             showToast(`Copied ${paths.length} file${paths.length > 1 ? "s" : ""} to clipboard`, { icon: COPY_ICON });
         } catch (err) {
             console.error("Copy failed:", err);
-            showToast("Copy failed — check server logs", { warn: true, icon: WARN_ICON, sticky: true });
+            showToast("Copy failed - check server logs", { warn: true, icon: WARN_ICON, sticky: true });
         }
         return;
     }
@@ -5978,7 +5435,7 @@ async function selectCopy() {
         holder.select();
         const ok = document.execCommand('copy');
         holder.remove();
-        if (!ok) { showToast("Copy failed — browser refused clipboard access", { warn: true, icon: WARN_ICON }); return; }
+        if (!ok) { showToast("Copy failed - browser refused clipboard access", { warn: true, icon: WARN_ICON }); return; }
     }
     showToast(`Copied ${paths.length} server path${paths.length > 1 ? "s" : ""} as text`, { icon: COPY_ICON });
 }
@@ -6513,21 +5970,9 @@ function viewerMetaHtml(img, tagsClickable) {
     TAG_CATEGORIES.forEach(c => { if (_viewerTd[c]) _viewerAllTags.push(..._viewerTd[c]); });
     let pLow = ((img.filepath || "") + " " + _viewerAllTags.join(' ')).toLowerCase();
     let vSiteLower = (img.site || "").toLowerCase();
-    if (vSiteLower === "rule34") {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-    } else if (pLow.includes('nsfw') || pLow.includes('explicit') || pLow.includes('rating:e')) {
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-    } else if (pLow.includes('/r18g/')) {
-        // pixiv r18g = NSFW, r18 = questionable — r18g before r18
-        ratingHtml = `<span style="background:rgba(231, 76, 60, 0.15); color:#e74c3c; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">NSFW</span>`;
-    } else if (pLow.includes('/r18/')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-    } else if (pLow.includes('/sensitive') || pLow.includes('rating:sensitive')) {
-        ratingHtml = `<span style="background:rgba(155, 89, 182, 0.15); color:#9b59b6; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Sensitive</span>`;
-    } else if (pLow.includes('moderate') || pLow.includes('questionable') || pLow.includes('rating:q')) {
-        ratingHtml = `<span style="background:rgba(243, 156, 18, 0.15); color:#f39c12; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Questionable</span>`;
-    } else if (pLow.includes('safe') || pLow.includes('general') || pLow.includes('rating:g')) {
-        ratingHtml = `<span style="background:rgba(46, 204, 113, 0.15); color:#2ecc71; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">Safe</span>`;
+    const _cr = classifyRating(pLow, vSiteLower);
+    if (_cr) {
+        ratingHtml = `<span style="background:${_cr.bg}; color:${_cr.fg}; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">${_cr.label}</span>`;
     }
     let _srcLabels = (Array.isArray(img.sources) && img.sources.length ? img.sources : [img.site])
         .filter(Boolean).map(siteLabel);
@@ -6812,7 +6257,7 @@ function updateViewerNav() {
     if (!v) return;
     if (viewerSingle) {
         const moreHistory = viewerSingleBoxId === "imageHistoryUI"
-            && imageHistoryVisible < imgHistFiltered.length;
+            && (imageHistoryVisible < imgHistFiltered.length || imgHistHasMore());
         v.classList.toggle("at-start", viewerSingleIdx <= 0);
         v.classList.toggle("at-end", viewerSingleList.length > 0
             && viewerSingleIdx >= viewerSingleList.length - 1 && !moreHistory);
@@ -6850,8 +6295,15 @@ function viewerNav(dir) {
         refreshViewerSingleList();
         // stepping past the last rendered archive card pulls the next page in
         if (dir > 0 && viewerSingleBoxId === "imageHistoryUI"
-                && viewerSingleIdx >= viewerSingleList.length - 1
-                && imageHistoryVisible < imgHistFiltered.length) {
+                && viewerSingleIdx >= viewerSingleList.length - 1) {
+            if (imageHistoryVisible >= imgHistFiltered.length && imgHistHasMore()) {
+                // wait for the server rows rather than stepping into a stale list
+                fetchImgHistPage(imageHistory.length).then(() => {
+                    renderImageHistory();
+                    refreshViewerSingleList();
+                });
+                return;
+            }
             imageHistoryVisible += 30;
             renderImageHistory();
             refreshViewerSingleList();
@@ -6904,7 +6356,7 @@ function toggleViewerFav() {
         document.body.appendChild(a);
         a.click();
         a.remove();
-        showToast("Clipboard refused this file type — saved to your PC instead", { warn: true, sticky: true, icon: WARN_ICON });
+        showToast("Clipboard refused this file type - saved to your PC instead", { warn: true, sticky: true, icon: WARN_ICON });
     }
     async function copyToClipboard(url, filename) {
         // the native backend writes the SERVER's clipboard — only useful when
@@ -6990,12 +6442,12 @@ function toggleViewerFav() {
                 try {
                     await viewerResource.loadPromise;
                 } catch (err) {
-                    if (generation !== viewerResource.generation) showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON });
+                    if (generation !== viewerResource.generation) showToast("Image changed - press Copy again", { warn: true, icon: WARN_ICON });
                     else showToast("Copy failed: image did not load", { warn: true, icon: WARN_ICON });
                     return;
                 }
             }
-            if (generation !== viewerResource.generation) { showToast("Image changed — press Copy again", { warn: true, icon: WARN_ICON }); return; }
+            if (generation !== viewerResource.generation) { showToast("Image changed - press Copy again", { warn: true, icon: WARN_ICON }); return; }
             await copyToClipboard(url, filename);
         } catch (e) { showToast("Copy failed: " + (e && e.message || e), { warn: true, icon: WARN_ICON }); }
         finally { _copyBusy = false; }
@@ -7433,7 +6885,7 @@ function toggleViewerFav() {
 async function loadGalleryRoots() { try { const resp = await fetch('/api/gallery/roots'); const data = await resp.json(); const list = document.getElementById('galleryRootList'); if (!list) return; list.innerHTML = ''; const mkRow = (path, removable, badge) => { const row = document.createElement('div'); row.className = 'gallery-root-item'; const span = document.createElement('span'); span.className = 'gallery-root-path'; span.textContent = path; span.title = path; row.appendChild(span); if (badge) { const b = document.createElement('em'); b.className = 'gallery-root-badge'; b.textContent = badge; row.appendChild(b); } if (removable) { const del = document.createElement('button'); del.className = 'action-btn'; del.textContent = '\u2715'; del.title = 'Stop reading this folder (image records + hashes are kept)'; del.onclick = () => removeGalleryRoot(path); row.appendChild(del); } list.appendChild(row); }; if (data.master) mkRow(data.master, false, 'main'); if (!data.roots || !data.roots.length) { if (!data.master) list.innerHTML = '<div class="gallery-roots-empty">No extra folders yet. Add an HDD path; rescan then reads its images.</div>'; else list.appendChild(Object.assign(document.createElement('div'), { className: 'gallery-roots-empty', textContent: 'No extra folders yet. Add an HDD path; rescan then reads its images.' })); return; } data.roots.forEach(p => mkRow(p, true)); } catch (e) { showToast('Could not load gallery folders: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
 async function addGalleryRoot() { const input = document.getElementById('galleryRootInput'); const path = input.value.trim(); if (!path) return; try { const resp = await fetch('/api/gallery/roots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not add the folder', { warn: true, icon: WARN_ICON }); return; } input.value = ''; showToast('Folder added — scanning it now', { key: 'rescan' }); loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not add the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
 async function removeGalleryRoot(path) { try { const resp = await fetch('/api/gallery/roots', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not remove the folder', { warn: true, icon: WARN_ICON }); return; } loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not remove the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
-async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started — results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" }); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
+async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started - results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" }); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
     let _siteFilterSeq = 0;
     let _lastSourceFilterKey = null;
     async function populateGallerySiteFilter(force) {
@@ -7558,7 +7010,7 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
                 let data = await resp.json().catch(() => ({}));
                 if (resp.ok) {
                     markDeleted(galleryPathFromUrl(viewerSingleUrl), viewerSingleFilename);
-                    if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
+                    if (data.dedup_warning) showToast("Image deleted - duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                     else showToast("Image deleted completely!", { icon: TRASH_ICON });
                     closeGalleryViewer();
                     loadGallery();
@@ -7576,7 +7028,7 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
             let data = await resp.json().catch(() => ({}));
             if (resp.ok) {
                 markDeleted(img.filepath, img.filename);
-                if (data.dedup_warning) showToast("Image deleted — duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
+                if (data.dedup_warning) showToast("Image deleted - duplicate-cleanup failed; it will finish on next Refresh", { warn: true, icon: WARN_ICON });
                 else showToast("Image deleted completely!", { icon: TRASH_ICON });
                 let card = document.querySelector(`.gallery-card[data-id="${CSS.escape(String(img.id))}"]`);
                 if (card) card.remove();

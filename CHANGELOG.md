@@ -7,10 +7,20 @@ All notable changes to Rems Dl will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Conversion Progress Bar:** While a finished batch's downloads still await their JXL conversions, the bar switches to a purple-to-pink "Converting" gauge that fills as each image commits; the success box appears only after the last image card publishes, so "All N downloads completed successfully!" never lands before the images it counts.
+- **Instant History Tab:** The history archive now pages server-side (30 rows per screen, 300 per fetch) instead of shipping the entire multi-thousand-row JSON on every open, with the search executed in the database — opening a 22k-image history drops from ~14MB per tab switch to a fraction of a megabyte.
+- **Tag Display Rules:** Tags capitalize after `:` ("Cyberpunk: edgerunners" → "Edgerunners"), keep emoticon tags intact (`>_<`, `^_^` — underscores are no longer stripped from symbol-only tags), and stored `\uXXXX` escapes render decoded (`>_\u003C` → `>_<`).
 - **Deferred Download Card Publication:** Log, history, and gallery cards for a fresh download publish after a short grace window instead of instantly, and a publication is discarded entirely when a keep-larger dedup swap deletes the file inside that window — the replaced (smaller) card never flashes through any view.
 - **Conversion-Synced Cards (auto-JXL):** With convert-to-JXL enabled, a download's cards publish only after that image's own `.jxl` commit completes, carrying the final `.jxl` path. Every held download owns its release, so another file converting sooner can never reveal an unconverted one. Failed/missing-codec conversions and expired holds (180s cap) publish the original image, and image metadata is baked into the downloaded bytes before any conversion runs.
 
 ### Fixed
+- **Gallery Search for Symbol Tags:** Searching `>_<` (quoted or bare) now matches images whose stored tags contain the `\u003C`-escaped spelling, in both the gallery and the history archive.
+- **Tag Pill Contrast:** Category-colored tag pills use brighter text tints (11 categories) for legibility on dark backgrounds.
+- **Settings API Hardening:** `GET /api/settings` returns masked secret values and the write endpoint ignores inbound masked placeholders, so secrets never leave the server to be echoed back.
+- **Gallery File Download Safety:** Non-image/non-video gallery downloads are served as attachments instead of rendering in the browser.
+- **Hold-Window Deadlock:** A JXL hold expiring while the converter was still processing could wedge the batch publish loop permanently; the grace checker now releases its lock before publishing.
+- **Gallery Store Rollbacks:** Every write path in the persistent gallery store rolls back its transaction on failure instead of committing half-done changes.
+- **Resource Cleanup:** aiohttp responses across all workers use context managers; curl sessions, HTTP timeouts, and backoff windows are bounded.
 - **Deleted Images Lingering in Logs:** The keep-larger swap cleanup now always emits `image_deleted` (even when no gallery row was found, using the master-relative path), and a kill landing mid-publish retracts the rows/cards it just created, so deleted images no longer stay visible with broken thumbnails in the log.
 - **Planning Modals Positioned at Screen Top:** Planning add/edit/bulk dialogs are now centered on screen instead of top-aligned.
 - **Dropdown Menus Drifting in Glass Panels:** The custom select (Format, Ratings, ...) positioned its open menu against the real containing block (the app's `backdrop-filter` glass panel), so it now lands exactly under its trigger everywhere.

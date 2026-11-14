@@ -74,7 +74,7 @@
                         </div>
                         <div class="input-group" style="margin-top: 8px;">
                             <label style="min-width: 100px;">Proxy URL:</label>
-                            <input type="text" id="proxyUrl" value="http://127.0.0.1:10808" style="width: 280px;" title="Proxy as seen from the SERVER running Rems Dl — 127.0.0.1 here means the server's own loopback, not your PC's proxy">
+                            <input type="text" id="proxyUrl" value="http://127.0.0.1:10808" style="width: 280px;" title="Proxy as seen from the SERVER running Rems Dl - 127.0.0.1 here means the server's own loopback, not your PC's proxy">
                             <button class="action-btn" onclick="saveProxySettings()" style="margin-left: 10px;">Apply</button>
                         </div>
                     </div>
@@ -318,7 +318,7 @@
                             <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>
                         </div>
                     </div>
-                    <input type="text" id="gallerySearch" placeholder='Search tags — commas separate, "tag" exact, -tag excludes' onkeydown="if(event.key==='Enter')loadGallery(1)">
+                    <input type="text" id="gallerySearch" placeholder='Search tags - commas separate, "tag" exact, -tag excludes' onkeydown="if(event.key==='Enter')loadGallery(1)">
                     <span id="galleryDateWrap" title="Filter by date and time" data-target="gallery" onclick="openHistoryPicker(this)" style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; border: 1px solid var(--border-color); border-radius: 6px; background: var(--input-bg); color: var(--text-color); cursor: pointer;">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" shape-rendering="geometricPrecision" style="pointer-events: none;">
                             <path d="M7.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M7.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M7.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M12.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M17.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0 -2Z M21.5 3h-2.75a0.25 0.25 0 0 1 -0.25 -0.25V1a1 1 0 0 0 -2 0v4.75a0.75 0.75 0 0 1 -1.5 0V3.5a0.5 0.5 0 0 0 -0.5 -0.5H8.25A0.25 0.25 0 0 1 8 2.75V1a1 1 0 0 0 -2 0v4.75a0.75 0.75 0 0 1 -1.5 0V3.5A0.5 0.5 0 0 0 4 3H2.5a2 2 0 0 0 -2 2v17a2 2 0 0 0 2 2h19a2 2 0 0 0 2 -2V5a2 2 0 0 0 -2 -2Zm0 18.5a0.5 0.5 0 0 1 -0.5 0.5H3a0.5 0.5 0 0 1 -0.5 -0.5v-12A0.5 0.5 0 0 1 3 9h18a0.5 0.5 0 0 1 0.5 0.5Z" fill="currentColor" fill-rule="evenodd"></path>
@@ -632,7 +632,7 @@
                             <p>Convert an image or folder to JXL, or restore JXL files made here to their previous format. Each verified result replaces its source in the same folder. Embedded Rems tags and their categories are preserved and verified.</p>
                             <div class="jxl-row"><label for="jxlPath">Image or folder</label><input id="jxlPath" class="jxl-path" type="text" placeholder="Paste a local path, or browse" autocomplete="off"><button id="jxlBrowseFile" class="action-btn" type="button">Image…</button><button id="jxlBrowseFolder" class="action-btn" type="button">Folder…</button></div>
                             <div class="jxl-options">
-                                <label for="jxlMode">Operation <select id="jxlMode"><option value="auto">JXL — lossless / reversible JPEG</option><option value="lossless">JXL — lossless normalized pixels</option><option value="lossy">JXL — smaller file (lossy)</option><option value="restore">Restore previous format</option></select></label>
+                                <label for="jxlMode">Operation <select id="jxlMode"><option value="auto">JXL - lossless / reversible JPEG</option><option value="lossless">JXL - lossless normalized pixels</option><option value="lossy">JXL - smaller file (lossy)</option><option value="restore">Restore previous format</option></select></label>
                                 <label for="jxlQuality">Quality <input id="jxlQuality" type="number" min="1" max="99" value="90" disabled></label>
                                 <label for="jxlEffort">Effort <input id="jxlEffort" type="number" min="1" max="9" value="5"></label>
                                 <label><input id="jxlRecursive" type="checkbox"> Include subfolders</label>

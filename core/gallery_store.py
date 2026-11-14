@@ -19,6 +19,7 @@ mismatch it raises and leaves the JSON in place to be retried.
 """
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -69,6 +70,18 @@ def _idx_key(tag):
     """
     return "".join(c.lower() if "A" <= c <= "Z" else c
                    for c in str(tag)).replace("_", " ")
+
+
+def _needles(term):
+    """Search needles for a term.
+
+    Some sites store tags with \\uXXXX escapes (e.g. >_< arrives as
+    >_\\u003C and the vocab indexes the escape verbatim), so a term with
+    `<` also tries the escaped spelling. The decoded needle covers rows
+    that were stored unescaped."""
+    base = _idx_key(term)
+    enc = base.replace("<", "\\u003c")
+    return [base] if enc == base else [base, enc]
 
 
 def _tags_fingerprint(tags):
@@ -217,10 +230,11 @@ class GalleryStore:
             try:
                 with open(src, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            except Exception:
-                # leave the file alone — a corrupt/absent source must not
-                # silently become an empty gallery
-                return
+            except Exception as e:
+                # leave the file alone; refusing the connection (caller does)
+                # beats serving an empty gallery that looks like data loss
+                raise MigrationError(
+                    f"corrupt gallery source {src}: {e}") from e
             entries = data.get("images", []) if isinstance(data, dict) else []
 
             # 1) verify every entry's tags would round-trip before writing
@@ -470,32 +484,41 @@ class GalleryStore:
         with self._lock:
             conn = self._connect()
             present = set()
-            for e in entries:
-                gid = self._upsert_fields_locked(conn, e)
-                if gid is None:
-                    continue
-                present.add(gid)
-                if "tags" in e:
-                    self._set_tags_locked(conn, gid, e["tags"])
-            stale = [r["id"] for r in conn.execute("SELECT id FROM gallery")
-                     if r["id"] not in present]
-            for gid in stale:
-                conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
-                conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
-            conn.commit()
+            try:
+                for e in entries:
+                    gid = self._upsert_fields_locked(conn, e)
+                    if gid is None:
+                        continue
+                    present.add(gid)
+                    if "tags" in e:
+                        self._set_tags_locked(conn, gid, e["tags"])
+                stale = [r["id"] for r in conn.execute("SELECT id FROM gallery")
+                         if r["id"] not in present]
+                for gid in stale:
+                    conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
+                    conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
+                conn.commit()
+            except Exception:
+                # a half-done prune left open would ride the next unrelated commit
+                conn.rollback()
+                raise
             return len(stale)
 
     def save_entries_partial(self, entries):
         """Upsert only the given entries; rows absent here remain untouched."""
         with self._lock:
             conn = self._connect()
-            for e in entries:
-                gid = self._upsert_fields_locked(conn, e)
-                if gid is None:
-                    continue
-                if "tags" in e:
-                    self._set_tags_locked(conn, gid, e["tags"])
-            conn.commit()
+            try:
+                for e in entries:
+                    gid = self._upsert_fields_locked(conn, e)
+                    if gid is None:
+                        continue
+                    if "tags" in e:
+                        self._set_tags_locked(conn, gid, e["tags"])
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     @contextmanager
     def _reader(self):
@@ -518,22 +541,24 @@ class GalleryStore:
         with self._reader() as conn:
             return self._tags_for_ids(conn, list(ids))
 
-    def ids_matching_tags(self, term, exact=False):
+    def ids_matching_tags(self, term: str, exact: bool = False) -> set:
         """Search the persistent vocabulary, then indexed tag postings.
 
         Only distinct tag strings are scanned for substring queries. No full
         Python inverted index is built or rebuilt after a rescan. instr is
         literal: percent/underscore are not SQL wildcard operators here.
         """
-        needle = _idx_key(term)
+        needle = _needles(term)
         predicate = "normalized = ?" if exact else "instr(normalized, ?) > 0"
+        clause = " OR ".join([predicate] * len(needle))
         # A separate WAL reader can search while a bulk save holds the writer
         # lock. It sees a committed snapshot; the trigger updates vocabulary
         # and tag rows atomically. Close immediately: no connection pool growth.
         with self._reader() as conn:
             return {row[0] for row in conn.execute(
                 "SELECT DISTINCT gallery_id FROM gallery_tags WHERE tag IN "
-                "(SELECT tag FROM gallery_tag_terms WHERE " + predicate + ")", (needle,))}
+                "(SELECT tag FROM gallery_tag_terms WHERE " + clause + ")",
+                tuple(needle))}
 
     def warm_search_index(self):
         """Ensure the persistent vocabulary exists; no resident tag sets."""
@@ -547,8 +572,12 @@ class GalleryStore:
     def insert_entry(self, record):
         with self._lock:
             conn = self._connect()
-            self._insert_entry_locked(conn, record)
-            conn.commit()
+            try:
+                self._insert_entry_locked(conn, record)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def update_fields(self, gid, fields):
         """Update non-tag columns only — tags are not reachable from here."""
@@ -561,16 +590,24 @@ class GalleryStore:
             # passing it raw is a "type 'list' is not supported" bind error
             vals = [json.dumps(fields[c]) if c == "sources" and fields[c] is not None
                     else fields[c] for c in cols]
-            conn.execute(
-                "UPDATE gallery SET {} WHERE id = ?".format(", ".join(f"{c} = ?" for c in cols)),
-                vals + [gid])
-            conn.commit()
+            try:
+                conn.execute(
+                    "UPDATE gallery SET {} WHERE id = ?".format(", ".join(f"{c} = ?" for c in cols)),
+                    vals + [gid])
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def set_tags(self, gid, tags):
         with self._lock:
             conn = self._connect()
-            self._set_tags_locked(conn, gid, tags)
-            conn.commit()
+            try:
+                self._set_tags_locked(conn, gid, tags)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def set_favourite(self, ids, value):
         if isinstance(ids, str):
@@ -637,16 +674,83 @@ class GalleryStore:
                 out.append(d)
             return out
 
+    def history_page(self, limit: int, offset: int, terms=None,
+                     from_ts=None, to_ts=None) -> tuple:
+        """Paged read for the History tab (newest first).
+
+        terms: every term must appear in the same haystack the frontend
+        matched client-side (site + filepath + all tag values, lowercased,
+        underscores as spaces). from_ts/to_ts bound downloaded_at (seconds).
+        Returns (rows, total_matched) — total covers the whole filter so the
+        client knows when to stop paging.
+        """
+        with self._lock:
+            conn = self._connect()
+            terms = [t for t in (terms or []) if t]
+            if not terms and from_ts is None and to_ts is None:
+                # fast path: one indexed page straight from SQL — the full
+                # scan below re-parses every row's tags JSON per page view
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                    "FROM image_history ORDER BY seq DESC LIMIT ? OFFSET ?",
+                    (limit, offset))]
+                for d in rows:
+                    try:
+                        d["tags"] = json.loads(d.get("tags") or "{}")
+                    except Exception:
+                        d["tags"] = {}
+                total = conn.execute("SELECT COUNT(*) FROM image_history").fetchone()[0]
+                return rows, total
+            rows = []
+            for row in conn.execute(
+                    "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                    "FROM image_history ORDER BY seq DESC"):
+                d = dict(row)
+                try:
+                    d["tags"] = json.loads(d.get("tags") or "{}")
+                except Exception:
+                    d["tags"] = {}
+                rows.append(d)
+        if terms or from_ts or to_ts:
+            # tags can be stored with \\uXXXX escapes (e.g. >_\\u003c for >_<)
+            # — decode them so a user's search of the DISPLAYED tag matches
+            _UNI_ESC = re.compile(r"\\[uU]([0-9a-fA-F]{4})")
+
+            def _hay(d):
+                tag_vals = []
+                for v in (d.get("tags") or {}).values():
+                    if isinstance(v, list):
+                        tag_vals.extend(str(t) for t in v)
+                return _UNI_ESC.sub(lambda m: chr(int(m.group(1), 16)),
+                                    (d.get("site") or "") + " "
+                                    + (d.get("filepath") or d.get("filename") or "") + " "
+                                    + " ".join(tag_vals)).lower().replace("_", " ")
+
+            def _ok(d):
+                t = d.get("downloaded_at") or 0
+                if from_ts is not None and t < from_ts:
+                    return False
+                if to_ts is not None and t > to_ts:
+                    return False
+                hay = _hay(d)
+                return all(term in hay for term in terms)
+            rows = [d for d in rows if _ok(d)]
+        return rows[offset:offset + limit], len(rows)
+
     def history_insert(self, entry):
         with self._lock:
             conn = self._connect()
-            cur = conn.execute(
-                """INSERT INTO image_history
-                   (site, filename, filepath, tags, downloaded_at)
-                   VALUES (?,?,?,?,?)""",
-                (entry.get("site"), entry.get("filename"), entry.get("filepath"),
-                 json.dumps(entry.get("tags") or {}), entry.get("downloaded_at")))
-            conn.commit()
+            try:
+                cur = conn.execute(
+                    """INSERT INTO image_history
+                       (site, filename, filepath, tags, downloaded_at)
+                       VALUES (?,?,?,?,?)""",
+                    (entry.get("site"), entry.get("filename"), entry.get("filepath"),
+                     json.dumps(entry.get("tags") or {}), entry.get("downloaded_at")))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             return cur.lastrowid
 
     def history_delete(self, filename):
@@ -735,8 +839,22 @@ class GalleryStore:
     def close(self):
         with self._lock:
             if self._conn is not None:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except sqlite3.Error:
+                    pass
                 self._conn.close()
                 self._conn = None
+
+    def checkpoint(self):
+        """Fold the WAL back into the main DB. Called after big writes so a
+        crash never has to replay a weeks-old log."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except sqlite3.Error:
+                    pass
 
 
 _store = None

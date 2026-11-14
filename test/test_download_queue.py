@@ -187,19 +187,21 @@ def test_queue_bump_holds_active_and_starts_target(queue_env):
     client.emit("start_worker", {"worker": "rule34", "tag": "other", "net_config": {}})
     assert _wait(lambda: "other" in started)
 
-    # double-click "third" (index 1): "first" goes on hold, "third" runs now
-    # even though first's gate was never released
+    # double-click "third" (index 1): "first" is held back (stop requested)
+    # and "third" is queued right in front — it starts the moment first's
+    # thread exits, never concurrently with it
     client.emit("queue_bump", {"site": "gelbooru", "index": 1})
-    assert _wait(lambda: started == ["first", "third", "other"] or started[-1] == "third")
     with Rems_Dl.QUEUE_LOCK:
-        assert Rems_Dl.ACTIVE_JOBS["gelbooru"]["tag"] == "third"
-        # held job is back at the front, second still behind it
-        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["first", "second"]
+        assert Rems_Dl.ACTIVE_JOBS["gelbooru"]["tag"] == "first"
+        # third runs next, first resumes after it, second behind both
+        assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["third", "first", "second"]
         assert Rems_Dl.ACTIVE_JOBS["rule34"]["tag"] == "other"
 
+    gates["first"].set()
+    assert _wait(lambda: started.count("third") == 1)
     gates["third"].set()
     # the held job resumes next, then second — teardown releases the tail
-    assert _wait(lambda: started[-1] == "first" and started.count("first") == 2)
+    assert _wait(lambda: started.count("first") == 2)
     gates["other"].set()
 
 

@@ -166,12 +166,34 @@ class PinterestWorker(BaseWorker):
     async def scraper_task(self):
         self.log(f"Initializing Pinterest worker for: '{self.url_or_query[:80]}' ({'search' if self.is_search else 'url scrape'})")
 
-        if self.net_config.get("use_proxy"):
-            os.environ["HTTP_PROXY"] = self.net_config["proxy_url"]
-            os.environ["HTTPS_PROXY"] = self.net_config["proxy_url"]
-        else:
-            os.environ.pop("HTTP_PROXY", None)
-            os.environ.pop("HTTPS_PROXY", None)
+        def _set_proxy_env():
+            if self.net_config.get("use_proxy"):
+                os.environ["HTTP_PROXY"] = self.net_config["proxy_url"]
+                os.environ["HTTPS_PROXY"] = self.net_config["proxy_url"]
+            else:
+                os.environ.pop("HTTP_PROXY", None)
+                os.environ.pop("HTTPS_PROXY", None)
+
+        def _restore_proxy_env(saved):
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        # pinterest_dl's ApiScraper reads proxy config only from the process
+        # env (no parameter). Scope the env swap to each call instead of the
+        # whole run: another worker creating its session mid-run must not
+        # pick up or lose our proxy. The MediaDownloader path gets its proxy
+        # explicitly via _apply_proxy.
+        def _with_proxy_env(fn, *a, **kw):
+            keys = ("HTTP_PROXY", "HTTPS_PROXY")
+            saved = {k: os.environ.get(k) for k in keys}
+            _set_proxy_env()
+            try:
+                return fn(*a, **kw)
+            finally:
+                _restore_proxy_env(saved)
 
         from pinterest_dl import PinterestDL
         from pinterest_dl.download import MediaDownloader
@@ -192,7 +214,8 @@ class PinterestWorker(BaseWorker):
         email = self.net_config.get("pinterest_email", "")
         password = self.net_config.get("pinterest_password", "")
         # browser launch + cookie-file IO can take minutes — keep it off the loop
-        have_auth = await asyncio.to_thread(self._do_login, client, cookies_path, email, password)
+        have_auth = await asyncio.to_thread(_with_proxy_env, self._do_login,
+                                            client, cookies_path, email, password)
 
         if not have_auth:
             self.log("No auth — public content only")
@@ -222,9 +245,9 @@ class PinterestWorker(BaseWorker):
 
         try:
             if self.is_search:
-                await asyncio.to_thread(client.search, query=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
+                await asyncio.to_thread(_with_proxy_env, client.search, query=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
             else:
-                await asyncio.to_thread(client.scrape, url=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
+                await asyncio.to_thread(_with_proxy_env, client.scrape, url=self.url_or_query, num=fetch_num, min_resolution=(self.min_w, self.min_h), on_progress=on_progress)
         except Exception as e:
             self.log(f"Scrape error: {e}")
             return

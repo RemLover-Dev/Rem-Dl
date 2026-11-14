@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.parse
 from html.parser import HTMLParser
@@ -423,8 +424,25 @@ class ZerochanWorker(BaseDownloader):
             return [], False
 
         base_cmd = list(launcher)
+        gdl_configs = []
         if username and password:
-            base_cmd.extend(["-u", username, "-p", password])
+            # Credentials go through a temp gallery-dl config file, never argv —
+            # process arguments are readable by any local user via ps.
+            cfg = tempfile.NamedTemporaryFile(
+                "w", suffix=".json", prefix="rems-gdl-", delete=False)
+            try:
+                _json.dump({"extractor": {"zerochan": {
+                    "username": username, "password": password}}}, cfg)
+                cfg.close()
+                base_cmd.extend(["--config", cfg.name])
+                gdl_configs.append(cfg.name)
+            except Exception:
+                cfg.close()
+                try:
+                    os.unlink(cfg.name)
+                except OSError:
+                    pass
+                raise
         else:
             # No creds: best-effort browser cookies. If Chrome is absent
             # gallery-dl errors out and we fall back to the built-in API.
@@ -457,6 +475,11 @@ class ZerochanWorker(BaseDownloader):
                 stdout, stderr = proc.communicate(timeout=580)
             finally:
                 watchdog.cancel()
+                for cfg_path in gdl_configs:
+                    try:
+                        os.unlink(cfg_path)
+                    except OSError:
+                        pass
 
             if proc.returncode != 0:
                 err_tail = (stderr or "").strip().splitlines()[-1:] or [""]
@@ -740,8 +763,11 @@ class ZerochanWorker(BaseDownloader):
 
                 def _do_download():
                     session = self._ensure_curl_session()
+                    # scalar total only: curl_cffi enforces a per-read stall
+                    # bound via the LOW_SPEED trick in stream mode, but this
+                    # is a buffered request — 120s caps a dead transfer
                     return session.get(
-                        url, timeout=600, allow_redirects=True,
+                        url, timeout=120, allow_redirects=True,
                         headers={"Referer": "https://www.zerochan.net/"},
                         verify=self._verify_flag())
 
@@ -785,7 +811,7 @@ class ZerochanWorker(BaseDownloader):
                         pass
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
-                    self._remember_filename(filename)
+                    await asyncio.to_thread(self._remember_filename, filename)
                     await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
                                             artists, characters, copyrights,
                                             metadata_tags, outfits)
@@ -884,6 +910,15 @@ class ZerochanWorker(BaseDownloader):
                     # from it is NOT proof of end-of-data. Resume JSON at the
                     # listing slot gallery-dl reached; the filename dedupe
                     # absorbs the overlap.
+                    page = (page - 1) * PAGE_SIZE // json_per_page + 1
+                elif (page - 1) * PAGE_SIZE >= 200:
+                    # gallery-dl's listing cap is 200 posts: past that it
+                    # re-serves the same posts forever instead of stopping.
+                    # Switch to the JSON engine, which pages the real listing
+                    # and stops when the tag actually runs out of images.
+                    use_gallery_dl = False
+                    self.log("gallery-dl listing cap (200) reached — "
+                             "switching to built-in Zerochan JSON API for the rest of the tag.")
                     page = (page - 1) * PAGE_SIZE // json_per_page + 1
 
             if not use_gallery_dl:

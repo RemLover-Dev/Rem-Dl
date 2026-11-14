@@ -18,12 +18,18 @@ class _Resp:
     async def json(self):
         return self._p
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class _Session:
     def __init__(self, payload):
         self._p = payload
 
-    async def get(self, url):
+    def get(self, url):
         return _Resp(self._p)
 
 
@@ -73,7 +79,7 @@ def test_multi_category_round_robin(tmp_path, monkeypatch):
     urls = []
 
     class _S:
-        async def get(self, url):
+        def get(self, url):
             urls.append(url)
             return _Resp({"results": [{"url": url.split("?")[0] + "/x.png", "artist_name": "A"}]})
 

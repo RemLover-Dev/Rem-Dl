@@ -30,6 +30,7 @@ import hashlib
 import html
 import io
 import json
+import logging
 import os
 import queue
 import signal
@@ -202,6 +203,22 @@ else:
 app = Flask(__name__, static_folder=STATIC_FOLDER)
 # ponytail: pin threading mode — gevent (installed) buffers emits from our native worker threads
 socketio = SocketIO(app, async_mode="threading")
+
+
+@app.errorhandler(404)
+def _api_json_404(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "not found"}), 404
+    return e
+
+
+@app.errorhandler(Exception)
+def _api_json_500(e):
+    if request.path.startswith("/api/"):
+        logging.getLogger("RemsDl.Server").error("Unhandled route error: %r", e)
+        return jsonify({"error": "internal server error"}), 500
+    raise e
+
 from core.web_security import AccessGuard
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -211,8 +228,11 @@ access_guard = AccessGuard(app.wsgi_app)
 # OPT-IN: ProxyFix trusts client-supplied X-Forwarded-* headers, so on a plain
 # LAN binding (no proxy) any client could forge req.host past the host
 # allowlist. Set REMS_TRUST_PROXY=1 only when traffic really passes a proxy.
+# The guard itself is ALWAYS mounted — without it no route checks the token.
 if os.environ.get("REMS_TRUST_PROXY") == "1":
     app.wsgi_app = ProxyFix(access_guard, x_proto=1, x_host=1, x_prefix=1)
+else:
+    app.wsgi_app = access_guard
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 from core.extensions import get_extension_manager
@@ -252,6 +272,8 @@ shutdown_timer = None
 def log_msg(worker_name, msg):
     from core.privacy import redact
     msg = redact(msg)
+    # control chars let a tag/error string forge log lines
+    msg = msg.replace("\n", "\\n").replace("\r", "")
     print(f"[{worker_name.upper()}] {msg}", flush=True)
     try: socketio.emit("python_log", {"worker": worker_name, "msg": msg})
     except Exception: pass
@@ -483,7 +505,7 @@ def static_files(path): return send_from_directory(STATIC_FOLDER, path)
 @app.route("/api/config", methods=["GET", "POST"])
 def config_manager():
     if request.method == "POST":
-        data = request.json
+        data = request.json or {}
         settings.update(data)
         settings.save_config()
         if data.get("use_proxy"):
@@ -506,6 +528,7 @@ _FP_CACHE_TTL = 30.0
 def _invalidate_fp_cache():
     _fp_cache["data"] = None
     _fp_cache["at"] = 0.0
+    _TS_CACHE.clear()
 
 def _forget_fp_cache_path(full):
     """Drop one file's filepath-cache entries instead of nuking the cache.
@@ -931,6 +954,7 @@ def _auto_jxl_convert_one(path, effort):
         if not jxl_service.available():
             log_msg("jxl-auto", "JPEG XL codec missing (install requirements-jxl.txt); keeping original")
             return
+        shared.notify_convert_start(os.path.abspath(path))
         work = tempfile.TemporaryDirectory(prefix='rems-auto-jxl-')
         try:
             request_path = Path(work.name) / 'request.json'
@@ -1110,12 +1134,48 @@ def set_clipboard():
         print("Clipboard error:", e)
         return jsonify({"error": "internal clipboard error"}), 500
 
+# Secrets GET /api/api-settings must not return in plaintext; logins and the
+# two cookie-file PATH fields (pinterest_cookies, x_cookies) stay readable
+_SECRET_SETTING_KEYS = frozenset({
+    "rule34_api_key", "gelbooru_api_key", "danbooru_api_key", "gsbooru_api_key",
+    "konachan_password", "sanka_password", "zerochan_password",
+    "pinterest_password", "pixiv_refresh_token", "pixiv_cookie",
+})
+_SETTINGS_MASK = "\u2022\u2022\u2022\u2022"
+
+
+def _mask_api_settings(data):
+    masked = dict(data)
+    for k in _SECRET_SETTING_KEYS:
+        v = str(masked.get(k) or "")
+        masked[k] = (_SETTINGS_MASK + v[-4:]) if v else ""
+    # x_cookies must stay a readable PATH, but if the user pasted the cookie
+    # STRING instead (has = / ; separators, like auth_token=...; ct0=...) it
+    # is a live session — mask it like any other secret
+    xv = str(masked.get("x_cookies") or "")
+    if xv and ("=" in xv or ";" in xv):
+        masked["x_cookies"] = _SETTINGS_MASK + xv[-4:]
+    return masked
+
+
 @app.route("/api/api-settings", methods=["GET", "POST"])
 def api_settings_manager():
     if request.method == "POST":
-        settings.save_api_settings(request.json)
+        data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "invalid payload"}), 400
+        # mask round-trips through the settings inputs (GET populates them,
+        # save re-POSTs everything): a sentinel means "keep what is stored"
+        stored = settings.load_api_settings()
+        for k in _SECRET_SETTING_KEYS:
+            if isinstance(data.get(k), str) and data[k].startswith(_SETTINGS_MASK):
+                data[k] = stored.get(k, "")
+        xv = str(data.get("x_cookies") or "")
+        if xv.startswith(_SETTINGS_MASK):
+            data["x_cookies"] = stored.get("x_cookies", "")
+        settings.save_api_settings(data)
         return jsonify({"success": True, "message": "All API keys saved successfully!"})
-    return jsonify(settings.load_api_settings())
+    return jsonify(_mask_api_settings(settings.load_api_settings()))
 
 
 @app.route("/api/import-x-cookies", methods=["POST"])
@@ -1157,8 +1217,11 @@ def import_x_cookies():
                             "error": "File has no auth_token/ct0 cookies — export the x.com session cookies"}), 400
 
         staged = os.path.join(DATABASE_DIR, "x_cookies_import.txt")
-        with open(staged, "w", encoding="utf-8") as f:
+        # live session cookies — owner-only read, like the staged access token
+        fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        os.chmod(staged, 0o600)  # pre-existing files keep their old mode
         return jsonify({"success": True, "path": staged})
     except OSError as e:
         print("X cookie import error:", e)
@@ -1932,13 +1995,42 @@ def import_planning_rows():
 
 @app.route("/api/image_history", methods=["GET"])
 def get_image_history():
+    def _num(v, cast=int):
+        try:
+            return cast(v)
+        except (TypeError, ValueError):
+            return None
+    limit = _num(request.args.get("limit"))
+    if limit and limit > 0:
+        # paged read for the History tab: 22k rows = 14MB + seconds of
+        # jsonify/parse on every tab open; the archive renders 30 at a time
+        try:
+            from_ts = _num(request.args.get("from_ts"), float)
+            to_ts = _num(request.args.get("to_ts"), float)
+        except Exception:
+            from_ts = to_ts = None
+        # terms arrive underscore-normalized from the client, but re-normalize
+        # here so raw q reuse (viewer/bookmarks) matches the same haystack
+        terms = [t.lower().replace("_", " ").replace('"', "") for t in (request.args.get("q") or "").split() if t]
+        hist, total = DatabaseManager.image_history_page(
+            min(limit, 500), max(0, _num(request.args.get("offset")) or 0),
+            terms, from_ts, to_ts)
+        _enrich_image_history(hist)
+        resp = jsonify(hist)
+        resp.headers["X-Total-Count"] = str(total)
+        return resp
     hist = DatabaseManager.load_image_history()
+    _enrich_image_history(hist)
+    return jsonify(hist)
+
+
+def _enrich_image_history(hist):
     try:
         fav_paths = {shared.gallery_path_key(i.get("filepath"), master_root=MASTER_FOLDER)
                      for i in shared.load_gallery().get("images", [])
                      if i.get("favourite") and i.get("filepath")}
-        hist = [{**h, "favourite": bool(shared.gallery_path_key(h.get("filepath"), master_root=MASTER_FOLDER) in fav_paths)}
-                for h in hist]
+        for i, h in enumerate(hist):
+            hist[i] = {**h, "favourite": bool(shared.gallery_path_key(h.get("filepath"), master_root=MASTER_FOLDER) in fav_paths)}
     except Exception:
         pass
     # old entries predate downloaded_at — approximate with the file's mtime
@@ -1957,7 +2049,6 @@ def get_image_history():
                     ts = 0
                 _TS_CACHE[key] = ts
             h["downloaded_at"] = ts
-    return jsonify(hist)
 
 @app.route("/api/image_history/clear", methods=["POST"])
 def clear_image_history():
@@ -1991,7 +2082,7 @@ def remove_image_history():
 @app.route("/api/favorites", methods=["GET", "POST"])
 def manage_favorites():
     if request.method == "POST":
-        data = request.json
+        data = request.json or {}
         favs = DatabaseManager.toggle_favorite(data.get("site"), data.get("tag"))
         return jsonify({"success": True, "favorites": favs})
     return jsonify(DatabaseManager.load_favorites())
@@ -2126,6 +2217,9 @@ def _image_timestamp(img):
             if os.path.exists(full):
                 ts = os.path.getmtime(full)
     _TS_CACHE[key] = ts
+    if len(_TS_CACHE) > 20000:
+        # churned library = one new key per delete/re-add, forever otherwise
+        _TS_CACHE.clear()
     return ts
 
 
@@ -2453,6 +2547,12 @@ def install_extension():
         local_path = (data.get("local_path") or "").strip()
 
         if local_path:
+            # Local-path install runs arbitrary plugin.py from that folder, so
+            # it is an opt-in switch — the UI only uses it when the user picks
+            # a folder from this same machine.
+            if os.environ.get("REMS_ALLOW_LOCAL_EXT") != "1":
+                return jsonify({"success": False,
+                                "error": "Local-path installs are disabled; set REMS_ALLOW_LOCAL_EXT=1 to allow them"}), 403
             ok, msg = install_from_local_path(local_path, ext_id or os.path.basename(local_path))
         elif repo:
             ok, msg = install_from_github(repo, ext_id or None)
@@ -2798,6 +2898,11 @@ def gallery_file(filepath):
     full = _recover_abs_filepath(full, filepath)
     if not os.path.isfile(full):
         return "Image was deleted", 404
+    # Only media leaves the library — extra gallery roots can live anywhere
+    # (user's HDD folders), so without this the route would serve any file
+    # the process can read (e.g. /etc/shadow through a linked root).
+    if os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO):
+        return "Forbidden", 403
     # no-cache: stored but revalidated — a deleted file must 404 instead of
     # serving the day-old cached copy, and revalidation is a cheap 304
     if full.lower().endswith('.jxl') and request.args.get('download') != '1':
@@ -3199,7 +3304,6 @@ def thumb_by_name(filename):
     if os.path.isfile(full):
         cached, mime = _thumb_want(full)
         if cached and os.path.isfile(cached):
-            return _send_thumb(cached, mime)
             return _send_thumb(cached, mime)
     if not os.path.isfile(full):
         # look it up in the cached walk (same 30s TTL as the gallery) — no os.walk per miss
@@ -3752,7 +3856,9 @@ def gallery_thumb(filepath):
             return "", 415
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
-        return send_file(full)
+        # non-media (planted .html/.svg) must not render inline on our origin
+        return send_file(full, as_attachment=(
+            os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO)))
 
 @app.route("/api/gallery/warm_thumbs", methods=["POST"])
 def warm_thumbs():
@@ -3968,13 +4074,14 @@ def _scan_and_merge_gallery():
                     # guessing when several same-name rows are present.
                     candidates = _orphan_candidates(fn)
                     if len(candidates) == 1:
-                        existing = candidates[0]
-                        old_key = shared.gallery_path_key(existing.get("filepath"), master_root=MASTER_FOLDER)
-                        if old_key:
-                            by_path.pop(old_key, None)
-                        existing["filepath"] = stored
-                        existing["meta_mtime"] = mtime
-                        by_path[path_key] = existing
+                        with shared._GALLERY_LOCK:
+                            existing = candidates[0]
+                            old_key = shared.gallery_path_key(existing.get("filepath"), master_root=MASTER_FOLDER)
+                            if old_key:
+                                by_path.pop(old_key, None)
+                            existing["filepath"] = stored
+                            existing["meta_mtime"] = mtime
+                            by_path[path_key] = existing
                         adopted_ids.add(existing.get("id") or id(existing))
                         count_fixed += 1
                         # If the row's tags are already durable, no need to
@@ -3991,42 +4098,44 @@ def _scan_and_merge_gallery():
                             continue
                         if os.path.dirname(prev_full) != os.path.dirname(os.path.realpath(full)):
                             continue
-                        old_key = shared.gallery_path_key(item.get("filepath"), master_root=MASTER_FOLDER)
-                        if old_key:
-                            by_path.pop(old_key, None)
-                        item["filename"], item["filepath"] = fn, stored
-                        item["meta_mtime"] = mtime
-                        by_path[path_key] = item
-                        by_name.setdefault(fn, []).append(item)
+                        with shared._GALLERY_LOCK:
+                            old_key = shared.gallery_path_key(item.get("filepath"), master_root=MASTER_FOLDER)
+                            if old_key:
+                                by_path.pop(old_key, None)
+                            item["filename"], item["filepath"] = fn, stored
+                            item["meta_mtime"] = mtime
+                            by_path[path_key] = item
+                            by_name.setdefault(fn, []).append(item)
                         existing = item
                         count_fixed += 1
                         break
 
                 if existing is not None:
-                    if not existing.get("filepath"):
-                        existing["filepath"] = stored
-                        by_path[path_key] = existing
-                        count_fixed += 1
-                    # Rows created before folder names stopped being sources
-                    # carry the artist/archive folder as their site — drop it.
-                    # Embedded metadata re-attributes when tags refresh.
-                    ex_site = existing.get("site")
-                    if ex_site:
-                        ex_norm = shared.normalize_site(ex_site)
-                        if ex_norm == "unknown" or (ex_norm == folder_site
-                                                    and ex_norm not in _CANON):
-                            existing["site"] = ""
+                    with shared._GALLERY_LOCK:
+                        if not existing.get("filepath"):
+                            existing["filepath"] = stored
+                            by_path[path_key] = existing
                             count_fixed += 1
-                    have = _stored(existing)
-                    if shared.count_tags(have) <= 1 and existing.get("meta_mtime") != mtime:
-                        existing["meta_mtime"] = mtime
-                        count_checked += 1
-                        file_sites, file_tags = _tags_from_file(full)
-                        if shared.count_tags(file_tags) > shared.count_tags(have):
-                            existing["tags"] = file_tags
-                            if file_sites and existing.get("site") != shared.normalize_site(file_sites[0]):
-                                existing["site"] = shared.normalize_site(file_sites[0])
-                            count_fixed += 1
+                        # Rows created before folder names stopped being sources
+                        # carry the artist/archive folder as their site — drop it.
+                        # Embedded metadata re-attributes when tags refresh.
+                        ex_site = existing.get("site")
+                        if ex_site:
+                            ex_norm = shared.normalize_site(ex_site)
+                            if ex_norm == "unknown" or (ex_norm == folder_site
+                                                        and ex_norm not in _CANON):
+                                existing["site"] = ""
+                                count_fixed += 1
+                        have = _stored(existing)
+                        if shared.count_tags(have) <= 1 and existing.get("meta_mtime") != mtime:
+                            existing["meta_mtime"] = mtime
+                            count_checked += 1
+                            file_sites, file_tags = _tags_from_file(full)
+                            if shared.count_tags(file_tags) > shared.count_tags(have):
+                                existing["tags"] = file_tags
+                                if file_sites and existing.get("site") != shared.normalize_site(file_sites[0]):
+                                    existing["site"] = shared.normalize_site(file_sites[0])
+                                count_fixed += 1
                     continue
 
                 tag = parts[1] if len(parts) > 2 else ""
@@ -4046,9 +4155,10 @@ def _scan_and_merge_gallery():
                 }
                 if shared.count_tags(tags) <= 1:
                     entry["meta_mtime"] = mtime
-                images.append(entry)
-                by_path[path_key] = entry
-                by_name.setdefault(fn, []).append(entry)
+                with shared._GALLERY_LOCK:
+                    images.append(entry)
+                    by_path[path_key] = entry
+                    by_name.setdefault(fn, []).append(entry)
                 count_added += 1
                 if count_added % 20 == 0:
                     socketio_emit("scan_progress", {
@@ -4057,6 +4167,24 @@ def _scan_and_merge_gallery():
     # Collapse only duplicate rows for the SAME canonical path. Equal
     # basenames in separate folders are valid independent gallery entries.
     with shared._GALLERY_LOCK:
+        if gallery["images"] is not images:
+            # TTL auto-cull rebound the list while the walk was running:
+            # re-attach the scan's own appends so they survive the save.
+            # Cull-pruned rows are re-verified against disk first — their
+            # files are gone, and blindly re-adding every scan-list row
+            # would resurrect the ghosts the prune just removed.
+            have = {shared.gallery_path_key(i.get("filepath"), master_root=MASTER_FOLDER)
+                    for i in gallery["images"]}
+            for img in images:
+                k = shared.gallery_path_key(img.get("filepath"), master_root=MASTER_FOLDER)
+                if not k or k in have:
+                    continue
+                fp = img.get("filepath") or ""
+                probe = fp if os.path.isabs(fp) else os.path.join(MASTER_FOLDER, fp)
+                if not os.path.isfile(probe):
+                    continue
+                gallery["images"].append(img)
+            images = gallery["images"]
         seen = {}
         unique = []
         pathless = []
@@ -4165,6 +4293,10 @@ def rescan_gallery():
             # used to discard the whole scan, so the folder read "as if it
             # was never added". Persist first, refresh the UI, hash after.
             shared.save_gallery(gallery)
+            try:
+                get_store().checkpoint()
+            except Exception:
+                pass
             socketio.emit("gallery_rescan_done", {
                 "success": True, "added": count_added, "fixed": count_fixed,
                 "removed_entries": len(removed_names),
@@ -4472,6 +4604,11 @@ def handle_disconnect():
         print(">>> No active tabs. Killing Rems Dl Server... <<<")
         jxl_service.close()
         try:
+            from core.gallery_store import get_store
+            get_store().close()
+        except Exception:
+            pass
+        try:
             DatabaseManager.flush_image_history()
         except Exception:
             pass
@@ -4754,11 +4891,17 @@ def handle_queue_bump(data):
             if held is not None:
                 for evt in shared.STOP_EVENTS.get(site, []):
                     evt.set()
+                # queue: [target, held, ...] — the held job's exit handoff
+                # (_run_job finally) starts target, and target's own exit
+                # later starts held again. Starting target's thread HERE
+                # would run two downloaders for one site concurrently.
                 q.insert(0, held)
+                q.insert(0, target)
                 held_entry = _queue_entry(held)
                 shared.log_msg(held_entry["site"], f">>> On hold: {held_entry['tag']} (resumes after next job) <<<")
-            ACTIVE_JOBS[site] = target
-            promoted = target
+            else:
+                ACTIVE_JOBS[site] = target
+                promoted = target
     if promoted is not None:
         entry = _queue_entry(promoted)
         shared.log_msg(entry["site"], f">>> Initializing queued job: {entry['tag']} <<<")

@@ -42,12 +42,12 @@ class YandeWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         async def attempt(tag_name):
-            resp = await self.session.get("https://yande.re/tag.xml", params={
+            async with self.session.get("https://yande.re/tag.xml", params={
                 "name": tag_name, "limit": 50
-            })
-            if resp.status != 200:
-                return False
-            root = ET.fromstring(await resp.text())
+            }) as resp:
+                if resp.status != 200:
+                    return False
+                root = ET.fromstring(await resp.text())
             # ponytail: name= matches substrings and the exact
             # row can bury below row 1, so scan every row
             for tag_el in root.findall("tag"):
@@ -72,25 +72,32 @@ class YandeWorker(BaseWorker):
         page = 1
 
         consecutive_errors = 0
+        retried_rate_limit = False
         made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
                 limit_val = min(100, self.amount - collected_count if self.amount > 0 else 100)
 
-                resp = await self.session.get("https://yande.re/post.json", params={"tags": self.api_tag, "page": page, "limit": limit_val})
-                if resp.status in [403, 429]:
-                    self.log(f"ERROR {resp.status}. Change proxy.")
-                    break
-                resp.raise_for_status()
+                async with self.session.get("https://yande.re/post.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}) as resp:
+                    if resp.status in [403, 429]:
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {page}")
+                            await asyncio.sleep(30)
+                            continue
+                        self.log(f"ERROR {resp.status}. Change proxy.")
+                        break
+                    resp.raise_for_status()
 
-                text_resp = (await resp.text()).strip()
-                if not text_resp or text_resp == "[]":
-                    if page == 1:
-                        self.log(f"ZERO images found for '{self.api_tag}'.")
-                    break
+                    text_resp = (await resp.text()).strip()
+                    if not text_resp or text_resp == "[]":
+                        if page == 1:
+                            self.log(f"ZERO images found for '{self.api_tag}'.")
+                        break
 
-                raw_data = await resp.json()
+                    raw_data = await resp.json()
+
                 if isinstance(raw_data, dict):
                     if "success" in raw_data and not raw_data["success"]:
                         self.log(f"API Alert: {raw_data.get('message', 'Unknown Error')}")
@@ -118,6 +125,7 @@ class YandeWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             all_tag_names = set()
             for post in posts:
                 if not isinstance(post, dict):

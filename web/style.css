@@ -391,6 +391,11 @@ input:focus, select:focus {
     margin: 4px 0;
 }
 .progress-bar-fill { height: 100%; border-radius: 6px; transition: width 0.3s ease; width: 0%; }
+/* converting window: the encoder is a single blocking call, so while the
+   width itself can't move, a soft sweep keeps the bar visibly alive */
+.cv-shimmer { position: relative; overflow: hidden; }
+.cv-shimmer::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.45) 50%, transparent 100%); transform: translateX(-100%); animation: cvSweep 1.6s ease-in-out infinite; }
+@keyframes cvSweep { to { transform: translateX(100%); } }
 .dl-fill { background: linear-gradient(90deg, #00d2d3, #00e8e8); }
 
 @keyframes progressShimmer {
@@ -1388,27 +1393,27 @@ body { transition: color 0.3s ease; }
 .g-tag-pill:hover { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
 
 /* Tag category colors */
-.tag-artist { background: rgba(255, 140, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.4); color: #e67e00; }
+.tag-artist { background: rgba(255, 140, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.4); color: #ffc069; }
 .tag-artist:hover { background: #e67e00; color: #000; box-shadow: 0 0 0 1px #e67e00; }
-.tag-character { background: rgba(0, 128, 0, 0.15); box-shadow: 0 0 0 1px rgba(0, 128, 0, 0.4); color: #228b22; }
+.tag-character { background: rgba(0, 128, 0, 0.15); box-shadow: 0 0 0 1px rgba(0, 128, 0, 0.4); color: #7ce47c; }
 .tag-character:hover { background: #228b22; color: #000; box-shadow: 0 0 0 1px #228b22; }
-.tag-copyright { background: rgba(255, 105, 180, 0.15); box-shadow: 0 0 0 1px rgba(255, 105, 180, 0.4); color: #ff69b4; }
+.tag-copyright { background: rgba(255, 105, 180, 0.15); box-shadow: 0 0 0 1px rgba(255, 105, 180, 0.4); color: #ffa4d1; }
 .tag-copyright:hover { background: #ff69b4; color: #000; box-shadow: 0 0 0 1px #ff69b4; }
-.tag-metadata { background: rgba(255, 165, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 165, 0, 0.4); color: #ffa500; }
+.tag-metadata { background: rgba(255, 165, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 165, 0, 0.4); color: #ffd07a; }
 .tag-metadata:hover { background: #ffa500; color: #000; box-shadow: 0 0 0 1px #ffa500; }
-.tag-tag { background: rgba(0, 255, 255, 0.1); box-shadow: 0 0 0 1px rgba(0, 255, 255, 0.3); color: #00e5e5; }
+.tag-tag { background: rgba(0, 255, 255, 0.1); box-shadow: 0 0 0 1px rgba(0, 255, 255, 0.3); color: #7df2f2; }
 .tag-tag:hover { background: #00e5e5; color: #000; box-shadow: 0 0 0 1px #00e5e5; }
-.tag-mangaka { background: rgba(255, 69, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 69, 0, 0.4); color: #ff4500; }
+.tag-mangaka { background: rgba(255, 69, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 69, 0, 0.4); color: #ff8a5c; }
 .tag-mangaka:hover { background: #ff4500; color: #000; box-shadow: 0 0 0 1px #ff4500; }
-.tag-game { background: rgba(138, 43, 226, 0.15); box-shadow: 0 0 0 1px rgba(138, 43, 226, 0.4); color: #b266e6; }
+.tag-game { background: rgba(138, 43, 226, 0.15); box-shadow: 0 0 0 1px rgba(138, 43, 226, 0.4); color: #d29af2; }
 .tag-game:hover { background: #8a2be2; color: #000; box-shadow: 0 0 0 1px #8a2be2; }
-.tag-outfit { background: rgba(219, 112, 147, 0.15); box-shadow: 0 0 0 1px rgba(219, 112, 147, 0.4); color: #db7093; }
+.tag-outfit { background: rgba(219, 112, 147, 0.15); box-shadow: 0 0 0 1px rgba(219, 112, 147, 0.4); color: #f2a0b8; }
 .tag-outfit:hover { background: #db7093; color: #000; box-shadow: 0 0 0 1px #db7093; }
-.tag-theme { background: rgba(65, 105, 225, 0.15); box-shadow: 0 0 0 1px rgba(65, 105, 225, 0.4); color: #6495ed; }
+.tag-theme { background: rgba(65, 105, 225, 0.15); box-shadow: 0 0 0 1px rgba(65, 105, 225, 0.4); color: #9ab4f5; }
 .tag-theme:hover { background: #4169e1; color: #000; box-shadow: 0 0 0 1px #4169e1; }
-.tag-source { background: rgba(169, 169, 169, 0.15); box-shadow: 0 0 0 1px rgba(169, 169, 169, 0.4); color: #a9a9a9; }
+.tag-source { background: rgba(169, 169, 169, 0.15); box-shadow: 0 0 0 1px rgba(169, 169, 169, 0.4); color: #d6d6d6; }
 .tag-source:hover { background: #a9a9a9; color: #000; box-shadow: 0 0 0 1px #a9a9a9; }
-.tag-meta { background: rgba(128, 128, 128, 0.15); box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.4); color: #999; }
+.tag-meta { background: rgba(128, 128, 128, 0.15); box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.4); color: #cfcfcf; }
 .tag-meta:hover { background: #808080; color: #000; box-shadow: 0 0 0 1px #808080; }
 .tag-vtuber { background: rgba(255, 110, 199, 0.15); box-shadow: 0 0 0 1px rgba(255, 110, 199, 0.4); color: #ff6ec7; }
 .tag-vtuber:hover { background: #ff6ec7; color: #000; box-shadow: 0 0 0 1px #ff6ec7; }

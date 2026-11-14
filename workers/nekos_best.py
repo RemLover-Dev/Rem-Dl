@@ -34,12 +34,13 @@ class NekosBestWorker(BaseWorker):
 
             try:
                 self.log("Scanning API...")
-                resp = await self.session.get(fetch_url)
-                if resp.status in [403, 429]:
-                    self.log(f"API BAN ({resp.status}). Change VPN node.")
-                    break
-                resp.raise_for_status()
-                data = await resp.json()
+                async with self.session.get(fetch_url) as resp:
+                    if resp.status in [403, 429]:
+                        self.log(f"API BAN ({resp.status}). Change VPN node.")
+                        break
+                    resp.raise_for_status()
+                    data = await resp.json()
+
                 results = data.get("results", [])
                 consecutive_failures = 0
                 if not results:

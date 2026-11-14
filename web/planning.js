@@ -173,7 +173,7 @@ function renderPlanning() {
     const moreBtn = document.getElementById("planMoreBtn");
     if (moreBtn) moreBtn.style.display = hidden > 0 ? "inline-flex" : "none";
     if (!planningEntries.length) {
-        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">Nothing planned yet — add entries above or paste a chat dump with "Bulk import".</div>`;
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">Nothing planned yet - add entries above or paste a chat dump with "Bulk import".</div>`;
         return;
     }
     box.innerHTML = shown.map(e => {
@@ -199,7 +199,7 @@ function renderPlanning() {
             </div>
         </div>`;
     }).join("") + (hidden
-        ? `<div style="opacity:0.6; font-size:12px; margin-top:8px;">${hidden} more hidden — "Show all" below</div>`
+        ? `<div style="opacity:0.6; font-size:12px; margin-top:8px;">${hidden} more hidden - "Show all" below</div>`
         : "");
     box.querySelectorAll("[data-act]").forEach(btn => btn.addEventListener("click", () => {
         const act = btn.dataset.act;
@@ -345,7 +345,7 @@ function openPlanEntryModal(entry) {
                  </select>
                  <select id="planEntryRating" style="flex:0 1 200px; min-width:130px;">${planRatingOptionsHtml(entry ? entry.site : planningDefaultSite, entry ? entry.rating || "" : "")}</select>
              </div>
-             <label style="font-size:13px;">Tags — worker syntax; "-" tokens are downloaded exclusions</label>
+             <label style="font-size:13px;">Tags - worker syntax; "-" tokens are downloaded exclusions</label>
              <input type="text" id="planEntryTags" style="flex:1;" placeholder="e.g. rem blue_hair -ai_generated" value="${escapeHtml(entry ? entry.tags || "" : "")}">
              <label style="font-size:13px;">Note (optional)</label>
              <input type="text" id="planEntryNote" style="flex:1;" placeholder="why this is on the list / source of the paste" value="${escapeHtml(entry ? entry.note || "" : "")}">
@@ -402,7 +402,7 @@ function openPlanBulkModal() {
         `<h3 style="margin-bottom:0;">Bulk import</h3>
          <div style="font-size:13px; opacity:0.8;">Paste a chat dump. Each tag line becomes one entry. Prefix a line with the site
          ("gel: rem blue_hair", "rem gel") or use a standalone site label ("Dan:") so the lines that follow inherit it.
-         Site-less lines at the start merge into one Gelbooru entry. Unparseable lines stay editable — fix or delete them below.</div>
+         Site-less lines at the start merge into one Gelbooru entry. Unparseable lines stay editable - fix or delete them below.</div>
          <textarea id="planBulkText" style="min-height:170px; width:100%; font-family:inherit; background:var(--input-bg); border:1px solid var(--border-color); border-radius:8px; color:var(--text-color); padding:10px; box-sizing:border-box;">${escapeHtml(draft)}</textarea>
          <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
              <button class="action-btn" id="planNormalizeBtn">Normalize</button>
@@ -455,8 +455,8 @@ function planBulkCountdown() {
     const info = document.getElementById("planBulkInfo");
     if (info) {
         info.textContent = planBulkRows.length
-            ? `${good.length} of ${planBulkRows.length} rows are ready${dup ? " — including " + dup + " duplicate flag(s)" : ""}`
-            : "Nothing parsed — every line was dropped or is only warnings.";
+            ? `${good.length} of ${planBulkRows.length} rows are ready${dup ? " - including " + dup + " duplicate flag(s)" : ""}`
+            : "Nothing parsed - every line was dropped or is only warnings.";
     }
     const btn = document.getElementById("planImportBtn");
     if (btn) {

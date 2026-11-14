@@ -1,5 +1,6 @@
 import atexit
 import json
+import logging
 import os
 import threading
 import time
@@ -7,6 +8,8 @@ import uuid
 
 from core.atomic_io import write_json, write_lines
 from core.runtime_paths import app_base_dir as _app_base_dir
+
+logger = logging.getLogger("RemsDl.Database")
 
 DATABASE_DIR = os.path.join(_app_base_dir(), "database")
 
@@ -122,7 +125,14 @@ class DatabaseManager:
                     DatabaseManager._quarantine(filepath)
                     write_json(filepath, obj)
                     return obj
-                except Exception:
+                except Exception as e:
+                    # non-parse read failure (OSError, UnicodeDecodeError):
+                    # returning [] would let the next read-modify-write save
+                    # an empty store — try the .bak instead of wiping
+                    restore = DatabaseManager._recover_bak(filepath)
+                    if restore is not None:
+                        return restore
+                    logger.error("[DB] %s unreadable and no .bak: %s", filepath, e)
                     return []
             return []
 
@@ -302,6 +312,11 @@ class DatabaseManager:
             return _store().history_all()
 
     @staticmethod
+    def image_history_page(limit, offset, terms=None, from_ts=None, to_ts=None):
+        with _DB_LOCK:
+            return _store().history_page(limit, offset, terms, from_ts, to_ts)
+
+    @staticmethod
     def save_image_history(data):
         """Replace the whole history (route and maintenance callers pass a
         complete list). Commits immediately: there is no batch left to lose."""
@@ -425,8 +440,8 @@ class DatabaseManager:
             if changed:
                 try:
                     DatabaseManager.save_ui_config(config)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[UI-CONFIG] migration save failed: {e}")
             return config
 
     @staticmethod

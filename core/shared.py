@@ -29,37 +29,172 @@ STOP_EVENTS = {}
 # jobs are waiting for a site, so a queued run reports its totals once
 queue_has_more = None  # (site) -> bool, set by Rems_Dl (avoids circular import)
 _BATCH_STATS = {}
+_BATCH_STATS_LOCK = threading.Lock()
 
-def finish_report(site, downloaded, failed, duplicates, stopped, log):
+# set by finish_report while a finished batch's JXL conversions still hold
+# their publishes: the frontend swaps the bar to conversion progress until
+# the last one drains (see _pop_pending_publish / finish_report)
+_CONVERT_STATE = {}
+# file the converter is encoding right now, even before the batch window
+# opens — the initial conversion_progress carries it so the label is live
+_CONVERT_CURRENT = {}
+
+
+_publish_reaper_started = False
+
+def _start_publish_reaper():
+    """One background scanner replaces the old per-file Timer chains (a held
+    file re-armed a fresh 0.5s Timer every 0.5s — thread churn under the hold
+    lock). Publishes specs whose hold/grace window expired. Runs as a daemon:
+    the site worker's event loop shuts down between batches, so this must not
+    live inside it."""
+    global _publish_reaper_started
+    if _publish_reaper_started:
+        return
+    _publish_reaper_started = True
+
+    def _reap():
+        while True:
+            time.sleep(0.5)
+            now = time.time()
+            due = []
+            with _PUBLISH_HOLD_LOCK:
+                for fp, cur in _PENDING_PUBLISH.items():
+                    held = cur.get("held")
+                    if held:
+                        if now - held < PUBLISH_HOLD_MAX_S:
+                            continue
+                        if not os.path.exists(fp) and cur.get("holds", 0) < 10:
+                            # hold expired while the converter still owns the
+                            # file (source unlinked, jxl not installed yet):
+                            # re-arm instead of popping — a pop here would make
+                            # the later release find no spec and orphan the
+                            # converted file. Bounded: 10 windows ≈ 30 min.
+                            cur["holds"] = cur.get("holds", 0) + 1
+                            cur["held"] = now
+                            continue
+                    elif now - cur.get("grace_at", now) < PUBLISH_GRACE_S:
+                        continue  # dedup-swap grace window still open
+                    due.append((fp, cur))
+            # _pop_pending_publish takes the same lock — keep it OUT of the
+            # with-block above or the non-reentrant lock wedges
+            for fp, cur in due:
+                if _pop_pending_publish(fp) is not None:
+                    _publish_spec(cur)
+
+    threading.Thread(target=_reap, name="rems-publish-reaper", daemon=True).start()
+
+def _pop_pending_publish(filepath: str):
+    with _PUBLISH_HOLD_LOCK:
+        spec = _PENDING_PUBLISH.pop(filepath, None)
+        if spec is not None:
+            site = spec.get("site")
+            if _CONVERT_CURRENT.get(site) == spec.get("filename"):
+                _CONVERT_CURRENT.pop(site, None)
+    if spec is not None:
+        site = spec.get("site")
+        st = _CONVERT_STATE.get(site)
+        if st:
+            with _PUBLISH_HOLD_LOCK:
+                left = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+            socketio_emit("conversion_progress",
+                          {"worker": site, "done": max(0, st["total"] - left),
+                           "total": st["total"]})
+    return spec
+
+
+def notify_convert_start(abs_fp: str):
+    """The converter began encoding this file — tick the batch bar's label so
+    progress shows the in-flight image, not only finished ones."""
+    with _PUBLISH_HOLD_LOCK:
+        spec = _PENDING_PUBLISH.get(abs_fp)
+        site = spec.get("site") if spec else None
+        if site:
+            _CONVERT_CURRENT[site] = spec.get("filename") or os.path.basename(abs_fp)
+        st = _CONVERT_STATE.get(site) if site else None
+        if not st:
+            return
+        total = st["total"]
+        left = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+    socketio_emit("conversion_progress",
+                  {"worker": site, "done": max(0, total - left), "total": total,
+                   "current": spec.get("filename") or os.path.basename(abs_fp)})
+
+
+def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
+                  stopped: bool, log) -> dict:
     """Accumulate per-site batch stats, log the finish line (batch final is
-    box-only), build the worker_finished payload."""
-    b = _BATCH_STATS.setdefault(site, {"jobs": 0, "downloaded": 0, "failed": 0, "duplicates": 0})
-    b["jobs"] += 1
-    b["downloaded"] += downloaded
-    b["failed"] += failed
-    b["duplicates"] += duplicates
-    dup_note = f" ({duplicates} duplicates removed)" if duplicates else ""
+    box-only), build the worker_finished payload.
+
+    Downloads finish before their JXL conversions commit, so with holds
+    pending the completion line AND the success bar wait for the last
+    publish; the frontend shows the conversion progress bar meanwhile."""
     more = (not stopped) and bool(queue_has_more and queue_has_more(site))
+    with _BATCH_STATS_LOCK:
+        b = _BATCH_STATS.setdefault(site, {"jobs": 0, "downloaded": 0, "failed": 0, "duplicates": 0})
+        b["jobs"] += 1
+        b["downloaded"] += downloaded
+        b["failed"] += failed
+        b["duplicates"] += duplicates
+        # payload built inside the same critical section — two concurrent
+        # finish_reports for one site otherwise interleave the counters
+        payload = {"worker": site, "downloaded": b["downloaded"], "failed": b["failed"], "duplicates": b["duplicates"], "stopped": stopped, "jobs": b["jobs"], "more": more}
+        if not more:
+            _BATCH_STATS.pop(site, None)
+    dup_note = f" ({duplicates} duplicates removed)" if duplicates else ""
+    text = None
     if stopped:
         if downloaded > 0 and failed > 0:
-            log(f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---")
+            text = f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---"
         elif downloaded > 0:
-            log(f"--- All {downloaded} downloads completed successfully!{dup_note} ---")
+            text = f"--- All {downloaded} downloads completed successfully!{dup_note} ---"
     elif more:
         # keep the bars alive — the next queued job rebuilds them with Phase 1
-        log(f"--- Tag finished: {downloaded} downloaded, {failed} failed — next queued job starting ---")
+        text = f"--- Tag finished: {downloaded} downloaded, {failed} failed — next queued job starting ---"
     elif b["jobs"] == 1:
         if downloaded > 0 and failed > 0:
-            log(f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---")
+            text = f"--- Task finished: {downloaded} downloaded successfully, {failed} failed to download{dup_note}! ---"
         elif downloaded > 0:
-            log(f"--- All {downloaded} downloads completed successfully!{dup_note} ---")
+            text = f"--- All {downloaded} downloads completed successfully!{dup_note} ---"
         else:
-            log(f"Task finished. No new images to download{dup_note}.")
+            text = f"Task finished. No new images to download{dup_note}."
     # batch final (jobs > 1): the report lives in the progress box via
     # worker_finished — deliberately not logged to the console
-    payload = {"worker": site, "downloaded": b["downloaded"], "failed": b["failed"], "duplicates": b["duplicates"], "stopped": stopped, "jobs": b["jobs"], "more": more}
-    if not more:
-        _BATCH_STATS.pop(site, None)
+    if more:
+        log(text)
+        return payload
+    with _PUBLISH_HOLD_LOCK:
+        pending = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+    if not pending:
+        if text:
+            log(text)
+        return payload
+    _CONVERT_STATE[site] = {"total": pending, "payload": dict(payload)}
+    # the immediate caller's worker_finished carries converting=True — the
+    # frontend ignores it; the re-emit from _finish_after_convert (a copy
+    # without the flag) is the one that renders the success box
+    payload["converting"] = True
+    socketio_emit("conversion_progress", {"worker": site, "done": 0, "total": pending,
+                                          "current": _CONVERT_CURRENT.get(site)})
+
+    def _finish_after_convert():
+        deadline = time.time() + PUBLISH_HOLD_MAX_S + 10
+        while time.time() < deadline:
+            with _PUBLISH_HOLD_LOCK:
+                left = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+            if not left:
+                break
+            time.sleep(0.5)
+        st = _CONVERT_STATE.pop(site, None)
+        _CONVERT_CURRENT.pop(site, None)
+        if st:
+            # the stopped batch's success box renders from the deferred log
+            # line instead (worker_finished with stopped is ignored upstream)
+            socketio_emit("worker_finished", st["payload"])
+        if text:
+            log(text)
+
+    threading.Thread(target=_finish_after_convert, daemon=True).start()
     return payload
 
 # --- LOGGING & TAG SYSTEM ---
@@ -309,8 +444,7 @@ def release_download_publish(abs_fp, converted_abs=None):
     replaced the file (tags are baked by then; metadata writing is skipped).
     A checker loop owns publication when the converter never runs or the
     hold expired."""
-    with _PUBLISH_HOLD_LOCK:
-        spec = _PENDING_PUBLISH.pop(abs_fp, None)
+    spec = _pop_pending_publish(abs_fp)
     if spec is None:
         return False
     if converted_abs:
@@ -1468,17 +1602,9 @@ def load_history(site_root):
 def save_history(site_root, history_set):
     safe_ensure_dir(site_root)
     hist_path = os.path.join(site_root, "download_history.json")
-    # workers mutate the set outside HISTORY_LOCK; a plain list() can crash
-    # with "set changed size during iteration" — retry briefly
-    payload = None
-    for _ in range(3):
-        try:
-            payload = list(history_set)
-            break
-        except RuntimeError:
-            time.sleep(0.02)
-    if payload is None:
-        payload = list(history_set)
+    # set.copy() is one atomic C-level clone — list() directly on the set can
+    # crash with "set changed size during iteration" while a worker mutates it
+    payload = list(history_set.copy())
     with HISTORY_LOCK:
         try:
             tmp = hist_path + ".tmp"
@@ -1786,10 +1912,13 @@ class BaseDownloader:
                 return False
 
         # source-md5 gate: a stored or in-flight duplicate of these exact bytes
-        # is dropped before any transfer (invalid/missing hash -> fall through)
-        if not self._claim_source_md5(filepath, source_md5, tags_list, artists,
-                                      characters, copyrights, metadata_tags,
-                                      outfits, groups, hair, eyes):
+        # is dropped before any transfer (invalid/missing hash -> fall through).
+        # to_thread: the claim does SQLite DML under a lock hashing threads
+        # also hold — keep that off the event loop
+        if not await asyncio.to_thread(
+                self._claim_source_md5, filepath, source_md5, tags_list, artists,
+                characters, copyrights, metadata_tags,
+                outfits, groups, hair, eyes):
             return False
 
         # ponytail: no HEAD request here — it cost a full round-trip per file
@@ -1999,41 +2128,15 @@ class BaseDownloader:
                 # commits — every held download owns its release, so no other
                 # image's completion can pull this one into view early
                 with _PUBLISH_HOLD_LOCK:
+                    spec["grace_at"] = time.time()
                     _PENDING_PUBLISH[filepath] = spec
+                _start_publish_reaper()
                 if post_download_callback is not None:
                     try: post_download_callback(filepath)
                     except Exception: pass
 
-                def _publish_try():
-                    with _PUBLISH_HOLD_LOCK:
-                        cur = _PENDING_PUBLISH.get(filepath)
-                        if cur is None:
-                            return  # released: the converter published it
-                        if cur["held"] and time.time() - cur["held"] < PUBLISH_HOLD_MAX_S:
-                            t = threading.Timer(0.5, _publish_try)
-                            t.daemon = True
-                            t.start()
-                            return
-                        if not os.path.exists(filepath) and cur.get("holds", 0) < 10:
-                            # hold expired while the converter still owns the
-                            # file (source unlinked, jxl not installed yet):
-                            # re-arm instead of popping — a pop here would make
-                            # the later release find no spec and orphan the
-                            # converted file. Bounded: 10 windows ≈ 30 min.
-                            cur["holds"] = cur.get("holds", 0) + 1
-                            cur["held"] = time.time()
-                            t = threading.Timer(0.5, _publish_try)
-                            t.daemon = True
-                            t.start()
-                            return
-                        _PENDING_PUBLISH.pop(filepath, None)
-                    _publish_spec(cur)
-
-                # ponytail: explicit Timer thread — the site worker's event loop
-                # shuts down between batches, a loop timer would die with it
-                timer = threading.Timer(PUBLISH_GRACE_S, _publish_try)
-                timer.daemon = True
-                timer.start()
+                # the single reaper thread (_start_publish_reaper) publishes
+                # this spec when its grace window closes — no per-file timers
                 return True
 
             except Exception as e:
@@ -2067,7 +2170,7 @@ class BaseDownloader:
             try: await self._async_download_file(*item)
             finally:
                 self._inflight.pop(item[1], None)
-                self._release_source_claims((item[1],))
+                await asyncio.to_thread(self._release_source_claims, (item[1],))
                 self.download_queue.task_done()
 
     def run(self):
@@ -2134,7 +2237,7 @@ class BaseDownloader:
             # claims for items a STOP orphaned before a worker dequeued them
             # must not block the next run's re-enqueue
             try:
-                self._release_source_claims()
+                await asyncio.to_thread(self._release_source_claims)
             except Exception:
                 pass
             try:
@@ -2150,6 +2253,14 @@ class BaseDownloader:
                 pass
             if self.session and hasattr(self.session, 'closed') and not self.session.closed:
                 await self.session.close()
+            # curl_cffi workers swap in their own session the dummy teardown
+            # never sees — close it here so the pool does not leak to GC
+            curl_s = getattr(self, "curl_session", None)
+            if curl_s is not None and getattr(curl_s, "closed", True) is not True:
+                try:
+                    await asyncio.to_thread(curl_s.close)
+                except Exception:
+                    pass
 
         if self.name in STOP_EVENTS and self.stop_event in STOP_EVENTS[self.name]:
             STOP_EVENTS[self.name].remove(self.stop_event)
