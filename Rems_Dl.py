@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import queue
+import re
 import signal
 import threading
 import time
@@ -2027,11 +2028,24 @@ def get_image_history():
 
 def _enrich_image_history(hist):
     try:
-        fav_paths = {shared.gallery_path_key(i.get("filepath"), master_root=MASTER_FOLDER)
-                     for i in shared.load_gallery().get("images", [])
-                     if i.get("favourite") and i.get("filepath")}
+        fav_paths = set()
+        dims_by_path = {}
+        for i in shared.load_gallery().get("images", []):
+            if i.get("favourite") and i.get("filepath"):
+                fav_paths.add(shared.gallery_path_key(
+                    i.get("filepath"), master_root=MASTER_FOLDER))
+            # dims trail the history rows' tag pills (renderCategorizedTags)
+            if i.get("filepath") and i.get("width") and i.get("width") > 0 \
+                    and i.get("height") and i.get("height") > 0:
+                dims_by_path[shared.gallery_path_key(
+                    i.get("filepath"), master_root=MASTER_FOLDER)] = (
+                    int(i["width"]), int(i["height"]))
         for i, h in enumerate(hist):
-            hist[i] = {**h, "favourite": bool(shared.gallery_path_key(h.get("filepath"), master_root=MASTER_FOLDER) in fav_paths)}
+            key = shared.gallery_path_key(h.get("filepath"),
+                                          master_root=MASTER_FOLDER)
+            hist[i] = {**h, "favourite": bool(key in fav_paths)}
+            if key in dims_by_path:
+                hist[i]["width"], hist[i]["height"] = dims_by_path[key]
     except Exception:
         pass
     # old entries predate downloaded_at — approximate with the file's mtime
@@ -2366,17 +2380,46 @@ def _parse_search_terms(search):
     return terms
 
 
+_DIM_TOKEN = re.compile(
+    r'(-?)["\']?\b([hw])\s*:\s*["\']?\s*(>?<?)?\s*(\d+)\s*(>?<?)?\s*["\']?',
+    re.IGNORECASE)
+
+def _parse_dim_terms(search):
+    """((dim, op, value, negated) tuples, search string minus the tokens).
+
+    h:/w: select by stored pixel dimensions; bare numbers are exact,
+    '>' before or after the number means higher, '<' lower, leading '-'
+    excludes. Quoting is cosmetic — "h:800" means the same as h:800.
+    """
+    conds = []
+    def _grab(m):
+        neg = m.group(1) == "-"
+        dim = "height" if m.group(2).lower() == "h" else "width"
+        ops = [o for o in (m.group(3), m.group(5)) if o]
+        op = "=" if not ops else ("<" if "<" in ops[0] else ">")
+        conds.append((dim, op, int(m.group(4)), neg))
+        return " "
+    return conds, _DIM_TOKEN.sub(_grab, search)
+
 def _search_id_set(search):
     """The ids a tag query matches, resolved in the database.
 
     Filtering in Python meant materialising all 497725 tag rows on every
     request (~0.8s). Each term is answered by the store instead and the
     results are intersected here — positive terms narrow the set, negative
-    ones are subtracted from it.
+    ones are subtracted from it. Dimension terms (h:/w:) narrow/subtract
+    the same way before the tag terms run.
     """
+    dim_conds, search = _parse_dim_terms(search)
     terms = _parse_search_terms(search)
     keep = None
     # Empty positive intersections cannot be revived by later terms.
+    if dim_conds:
+        pos = [c[:3] for c in dim_conds if not c[3]]
+        if pos:
+            keep = shared.search_gallery_dims(pos)
+            if not keep:
+                return set()
     for q, neg, exact in terms:
         if neg:
             continue
@@ -2390,6 +2433,10 @@ def _search_id_set(search):
     for q, neg, exact in terms:
         if neg:
             keep -= shared.search_tag_ids(q, exact)
+    if dim_conds:
+        negs = [c[:3] for c in dim_conds if c[3]]
+        if negs:
+            keep -= shared.search_gallery_dims(negs)
     return keep
 
 
@@ -4324,6 +4371,7 @@ def rescan_gallery():
                 "removed_entries": len(removed_names),
                 "removed_records": 0,
                 "retained_records": count_removed_records})
+            shared.start_dims_backfill()
             _hash_missing_dedup(gallery)
             _heal_bare_gallery_tags()
         except Exception as e:
@@ -4830,11 +4878,14 @@ def handle_start_worker(data):
                 if has_payload and not settings_only:
                     q.append(data)
                     entry = _queue_entry(data)
-                    shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+                    # count only jobs that stay behind — this one starts now
+                    shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q) - 1} waiting) <<<" if len(q) > 1 else f">>> Enqueued {entry['tag']} <<<")
                 job = q.pop(0)
                 ACTIVE_JOBS[site] = job
                 _start_job_thread(job)
             elif has_payload:
+                entry = _queue_entry(data)
+                shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} <<<")
                 ACTIVE_JOBS[site] = data
                 _start_job_thread(data)
         elif has_payload and not settings_only:
@@ -4854,7 +4905,12 @@ def handle_queue_add(data):
         q = DOWNLOAD_QUEUES.setdefault(site, [])
         q.append(data)
         entry = _queue_entry(data)
-        shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+        # nothing running: this job is the queue, not a waiter — a count of
+        # itself reads as "1 waiting" beside its own download
+        if ACTIVE_JOBS.get(site) is not None:
+            shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} ({len(q)} waiting) <<<")
+        else:
+            shared.log_msg(entry["site"], f">>> Enqueued {entry['tag']} <<<")
     _emit_queue_state()
 
 @socketio.on("stop_worker")
@@ -5160,6 +5216,7 @@ if __name__ == "__main__":
             get_store().warm_search_index()
         except Exception:
             pass
+        shared.start_dims_backfill()
         # The gallery tab loads per_page 24 (windowed) or ~45 (fullscreen) —
         # warm those thumbs at boot so the first gallery open doesn't watch
         # images decode one by one. First page, newest first = the default

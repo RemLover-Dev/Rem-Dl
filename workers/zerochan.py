@@ -22,6 +22,7 @@ from core.shared import (
     add_to_gallery,
     build_tagd,
     check_duplicate,
+    dims_log_token,
     folder_component,
     pace_session,
     safe_ensure_dir,
@@ -843,7 +844,7 @@ class ZerochanWorker(BaseDownloader):
                                      characters, copyrights, metadata_tags, outfits)
                 await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists,
                                characters, copyrights, metadata_tags, outfits)
-                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}{dims_log_token(filepath)}")
                 return True
 
             except Exception as e:

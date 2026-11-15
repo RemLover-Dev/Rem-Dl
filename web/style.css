@@ -396,6 +396,12 @@ input:focus, select:focus {
 .cv-shimmer { position: relative; overflow: hidden; }
 .cv-shimmer::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.45) 50%, transparent 100%); transform: translateX(-100%); animation: cvSweep 1.6s ease-in-out infinite; }
 @keyframes cvSweep { to { transform: translateX(100%); } }
+/* encode in flight: fill is 0-width (its shimmer can't show), so the TRACK
+   carries an indeterminate purple stripe until the file commits */
+.progress-bar-bg { position: relative; }
+.cv-indet::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 28%; border-radius: 6px;
+    background: linear-gradient(90deg, #9b59b6, #e84393); animation: cvSlide 1.1s ease-in-out infinite alternate; }
+@keyframes cvSlide { from { left: 0; } to { left: 72%; } }
 .dl-fill { background: linear-gradient(90deg, #00d2d3, #00e8e8); }
 
 @keyframes progressShimmer {
@@ -1427,6 +1433,9 @@ body { transition: color 0.3s ease; }
 .tag-hair:hover { background: #a3e635; color: #000; box-shadow: 0 0 0 1px #a3e635; }
 .tag-eyes { background: rgba(251, 191, 36, 0.15); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4); color: #fbbf24; }
 .tag-eyes:hover { background: #fbbf24; color: #000; box-shadow: 0 0 0 1px #fbbf24; }
+/* pixel dimensions pill — same click affordance as the other pills */
+.tag-dims { background: rgba(255, 255, 255, 0.04); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); color: #9a9aa5; }
+.tag-dims:hover { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
 
 .g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-flex; align-items: center; line-height: 1.4; }
 .gallery-viewer-meta:hover .g-expand-hint { display: none; }

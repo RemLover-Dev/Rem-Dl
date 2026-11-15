@@ -35,6 +35,7 @@ TAG_BUCKETS = (
 ENTRY_FIELDS = (
     "id", "filename", "filepath", "site", "favourite",
     "downloaded_at", "rating", "sources", "meta_mtime", "md5_misses",
+    "width", "height",
 )
 
 
@@ -109,8 +110,15 @@ def _tags_from_row(rows):
 
 
 def _entry_from_row(row):
-    """sqlite row -> the entry shape callers expect (sources is stored as JSON)."""
-    d = dict(row)
+    """sqlite row -> the entry shape callers expect (sources is stored as JSON).
+
+    None-valued columns are omitted: this is the shape of every row in the
+    permanently resident gallery list, and four optional columns (rating,
+    sources, meta_mtime, md5_misses) are None for ~95% of rows — skipping
+    them builds a smaller dict, ~25% less resident RAM. Reads via .get()
+    see the same values and saves write the same NULLs back.
+    """
+    d = {k: v for k, v in dict(row).items() if v is not None}
     d["favourite"] = bool(d.get("favourite"))
     src = d.get("sources")
     if isinstance(src, str):
@@ -158,9 +166,18 @@ class GalleryStore:
                     rating TEXT,
                     sources TEXT,
                     meta_mtime REAL,
-                    md5_misses INTEGER
+                    md5_misses INTEGER,
+                    width INTEGER,
+                    height INTEGER
                 )
             """)
+            # pre-200 rows predate the dimension columns — ALTER is idempotent
+            # per column, so probe before adding
+            _cols = {r[1] for r in conn.execute("PRAGMA table_info(gallery)")}
+            for _c in ("width", "height"):
+                if _c not in _cols:
+                    conn.execute(f"ALTER TABLE gallery ADD COLUMN {_c} INTEGER")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_dims ON gallery(width, height)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_filename ON gallery(filename)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_filepath ON gallery(filepath)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_ts ON gallery(downloaded_at)")
@@ -464,13 +481,14 @@ class GalleryStore:
         conn.execute(
             """INSERT OR REPLACE INTO gallery
                (id, filename, filepath, site, favourite, downloaded_at,
-                rating, sources, meta_mtime, md5_misses)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                rating, sources, meta_mtime, md5_misses, width, height)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (gid, fn, e.get("filepath"), e.get("site"),
              1 if e.get("favourite") else 0, e.get("downloaded_at"),
              e.get("rating"),
              json.dumps(e.get("sources")) if e.get("sources") is not None else None,
-             e.get("meta_mtime"), e.get("md5_misses")))
+             e.get("meta_mtime"), e.get("md5_misses"),
+             e.get("width"), e.get("height")))
         return gid
 
     def save_entries(self, entries):
@@ -563,6 +581,58 @@ class GalleryStore:
     def warm_search_index(self):
         """Ensure the persistent vocabulary exists; no resident tag sets."""
         self._connect()
+
+    def ids_matching_dims(self, conds):
+        """{ids matching every (dim, op, value)} — h:/w: search answered by
+        SQL. op is '=', '>' or '<'. Rows without a stored dimension never
+        match, so a negated term's set subtracts cleanly: undimensioned rows
+        (videos, not yet backfilled) stay in the result."""
+        if not conds:
+            return set()
+        clause = " AND ".join(
+            f"{col} IS NOT NULL AND {col} {sqlop} ?" for col, sqlop, _ in conds)
+        args = tuple(v for _, _, v in conds)
+        with self._reader() as conn:
+            return {r[0] for r in conn.execute(
+                f"SELECT id FROM gallery WHERE {clause}", args)}
+
+    def entries_missing_dims(self, limit):
+        """[(id, filepath)] for the dimension backfill, oldest first.
+        width = -1 marks a row probed and undimensionable (video or corrupt
+        file) so it is not re-probed forever."""
+        with self._reader() as conn:
+            return [(r[0], r[1]) for r in conn.execute(
+                "SELECT id, filepath FROM gallery "
+                "WHERE width IS NULL AND height IS NULL AND filepath IS NOT NULL "
+                "LIMIT ?", (limit,))]
+
+    def reset_dim_sentinels(self):
+        """Un-mark image files that were probed undimensionable.
+
+        An earlier backfill resolved relative paths against the wrong
+        working directory, so whole libraries of perfectly readable jxl/png
+        rows were poisoned with the -1 sentinel. Videos (which PIL can
+        never read) keep theirs."""
+        conds = " OR ".join("lower(filepath) LIKE '%." + ext + "'"
+                            for ext in ("jxl", "jpg", "jpeg", "png", "webp",
+                                        "gif", "bmp", "tiff", "tif"))
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE gallery SET width = NULL, height = NULL "
+                "WHERE width = -1 AND height = -1 AND (" + conds + ")")
+            conn.commit()
+
+    def set_dims_bulk(self, rows):
+        """[(width, height, id)] written in one transaction — the backfill's
+        commit-per-row made 30k probes crawl at sqlite's fsync pace."""
+        if not rows:
+            return
+        with self._lock:
+            conn = self._connect()
+            conn.executemany(
+                "UPDATE gallery SET width = ?, height = ? WHERE id = ?", rows)
+            conn.commit()
 
     def all_ids(self):
         """Every gallery id — the starting set for an all-negation search."""

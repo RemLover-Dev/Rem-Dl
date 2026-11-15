@@ -269,7 +269,16 @@ function searchGalleryTag(raw) {
     loadGallery(1);
 }
 
-function renderCategorizedTags(tagsInput, clickable) {
+// dims pill click: both dimensions exact — h:/w: tokens from the same box
+function searchGalleryDims(w, h) {
+    const s = document.getElementById('gallerySearch');
+    if (s) s.value = 'h:' + h + ' w:' + w;
+    openTab('Gallery');
+    closeGalleryViewer();
+    loadGallery(1);
+}
+
+function renderCategorizedTags(tagsInput, clickable, img) {
     let tagsDict = normalizeTags(tagsInput);
     let html = '';
     const seenTags = new Set();
@@ -290,6 +299,11 @@ function renderCategorizedTags(tagsInput, clickable) {
             }
         });
     });
+    // pixel dims trail the tag pills (-1 sentinel rows hide; click filters)
+    const dw = Number(img && img.width), dh = Number(img && img.height);
+    if (dw > 0 && dh > 0) {
+        html += `<span class="g-tag-pill tag-dims" onclick="searchGalleryDims(${dw}, ${dh})">${dw}&times;${dh}</span>`;
+    }
     return html;
 }
 
@@ -748,7 +762,7 @@ function renderConvertingBar(worker, done, total, current) {
     <span>${label}</span>
     <span id="cvText_${key}">${pct}%</span>
     </div>
-    <div class="progress-bar-bg"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
+    <div class="progress-bar-bg${current ? ' cv-indet' : ''}"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
     `;
     container.style.display = "block";
     // the encoder is one blocking call with no intra-encode progress — tick
@@ -847,6 +861,11 @@ function logToConsole(tabID, msg) {
         let rawPath = pathMatch ? pathMatch[1].trim() : "";
         let tagsMatch = raw.match(/\|TAGS\|\s*(.*?)(?:\s*\|TAGD\||$)/);
         let tagsStr = tagsMatch ? tagsMatch[1].trim() : "No tags";
+        // |DIMS| W H: the same pixel-dims pill history rows and the viewer get
+        let dimsMatch = raw.match(/\|DIMS\|\s*(\d+)\s+(\d+)/);
+        let dimsPill = dimsMatch
+            ? ` <span class="g-tag-pill tag-dims" onclick="searchGalleryDims(${dimsMatch[1]}, ${dimsMatch[2]})">${dimsMatch[1]}&times;${dimsMatch[2]}</span>`
+            : "";
         // ponytail: TAGD carries categories — pills with true colors; else legacy flat text
         let tagdMatch = raw.match(/\|TAGD\|\s*(.*)/);
         let tagsHtml;
@@ -923,7 +942,7 @@ function logToConsole(tabID, msg) {
         </div>
         <div class="img-card-right">
         <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
-        <div class="img-card-tags">${tagsHtml}</div>
+        <div class="img-card-tags">${tagsHtml}${dimsPill}</div>
         ${ratingHtml}
         </div>
         `;
@@ -3781,7 +3800,7 @@ function appendHistoryRows(n) {
 }
 
 function historyRowHtml(img) {
-    let tagsStr = renderCategorizedTags(img.tags || {}, true);
+    let tagsStr = renderCategorizedTags(img.tags || {}, true, img);
 
     let ratingHtml = "";
     let histRating = "";
@@ -5963,7 +5982,7 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     prefetchViewerNeighbors();
 }
 function viewerMetaHtml(img, tagsClickable) {
-    let tagsHtml = renderCategorizedTags(img.tags || {}, tagsClickable);
+    let tagsHtml = renderCategorizedTags(img.tags || {}, tagsClickable, img);
     let ratingHtml = "";
     let _viewerTd = normalizeTags(img.tags || {});
     let _viewerAllTags = [];

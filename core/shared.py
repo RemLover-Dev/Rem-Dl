@@ -489,7 +489,7 @@ def _publish_spec(spec):
                        spec.get("rating"))
     except Exception as e:
         print(f"[DEDUP] deferred publish failed for {filepath}: {e}")
-    spec["log"](f"[SUCCESS] Downloaded {filename} {spec['count_head']} |PATH| {rel_path} |TAGS| {spec['top_tags']} |TAGD| {spec['tagd']}")
+    spec["log"](f"[SUCCESS] Downloaded {filename} {spec['count_head']} |PATH| {rel_path} |TAGS| {spec['top_tags']} |TAGD| {spec['tagd']}{dims_log_token(filepath)}")
     if not os.path.exists(filepath):
         # a keep-larger kill landed while these cards were being created —
         # the killer's own event fired too early to match them, so retract
@@ -650,6 +650,103 @@ def search_tag_ids(term, exact=False):
 
 def all_gallery_ids():
     return _store().all_ids()
+
+def search_gallery_dims(conds):
+    """Ids matching every (dim, op, value) — the h:/w: gallery search."""
+    return _store().ids_matching_dims(conds)
+
+def probe_image_dims(filepath):
+    """(width, height) or None — videos and corrupt files are undimensionable."""
+    try:
+        import pillow_jxl  # registers the optional JXL codec with PIL
+    except Exception:
+        pass
+    from PIL import Image
+    try:
+        with Image.open(filepath) as im:
+            return int(im.width), int(im.height)
+    except Exception:
+        return None
+
+def _probe_resolve(stored):
+    """Stored paths are master-relative; the backfill runs wherever the app
+    launched, so resolve against MASTER_FOLDER before opening."""
+    if stored and not os.path.isabs(stored):
+        return os.path.join(MASTER_FOLDER, stored)
+    return stored
+
+def dims_log_token(filepath):
+    """' |DIMS| W H' suffix for the SUCCESS log lines — the log card renders
+    the same pixel-dims pill as history rows and the viewer. Empty for
+    videos/undimensionable files."""
+    dims = probe_image_dims(filepath)
+    return f" |DIMS| {dims[0]} {dims[1]}" if dims else ""
+
+_dims_backfill_started = False
+
+def _sync_resident_dims(fixed):
+    """Copy freshly probed dimensions into the resident entries — the gallery
+    cache is read once, so without this the UI would not see backfilled dims
+    until the next restart. The -1 sentinel goes along for the ride."""
+    try:
+        with _GALLERY_LOCK:
+            g = _gallery_cache["data"]
+            if not g:
+                return
+            for img in g.get("images", []):
+                key = img.get("id") or img.get("filename")
+                if key in fixed and img.get("width") is None:
+                    dims = fixed[key]
+                    img["width"] = dims[0] if dims else -1
+                    img["height"] = dims[1] if dims else -1
+    except Exception:
+        pass
+
+def start_dims_backfill(workers=8):
+    """Fill width/height for rows saved before the columns existed (or rows
+    whose download predates the probe). File probes run 8-wide in a thread
+    pool — they are I/O bound, so threads beat a 20k+ image serial crawl."""
+    global _dims_backfill_started
+    if _dims_backfill_started:
+        return
+    _dims_backfill_started = True
+
+    def _backfill():
+        from concurrent.futures import ThreadPoolExecutor
+        try:
+            _store().reset_dim_sentinels()
+        except Exception:
+            pass
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="rems-dims") as pool:
+            while True:
+                try:
+                    batch = _store().entries_missing_dims(500)
+                except Exception:
+                    batch = []
+                if not batch:
+                    return
+                # map submits the whole batch at once and yields results in
+                # order — probes run 8-wide, writes land as one transaction
+                # per batch (commit-per-row crawled at fsync pace)
+                fixed = {}
+                updates = []
+                for (gid, _fp), dims in zip(
+                        batch, pool.map(probe_image_dims,
+                                        (_probe_resolve(fp)
+                                         for _, fp in batch))):
+                    fixed[gid] = dims
+                    updates.append((dims[0] if dims else -1,
+                                    dims[1] if dims else -1, gid))
+                try:
+                    # -1 marks "probed, no dimensions" (video/corrupt) so the
+                    # selector stops re-picking it
+                    _store().set_dims_bulk(updates)
+                except Exception:
+                    pass
+                _sync_resident_dims(fixed)
+
+    threading.Thread(target=_backfill, name="rems-dims-backfill", daemon=True).start()
 
 def entry_tags(img):
     """Tags for one gallery entry.
@@ -985,6 +1082,9 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
         }
         if rating:
             record["rating"] = rating
+        dims = probe_image_dims(filepath) if filepath else None
+        if dims:
+            record["width"], record["height"] = dims
         gallery["images"].insert(0, record)
         _gallery_cache.setdefault("filenames", set()).add(filename)
         _gallery_cache.setdefault("by_fn", {})[filename] = record
