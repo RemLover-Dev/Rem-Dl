@@ -2980,7 +2980,8 @@ def gallery_file(filepath):
         if converted != full and os.path.isfile(converted):
             full = converted
     full = _recover_abs_filepath(full, filepath)
-    if not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
+    # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
+    if not os.path.isfile(full):
         return "Image was deleted", 404
     # Only media leaves the library — extra gallery roots can live anywhere
     # (user's HDD folders), so without this the route would serve any file
@@ -3015,9 +3016,11 @@ def gallery_preview(filepath):
     full = _safe_gallery_path(filepath)
     if full is None or not _allowed_image_dir(full):
         return "Forbidden", 403
+    # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
     if not os.path.isfile(full):
         full = _recover_abs_filepath(full, filepath)
-        if not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
+        # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
+        if not os.path.isfile(full):
             return "Image was deleted", 404
     try:
         dst = preview_ready_for(full, PREVIEW_CACHE_DIR)
@@ -3945,7 +3948,8 @@ def gallery_thumb(filepath):
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         # non-media (planted .html/.svg) must not render inline on our origin
-        resp = send_file(full, as_attachment=(  # codeql[py/path-injection] full came through safe_join + _allowed_image_dir earlier in the route
+        # codeql[py/path-injection] full came through safe_join + _allowed_image_dir earlier in the route
+        resp = send_file(full, as_attachment=(
             os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO)))
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
@@ -3964,7 +3968,8 @@ def warm_thumbs():
         if not isinstance(fp, str) or not fp:
             continue
         full = _safe_gallery_path(fp)
-        if full is None or not _allowed_image_dir(full) or not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
+        # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
+        if full is None or not _allowed_image_dir(full) or not os.path.isfile(full):
             continue
         if _thumb_want_fast(full):
             continue  # already cached — the retry refetch answers instantly
@@ -3996,7 +4001,8 @@ def gallery_embedded_site():
     if not rel:
         return jsonify({"sites": [], "site": ""})
     full = _safe_gallery_path(rel)
-    if not full or not _allowed_image_dir(full) or not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
+    # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
+    if not full or not _allowed_image_dir(full) or not os.path.isfile(full):
         return jsonify({"sites": [], "site": ""})
     ext = os.path.splitext(full)[1].lower()
     if ext not in EXTENSIONS_IMAGE:
