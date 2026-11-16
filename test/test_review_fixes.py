@@ -157,6 +157,46 @@ def test_completion_log_waits_for_held_publishes():
         shared.emit_callback = real_emit
 
 
+def test_completion_log_waits_for_mid_publish_cards():
+    """Popped is not published: a spec the reaper released but whose card is
+    still being appended must keep the completion banner waiting."""
+    import time as time_mod
+
+    emitted, events = [], []
+    real_emit = shared.emit_callback
+    shared.emit_callback = lambda ev, data: events.append((ev, data)) if ev != "python_log" else None
+    with shared._PUBLISH_HOLD_LOCK:
+        shared._PENDING_PUBLISH["fp2"] = {"site": "gelbooru",
+                                          "filepath": "/nonexistent/x.png",
+                                          "filename": "x.png"}
+    started, release = threading.Event(), threading.Event()
+    real_publish = shared._publish_spec
+
+    def slow_publish(spec):
+        started.set()
+        release.wait(5)
+
+    shared._publish_spec = slow_publish
+    t = threading.Thread(target=shared._pop_and_publish, args=("fp2",), daemon=True)
+    t.start()
+    try:
+        assert started.wait(5)
+        shared.finish_report("gelbooru", 1, 0, 0, False, emitted.append)
+        assert not emitted, "banner logged while the last card was mid-publish"
+        release.set()
+        t.join(5)
+        deadline = time_mod.time() + 10
+        while not emitted and time_mod.time() < deadline:
+            time_mod.sleep(0.1)
+        assert len(emitted) == 1 and "downloads completed successfully" in emitted[0]
+    finally:
+        shared._publish_spec = real_publish
+        shared.emit_callback = real_emit
+        with shared._PUBLISH_HOLD_LOCK:
+            shared._PUBLISHING.pop("fp2", None)
+            shared._PENDING_PUBLISH.pop("fp2", None)
+
+
 def test_image_history_paging_and_search(lib, client):
     """/api/image_history?limit=&offset=&q= serves the archive in pages with
     X-Total-Count; no params keeps the legacy full-list shape."""

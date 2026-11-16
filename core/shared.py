@@ -79,10 +79,27 @@ def _start_publish_reaper():
             # _pop_pending_publish takes the same lock — keep it OUT of the
             # with-block above or the non-reentrant lock wedges
             for fp, cur in due:
-                if _pop_pending_publish(fp) is not None:
-                    _publish_spec(cur)
+                _pop_and_publish(fp)
 
     threading.Thread(target=_reap, name="rems-publish-reaper", daemon=True).start()
+
+def _pop_and_publish(filepath: str, converted_abs=None) -> bool:
+    """Pop one held/graced spec and publish it, counting the in-flight span —
+    finish_report's banner waiter counts _PUBLISHING too, so 'All downloads
+    completed' can never log while the last card is still being appended."""
+    spec = _pop_pending_publish(filepath)
+    if spec is None:
+        return False
+    if converted_abs:
+        _repoint_converted(spec, converted_abs)
+    with _PUBLISH_HOLD_LOCK:
+        _PUBLISHING[filepath] = spec.get("site")
+    try:
+        _publish_spec(spec)
+    finally:
+        with _PUBLISH_HOLD_LOCK:
+            _PUBLISHING.pop(filepath, None)
+    return True
 
 def _pop_pending_publish(filepath: str):
     with _PUBLISH_HOLD_LOCK:
@@ -163,8 +180,7 @@ def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
     if more:
         log(text)
         return payload
-    with _PUBLISH_HOLD_LOCK:
-        pending = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+    pending = _publish_left(site)
     if not pending:
         if text:
             log(text)
@@ -180,9 +196,7 @@ def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
     def _finish_after_convert():
         deadline = time.time() + PUBLISH_HOLD_MAX_S + 10
         while time.time() < deadline:
-            with _PUBLISH_HOLD_LOCK:
-                left = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
-            if not left:
+            if not _publish_left(site):
                 break
             time.sleep(0.5)
         st = _CONVERT_STATE.pop(site, None)
@@ -420,6 +434,15 @@ PUBLISH_HOLD_MAX_S = float(os.getenv("PUBLISH_HOLD_MAX_S", "180"))
 
 _PUBLISH_HOLD_LOCK = threading.Lock()
 _PENDING_PUBLISH = {}
+_PUBLISHING = {}  # filepath -> site: popped but its card not appended yet
+
+def _publish_left(site: str) -> int:
+    """Held/graced specs for a site, including ones already popped whose
+    cards are still mid-publish — popping alone must not look drained."""
+    with _PUBLISH_HOLD_LOCK:
+        pending = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+        in_flight = sum(1 for st in _PUBLISHING.values() if st == site)
+    return pending + in_flight
 
 def mark_download_held(abs_fp):
     """Rems_Dl queues a conversion for this download — hold its cards until
@@ -444,13 +467,7 @@ def release_download_publish(abs_fp, converted_abs=None):
     replaced the file (tags are baked by then; metadata writing is skipped).
     A checker loop owns publication when the converter never runs or the
     hold expired."""
-    spec = _pop_pending_publish(abs_fp)
-    if spec is None:
-        return False
-    if converted_abs:
-        _repoint_converted(spec, converted_abs)
-    _publish_spec(spec)
-    return True
+    return _pop_and_publish(abs_fp, converted_abs)
 
 def _publish_spec(spec):
     """Publish one download's UI cards. The file must exist at publish time —
