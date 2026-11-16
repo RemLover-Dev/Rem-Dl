@@ -75,12 +75,12 @@ def _make(tags=None, **kw):
 
 def _check(pages, w, calls=None):
     monkey = _fake_fetch(pages, calls)
-    orig = watchers._fetch_posts
-    watchers._fetch_posts = monkey
+    orig = watchers.gelbooru.fetch
+    watchers.gelbooru.fetch = monkey
     try:
         return watchers.check_watcher(w)
     finally:
-        watchers._fetch_posts = orig
+        watchers.gelbooru.fetch = orig
 
 
 # ---------- CRUD ----------
@@ -300,8 +300,8 @@ def test_check_now_runs_enabled_watchers_immediately(store):
     watchers.update(off["watcher_id"], {"enabled": False})
     events = []
     watchers._emit_fn = lambda p: events.append(p)
-    orig = watchers._fetch_posts
-    watchers._fetch_posts = _fake_fetch({0: [_post(9), _post(5)]})
+    orig = watchers.gelbooru.fetch
+    watchers.gelbooru.fetch = _fake_fetch({0: [_post(9), _post(5)]})
     try:
         assert watchers.check_now("gelbooru") is True
         deadline = time.time() + 5
@@ -310,7 +310,7 @@ def test_check_now_runs_enabled_watchers_immediately(store):
         while time.time() < deadline and (not events or watchers._manual_lock.locked()):
             time.sleep(0.01)
     finally:
-        watchers._fetch_posts = orig
+        watchers.gelbooru.fetch = orig
         watchers._emit_fn = None
     assert events and events[0]["new"] == 1
     w = watchers.list_watchers("gelbooru")[0]

@@ -191,6 +191,31 @@ def test_image_history_paging_and_search(lib, client):
     assert [r["filename"] for r in rng.get_json()] == ["c.png"]
 
 
+def test_image_history_lookup_by_identity(lib, client):
+    """/api/image_history/lookup serves one row for the viewer's tag box:
+    filepath wins over filename so same-name twins can't cross tags."""
+    shared._store().history_insert({"site": "gelbooru", "filename": "same.jpg",
+                                    "filepath": "gelbooru/x/same.jpg",
+                                    "tags": {"tag": ["first"]},
+                                    "downloaded_at": 100})
+    shared._store().history_insert({"site": "pixiv", "filename": "same.jpg",
+                                    "filepath": "pixiv/y/same.jpg",
+                                    "tags": {"tag": ["second"]},
+                                    "downloaded_at": 200})
+
+    by_path = client.get("/api/image_history/lookup"
+                         "?filename=same.jpg&filepath=pixiv/y/same.jpg").get_json()
+    assert by_path["tags"]["tag"] == ["second"]
+    assert by_path["site"] == "pixiv"
+
+    no_path = client.get("/api/image_history/lookup?filename=same.jpg").get_json()
+    assert no_path["tags"]["tag"] == ["second"]  # newest filename match
+
+    miss = client.get("/api/image_history/lookup?filename=nix.jpg").get_json()
+    assert miss == {}
+    assert client.get("/api/image_history/lookup").get_json() == {}
+
+
 def test_rescan_keeps_rows_added_during_the_walk(lib):
     """add_to_gallery racing a live scan: the download row must survive."""
     _jpg(lib, "a.jpg", ["blue_hair"], [FOLDER])

@@ -1082,7 +1082,8 @@ def add_to_gallery(site, filename, filepath, tags_list, artists, characters=None
         }
         if rating:
             record["rating"] = rating
-        dims = probe_image_dims(filepath) if filepath else None
+        # stored paths are master-relative — resolve or the CWD-based open misses
+        dims = probe_image_dims(_probe_resolve(filepath)) if filepath else None
         if dims:
             record["width"], record["height"] = dims
         gallery["images"].insert(0, record)

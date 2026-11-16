@@ -2,17 +2,24 @@
 
 One centralized scheduler thread (no thread-per-watcher): each enabled,
 due watcher runs check_watcher() -- a bounded, resumable newest-first
-scan of gelbooru results.
+scan of a tag feed. Every site is adapted behind its own module
+(core/watchers/<site>.py exposing query/fetch/fields/LIMIT and an
+optional keep(w, post) filter); the checkpoint/baseline engine here is
+source-agnostic.
 
 Checkpoint rules:
   * first check with results = baseline: only posts uploaded after the
     watcher was created/last reconfigured are notified, older ones are
-    pre-existing noise (legacy watchers without baseline_at swallow all);
+    pre-existing noise (legacy watchers without baseline_at swallow all;
+    sources without created_at swallow their baseline too);
   * last_seen_post_id only advances after a scan successfully reaches it
     (or exhausts the result set) -- a failed or capped check never skips
     posts silently;
   * a cap-hit keeps the checkpoint untouched, records an error, and
     resumes deeper via scan_pid on the next check.
+
+Test seam: each adapter's fetch() is monkeypatchable directly
+(monkeypatch.setattr(watchers.<site>, "fetch", fake)).
 """
 
 import datetime
@@ -21,23 +28,46 @@ import threading
 import time
 import uuid
 
-import requests
-
 from core import notifications
 from core.database import DATABASE_DIR, DatabaseManager
-from workers.gelbooru import build_query
 
 WATCHERS_FILE = os.path.join(DATABASE_DIR, "watchers.json")
-# future sources register their checker here when added
-SOURCES = ("gelbooru",)
-GELBOORU_API = "https://gelbooru.com/index.php"
-PAGE_LIMIT = 100           # gelbooru's max page size
-MAX_PAGES_PER_CHECK = 10   # <=1000 posts scanned per check (resumable)
-# ponytail: unreachable checkpoint after 10k posts -> re-baseline instead
-# of paging through all of gelbooru history forever
+MAX_PAGES_PER_CHECK = 10   # bounded scan per check (resumable via scan_pid)
+# ponytail: unreachable checkpoint after 100 pages -> re-baseline instead
+# of paging through a site's whole history forever
 MAX_CYCLE_PAGES = 100
 ANTI_BAN_PAUSE = float(os.getenv("ANTI_BAN_PAUSE", "3.0"))
-RATING_TOKENS = {"rating:g", "rating:s", "rating:q", "rating:e"}
+
+from core.watchers.net import RATING_TOKENS  # noqa: E402
+
+from core.watchers import (  # noqa: E402
+    anime_dl,
+    danbooru,
+    eshuushuu,
+    gelbooru,
+    gsbooru,
+    konachan,
+    rule34,
+    sankaku,
+    safebooru,
+    yande,
+    zerochan,
+)
+
+_ADAPTERS = {
+    "gelbooru": gelbooru,
+    "danbooru": danbooru,
+    "safebooru": safebooru,
+    "rule34": rule34,
+    "konachan": konachan,
+    "yande": yande,
+    "sankaku": sankaku,
+    "gsbooru": gsbooru,
+    "zerochan": zerochan,
+    "eshuushuu": eshuushuu,
+    "anime_dl": anime_dl,
+}
+SOURCES = tuple(_ADAPTERS)
 
 _lock = threading.RLock()
 _wakeup = threading.Event()
@@ -185,64 +215,66 @@ def remove(wid):
     return True
 
 
-# ---------- gelbooru check ----------
-
-def _fetch_posts(api_tag, pid):
-    """One gelbooru page. Test seam: monkeypatch this."""
-    params = {"page": "dapi", "s": "post", "q": "index", "tags": api_tag,
-              "pid": pid, "limit": PAGE_LIMIT, "json": 1}
-    api_key = os.getenv("GELBOORU_API_KEY", "")
-    user_id = os.getenv("GELBOORU_USER_ID", "")
-    if api_key and user_id:
-        params["api_key"] = api_key
-        params["user_id"] = user_id
-    from core.database import get_settings
-    resp = requests.get(GELBOORU_API, params=params, timeout=30, verify=get_settings().get("verify_tls", True))
-    if resp.status_code in (401, 403, 429):
-        raise RuntimeError(f"gelbooru HTTP {resp.status_code}")
-    resp.raise_for_status()
-    posts = (resp.json() or {}).get("post") or []
-    # gelbooru returns a bare dict for a single-result page
-    return posts if isinstance(posts, list) else [posts]
 
 
-def _collect(posts, checkpoint, fresh):
+# ---------- shared check engine ----------
+
+def _source(src):
+    """Per-site adapter module. Unknown source falls back to gelbooru's."""
+    return _ADAPTERS.get(src) or _ADAPTERS["gelbooru"]
+
+
+def _ts_flex(v):
+    """created_at in any site's format -> epoch (0 if unparseable)."""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v)
+    try:
+        return datetime.datetime.fromisoformat(
+            s.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        pass
+    try:
+        return datetime.datetime.strptime(
+            s, "%a %b %d %H:%M:%S %z %Y").timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _collect(posts, checkpoint, fresh, keep):
     """Append until the checkpoint id appears (feed is newest-first)."""
     for p in posts:
         if not isinstance(p, dict):
             continue
         if str(p.get("id")) == checkpoint:
             return fresh, True
+        if keep and not keep(p):
+            continue
         fresh.append(p)
     return fresh, False
 
 
-def _post_ts(p):
-    """gelbooru created_at -> epoch; unparseable = pre-baseline (skip)."""
-    try:
-        return datetime.datetime.strptime(
-            p.get("created_at") or "", "%a %b %d %H:%M:%S %z %Y").timestamp()
-    except ValueError:
-        return 0.0
-
-
 def _entries(w, posts):
     title = " \u2022 ".join(w.get("tags") or [])[:120]
+    fields = _source(w.get("source")).fields
     out = []
     for p in posts:
+        thumb, rating, url = fields(p)
         out.append({
             "external_id": str(p.get("id")),
             "watcher_id": w["watcher_id"],
             "created_at": time.time(),
             "read": False,
             "title": title,
-            # cheap thumb: gelbooru's own preview, never the full-res file
-            "thumb": p.get("preview_url") or p.get("sample_url") or "",
-            "rating": p.get("rating", ""),
+            # cheap thumb: the site's own preview, never the full-res file
+            "thumb": thumb,
+            "rating": rating,
             "metadata": {"tags": w.get("tags") or [],
                          "ratings": w.get("ratings") or [],
                          "post_id": str(p.get("id")),
-                         "url": p.get("file_url") or ""},
+                         "url": url},
         })
     return out
 
@@ -250,9 +282,12 @@ def _entries(w, posts):
 def check_watcher(w):
     """One watcher check. Never raises; returns {new, error}."""
     wid = w["watcher_id"]
+    src = w.get("source")
     try:
-        api_tag = build_query(" ".join(w.get("tags") or []),
-                              " ".join(w.get("ratings") or []))[0]
+        mod = _source(src)
+        api_tag = mod.query(w.get("tags") or [], w.get("ratings") or [])
+        keep = getattr(mod, "keep", None)
+        limit = mod.LIMIT
         pid = int(w.get("scan_pid") or 0)
         checkpoint = w.get("last_seen_post_id")
         cycle_newest = w.get("scan_newest_id")
@@ -261,7 +296,7 @@ def check_watcher(w):
         pages_done = 0
 
         if pid == 0:
-            posts = _fetch_posts(api_tag, 0)
+            posts = mod.fetch(api_tag, 0)
             pages_done = 1
             if not posts:
                 _set_runtime(wid, {"last_checked_at": time.time(), "error": ""})
@@ -271,12 +306,13 @@ def check_watcher(w):
                 # (creation / last reconfig); older ones are pre-existing
                 # noise. Legacy watchers without baseline_at = unknown
                 # creation time -> conservative swallow-all.
-                # ponytail: window = newest page only (100 posts); a busier
+                # ponytail: window = newest page only; a busier
                 # tag offline longer loses the tail -- paginate the
                 # baseline if that ever bites
                 cutoff = float(w.get("baseline_at") or 0)
                 fresh = [p for p in posts
-                         if cutoff > 0 and _post_ts(p) >= cutoff]
+                         if cutoff > 0 and _ts_flex(p.get("created_at")) >= cutoff
+                         and (not keep or keep(p))]
                 new_entries = (notifications.ingest(w["source"],
                                                     _entries(w, fresh))
                                if fresh else [])
@@ -286,18 +322,18 @@ def check_watcher(w):
                              snapshot=w)
                 return {"new": len(new_entries), "error": ""}
             cycle_newest = str(posts[0]["id"])
-            fresh, reached = _collect(posts, checkpoint, fresh)
+            fresh, reached = _collect(posts, checkpoint, fresh, keep)
             pid = 1
 
         while not reached and not exhausted and pages_done < MAX_PAGES_PER_CHECK:
             time.sleep(ANTI_BAN_PAUSE)
-            posts = _fetch_posts(api_tag, pid)
+            posts = mod.fetch(api_tag, pid)
             pages_done += 1
             if not posts:
                 exhausted = True
                 break
             pid += 1
-            fresh, reached = _collect(posts, checkpoint, fresh)
+            fresh, reached = _collect(posts, checkpoint, fresh, keep)
 
         if reached or exhausted:
             # only here, after successful fetches, does the checkpoint move
@@ -313,7 +349,7 @@ def check_watcher(w):
         # impossible); checkpoint stays put so nothing below is skipped
         new_entries = notifications.ingest(w["source"], _entries(w, fresh))
         if pid > MAX_CYCLE_PAGES:
-            err = (f"checkpoint unreachable after {pid * PAGE_LIMIT} posts "
+            err = (f"checkpoint unreachable after {pid * limit} posts "
                    "- re-baselined")
             _set_runtime(wid, {"last_seen_post_id": cycle_newest or checkpoint,
                                "initialized": True, "scan_pid": 0,
@@ -321,7 +357,7 @@ def check_watcher(w):
                                "last_checked_at": time.time(), "error": err},
                          snapshot=w)
             return {"new": len(new_entries), "error": err}
-        err = "Too many new posts; watcher capped at 1000 results"
+        err = f"Too many new posts; watcher capped at {MAX_PAGES_PER_CHECK * limit} results"
         # one write per check: scan_newest_id rides along so a resumed
         # cycle still knows the top of the feed it is paging toward
         _set_runtime(wid, {"scan_pid": pid, "scan_newest_id": cycle_newest,

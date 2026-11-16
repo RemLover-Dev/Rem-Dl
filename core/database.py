@@ -317,6 +317,11 @@ class DatabaseManager:
             return _store().history_page(limit, offset, terms, from_ts, to_ts)
 
     @staticmethod
+    def image_history_get(filename, filepath=None):
+        with _DB_LOCK:
+            return _store().history_get(filename, filepath)
+
+    @staticmethod
     def save_image_history(data):
         """Replace the whole history (route and maintenance callers pass a
         complete list). Commits immediately: there is no batch left to lose."""

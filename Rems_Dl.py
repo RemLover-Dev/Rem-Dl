@@ -2026,26 +2026,39 @@ def get_image_history():
     return jsonify(hist)
 
 
+@app.route("/api/image_history/lookup", methods=["GET"])
+def lookup_image_history():
+    """One history row by identity for the viewer's tag box — an indexed
+    per-image read (~ms) instead of the full-history refetch, so tags land
+    the instant a log/history card is opened."""
+    filename = (request.args.get("filename") or "").strip()[:300]
+    filepath = (request.args.get("filepath") or "").strip()[:1000] or None
+    if not filename and not filepath:
+        return jsonify({})
+    row = DatabaseManager.image_history_get(filename or None, filepath)
+    if row:
+        # enrich replaces list elements with new dicts — return the enriched one
+        hist = [row]
+        _enrich_image_history(hist)
+        row = hist[0]
+    return jsonify(row or {})
+
+
 def _enrich_image_history(hist):
     try:
-        fav_paths = set()
-        dims_by_path = {}
-        for i in shared.load_gallery().get("images", []):
-            if i.get("favourite") and i.get("filepath"):
-                fav_paths.add(shared.gallery_path_key(
-                    i.get("filepath"), master_root=MASTER_FOLDER))
-            # dims trail the history rows' tag pills (renderCategorizedTags)
-            if i.get("filepath") and i.get("width") and i.get("width") > 0 \
-                    and i.get("height") and i.get("height") > 0:
-                dims_by_path[shared.gallery_path_key(
-                    i.get("filepath"), master_root=MASTER_FOLDER)] = (
-                    int(i["width"]), int(i["height"]))
+        # favourite + dims come from the resident gallery's canonical-path
+        # index (by_path, built once per load by _reindex_gallery_locked) —
+        # rebuilding it here cost ~30k realpath syscalls per viewer open
+        by_path = shared._gallery_cache.get("by_path") or {}
         for i, h in enumerate(hist):
             key = shared.gallery_path_key(h.get("filepath"),
                                           master_root=MASTER_FOLDER)
-            hist[i] = {**h, "favourite": bool(key in fav_paths)}
-            if key in dims_by_path:
-                hist[i]["width"], hist[i]["height"] = dims_by_path[key]
+            rec = by_path.get(key)
+            hist[i] = {**h, "favourite": bool(rec and rec.get("favourite"))}
+            if rec and rec.get("width") and rec["width"] > 0 \
+                    and rec.get("height") and rec["height"] > 0:
+                hist[i]["width"] = int(rec["width"])
+                hist[i]["height"] = int(rec["height"])
     except Exception:
         pass
     # old entries predate downloaded_at — approximate with the file's mtime
@@ -2381,7 +2394,10 @@ def _parse_search_terms(search):
 
 
 _DIM_TOKEN = re.compile(
-    r'(-?)["\']?\b([hw])\s*:\s*["\']?\s*(>?<?)?\s*(\d+)\s*(>?<?)?\s*["\']?',
+    # adjacent \s* runs around the optional op/quote groups are polynomial
+    # on space-heavy input (CodeQL) — every quantifier stays anchored to a
+    # literal/op/digit, so internal spacing like "h:< 800" is no longer matched
+    r'(-?)["\']?\b([hw])\s*:\s*["\']?(>?<?)?(\d+)(>?<?)?["\']?',
     re.IGNORECASE)
 
 def _parse_dim_terms(search):
@@ -2392,6 +2408,11 @@ def _parse_dim_terms(search):
     excludes. Quoting is cosmetic — "h:800" means the same as h:800.
     """
     conds = []
+    # the token regex keeps every quantifier anchored (CodeQL) so it cannot
+    # span "h:< 800" — close the op-to-digit gap before it runs instead
+    search = re.sub(r'([hw]\s*:\s*[\'"]?[<>])[ \t]+(?=\d)', r'\1', search,
+                    flags=re.IGNORECASE)
+
     def _grab(m):
         neg = m.group(1) == "-"
         dim = "height" if m.group(2).lower() == "h" else "width"
@@ -2959,7 +2980,7 @@ def gallery_file(filepath):
         if converted != full and os.path.isfile(converted):
             full = converted
     full = _recover_abs_filepath(full, filepath)
-    if not os.path.isfile(full):
+    if not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
         return "Image was deleted", 404
     # Only media leaves the library — extra gallery roots can live anywhere
     # (user's HDD folders), so without this the route would serve any file
@@ -2996,7 +3017,7 @@ def gallery_preview(filepath):
         return "Forbidden", 403
     if not os.path.isfile(full):
         full = _recover_abs_filepath(full, filepath)
-        if not os.path.isfile(full):
+        if not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
             return "Image was deleted", 404
     try:
         dst = preview_ready_for(full, PREVIEW_CACHE_DIR)
@@ -3924,7 +3945,7 @@ def gallery_thumb(filepath):
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         # non-media (planted .html/.svg) must not render inline on our origin
-        resp = send_file(full, as_attachment=(
+        resp = send_file(full, as_attachment=(  # codeql[py/path-injection] full came through safe_join + _allowed_image_dir earlier in the route
             os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO)))
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
@@ -3943,7 +3964,7 @@ def warm_thumbs():
         if not isinstance(fp, str) or not fp:
             continue
         full = _safe_gallery_path(fp)
-        if full is None or not _allowed_image_dir(full) or not os.path.isfile(full):
+        if full is None or not _allowed_image_dir(full) or not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
             continue
         if _thumb_want_fast(full):
             continue  # already cached — the retry refetch answers instantly
@@ -3975,7 +3996,7 @@ def gallery_embedded_site():
     if not rel:
         return jsonify({"sites": [], "site": ""})
     full = _safe_gallery_path(rel)
-    if not full or not _allowed_image_dir(full) or not os.path.isfile(full):
+    if not full or not _allowed_image_dir(full) or not os.path.isfile(full):  # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
         return jsonify({"sites": [], "site": ""})
     ext = os.path.splitext(full)[1].lower()
     if ext not in EXTENSIONS_IMAGE:
@@ -4639,6 +4660,14 @@ def gelbooru_notif_thumb():
                         "https://gelbooru.com/", "gelbooru.com")
 
 
+@app.route("/api/danbooru/notif_thumb")
+def danbooru_notif_thumb():
+    # danbooru hotlinks are fine but previews live on cdn.donmai.us —
+    # same server-side fetch keeps the card markup identical per source
+    return _notif_thumb(request.args.get("url", ""),
+                        "https://danbooru.donmai.us/", "donmai.us")
+
+
 # ==========================================
 # === AUTO-SHUTDOWN SYSTEM ===
 # ==========================================
@@ -5171,80 +5200,102 @@ if __name__ == "__main__":
             s.bind(("127.0.0.1", 0))
             return int(s.getsockname()[1])
 
-    def _deferred_rescan():
-        # the scan + hash-missing sweep pin every core for seconds; starting
-        # them immediately made the user's FIRST gallery tab open/page switch
-        # eat ~1.5s of GIL contention (measured toasts). Let the UI settle.
-        time.sleep(6.0)
-        startup_rescan()
+    _bg_started = []
+    _bg_lock = threading.Lock()
 
-    _rescan_thread = threading.Thread(target=_deferred_rescan, daemon=True)
-    _rescan_thread.start()
+    def _start_background():
+        """Warmers, rescan and watchers compete with GTK/WebKit init for the GIL
+        and disk, so the desktop path starts them once the window is up."""
+        # the 'shown' event and the 15s fallback Timer can fire together —
+        # check + append must be one atomic step or both threads start warmers
+        with _bg_lock:
+            if _bg_started:
+                return
+            _bg_started.append(1)
+        def _deferred_rescan():
+            # the scan + hash-missing sweep pin every core for seconds; starting
+            # them immediately made the user's FIRST gallery tab open/page switch
+            # eat ~1.5s of GIL contention (measured toasts). Let the UI settle.
+            time.sleep(6.0)
+            startup_rescan()
 
-    def _warm_caches(rescan_thread):
-        """Move the first-interaction cold costs off the user's first click.
+        _rescan_thread = threading.Thread(target=_deferred_rescan, daemon=True)
+        _rescan_thread.start()
 
-        load_gallery warms the resident copy immediately (a save never drops
-        it). The sort keys, filepath walk, and search index wait for the
-        rescan to finish because it ends in save_gallery (drops the index)
-        and _invalidate_fp_cache (drops the filepath cache) — warming before
-        that would just be undone. Measured on the real library: ~837ms
-        index build, ~75ms os.walk, ~63ms gallery load — all three were
-        paid on the first search / first gallery page load.
-        """
-        try:
-            shared.load_gallery()
-        except Exception:
-            pass
-        try:
-            rescan_thread.join()
-        except Exception:
-            pass
-        try:
-            # precompute sort keys: entries without downloaded_at stat their
-            # file on first sort — one stat storm moved off the first page
-            for img in shared.load_gallery().get("images", []):
-                _image_timestamp(img)
-        except Exception:
-            pass
-        try:
-            _build_filepath_cache()
-        except Exception:
-            pass
-        try:
-            from core.gallery_store import get_store
-            get_store().warm_search_index()
-        except Exception:
-            pass
-        shared.start_dims_backfill()
-        # The gallery tab loads per_page 24 (windowed) or ~45 (fullscreen) —
-        # warm those thumbs at boot so the first gallery open doesn't watch
-        # images decode one by one. First page, newest first = the default
-        # view. Sort a copy: warm_page_thumbs must not reorder the resident
-        # list (a sorted order could be persisted by a later save).
-        try:
-            newest = sorted(shared.load_gallery().get("images", []),
-                            key=_image_timestamp, reverse=True)
-            warm_page_thumbs(newest[:48])
-        except Exception:
-            pass
+        def _warm_caches(rescan_thread):
+            """Move the first-interaction cold costs off the user's first click.
 
-    threading.Thread(target=_warm_caches, args=(_rescan_thread,), daemon=True).start()
-    pixiv_notify.start_watcher(
-        get_config=lambda: {
-            "use_proxy": settings.get("use_proxy"),
-            "proxy_url": settings.get("proxy_url"),
-            "verify_tls": settings.get("verify_tls"),
-            "refresh_token": (settings.load_api_settings().get("pixiv_refresh_token")
-                              or os.getenv("PIXIV_REFRESH_TOKEN", "")),
-        },
-        emit_fn=lambda payload: socketio.emit("notifications", payload),
-        log_fn=lambda msg: log_msg("pixiv", msg),
-    )
-    watchers.start_scheduler(
-        emit_fn=lambda payload: socketio.emit("notifications", payload),
-        log_fn=lambda msg: log_msg("watcher", msg),
-    )
+            load_gallery warms the resident copy immediately (a save never drops
+            it). The sort keys, filepath walk, and search index wait for the
+            rescan to finish because it ends in save_gallery (drops the index)
+            and _invalidate_fp_cache (drops the filepath cache) — warming before
+            that would just be undone. Measured on the real library: ~837ms
+            index build, ~75ms os.walk, ~63ms gallery load — all three were
+            paid on the first search / first gallery page load.
+            """
+            # the History tab's first 30 rows are warmable NOW (thumb files on
+            # disk survive the rescan's save) — after the rescan was too late:
+            # an immediate History open sent 30 uncached thumb requests down the
+            # browser's 6 per-host connections ahead of its own API fetches and
+            # the tab sat frozen until every decode finished
+            try:
+                rows, _n = DatabaseManager.image_history_page(30, 0)
+                warm_page_thumbs(rows)
+            except Exception:
+                pass
+            try:
+                shared.load_gallery()
+            except Exception:
+                pass
+            try:
+                rescan_thread.join()
+            except Exception:
+                pass
+            try:
+                # precompute sort keys: entries without downloaded_at stat their
+                # file on first sort — one stat storm moved off the first page
+                for img in shared.load_gallery().get("images", []):
+                    _image_timestamp(img)
+            except Exception:
+                pass
+            try:
+                _build_filepath_cache()
+            except Exception:
+                pass
+            try:
+                from core.gallery_store import get_store
+                get_store().warm_search_index()
+            except Exception:
+                pass
+            shared.start_dims_backfill()
+            # The gallery tab loads per_page 24 (windowed) or ~45 (fullscreen) —
+            # warm those thumbs at boot so the first gallery open doesn't watch
+            # images decode one by one. First page, newest first = the default
+            # view. Sort a copy: warm_page_thumbs must not reorder the resident
+            # list (a sorted order could be persisted by a later save).
+            try:
+                newest = sorted(shared.load_gallery().get("images", []),
+                                key=_image_timestamp, reverse=True)
+                warm_page_thumbs(newest[:48])
+            except Exception:
+                pass
+
+        threading.Thread(target=_warm_caches, args=(_rescan_thread,), daemon=True).start()
+        pixiv_notify.start_watcher(
+            get_config=lambda: {
+                "use_proxy": settings.get("use_proxy"),
+                "proxy_url": settings.get("proxy_url"),
+                "verify_tls": settings.get("verify_tls"),
+                "refresh_token": (settings.load_api_settings().get("pixiv_refresh_token")
+                                  or os.getenv("PIXIV_REFRESH_TOKEN", "")),
+            },
+            emit_fn=lambda payload: socketio.emit("notifications", payload),
+            log_fn=lambda msg: log_msg("pixiv", msg),
+        )
+        watchers.start_scheduler(
+            emit_fn=lambda payload: socketio.emit("notifications", payload),
+            log_fn=lambda msg: log_msg("watcher", msg),
+        )
 
     is_headless = is_headless_mode()
 
@@ -5263,6 +5314,7 @@ if __name__ == "__main__":
             print(f"Generated access token saved to {token_path} (permissions 0600).", flush=True)
         else:
             print("Using configured REMS_ACCESS_TOKEN (value is not logged).", flush=True)
+        _start_background()
         print(f"Starting Rems Dl in headless/server mode on {url} ...")
         if host == "0.0.0.0":
             # the operator needs the LAN address to actually connect remotely
@@ -5281,6 +5333,7 @@ if __name__ == "__main__":
             print(f"Generated access token saved to {token_path} (permissions 0600).", flush=True)
         else:
             print("Using configured REMS_ACCESS_TOKEN (value is not logged).", flush=True)
+        _start_background()
         threading.Timer(1.0, lambda: webbrowser.open(launch_url)).start()
         socketio.run(app, host="127.0.0.1", port=port, debug=False, allow_unsafe_werkzeug=True, request_handler=_KeepAliveHandler)
         sys.exit(0)
@@ -5393,6 +5446,14 @@ if __name__ == "__main__":
             _win.events.closed += _teardown
         except Exception:
             pass
+        try:
+            _win.events.shown += _start_background
+        except Exception:
+            pass
+        # safety net if the 'shown' event never fires on this backend
+        _bg_fallback = threading.Timer(15.0, _start_background)
+        _bg_fallback.daemon = True
+        _bg_fallback.start()
 
         try:
             _pywebview.start(
@@ -5417,6 +5478,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Desktop window could not be opened ({e}). Falling back to browser...")
         _BROWSER_FALLBACK = True
+        _start_background()
         webbrowser.open(launch_url)
         try:
             server_thread.join()

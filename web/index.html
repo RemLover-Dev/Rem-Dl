@@ -856,7 +856,7 @@
                     <div id="notifStatus" style="font-size: 12px; opacity: 0.7; margin-bottom: 12px;"></div>
                     <div id="gelWatcherPanel" style="display:none; margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border-color);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <h3 style="font-size: 15px; margin-bottom: 0;">Gelbooru Tag Watcher</h3>
+                            <h3 id="watcherPanelTitle" style="font-size: 15px; margin-bottom: 0;">Gelbooru Tag Watcher</h3>
                             <button class="action-btn" onclick="checkGelWatchersNow()">Check now</button>
                         </div>
                         <div class="input-group" style="align-items: flex-start; margin-bottom: 6px;">
@@ -868,7 +868,7 @@
                                 </div>
                                 <div id="watcherTagsContainer" class="tag-visualizer" style="margin-top: 0; align-items: center;"></div>
                             </div>
-                            <div class="gallery-dropdown" style="margin-right: 6px;">
+                            <div class="gallery-dropdown" id="watcherRatingBox" style="margin-right: 6px;">
                                 <button class="gallery-dropdown-btn" onclick="toggleDropdown('watcherRatingDropdown')">All Ratings ▾</button>
                                 <div id="watcherRatingDropdown" class="gallery-dropdown-menu">
                                     <div class="dd-item" onclick="toggleDropdownCheck(this, event)"><span>All</span><input type="checkbox" value="" checked></div>

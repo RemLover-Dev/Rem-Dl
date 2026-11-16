@@ -212,14 +212,22 @@ def test_probe_undimensionable(tmp_path):
     assert shared.probe_image_dims(p) is None
 
 
-def test_history_enrichment_carries_dims(monkeypatch):
-    hist = [{"filepath": "konachan/a.png", "filename": "a.png"},
-            {"filepath": "konachan/d.png", "filename": "d.png"}]
-    monkeypatch.setattr(shared, "load_gallery", lambda: {"images": [
-        {"id": "a", "filepath": "konachan/a.png", "width": 800, "height": 600},
-        {"id": "d", "filepath": "konachan/d.png", "width": -1, "height": -1},
-    ]})
-    Rems_Dl._enrich_image_history(hist)
-    assert (hist[0]["width"], hist[0]["height"]) == (800, 600)
-    # the -1 sentinel must not leak into the payload the pill reads
-    assert "width" not in hist[1]
+def test_history_enrichment_carries_dims():
+    # the enrich reads the resident gallery's canonical-path index, so the
+    # cache (not load_gallery) is the seam — restore it after the test
+    saved = dict(shared._gallery_cache)
+    try:
+        shared._gallery_cache["data"] = {"images": [
+            {"id": "a", "filepath": "konachan/a.png", "width": 800, "height": 600},
+            {"id": "d", "filepath": "konachan/d.png", "width": -1, "height": -1},
+        ]}
+        shared._reindex_gallery_locked(shared._gallery_cache["data"])
+        hist = [{"filepath": "konachan/a.png", "filename": "a.png"},
+                {"filepath": "konachan/d.png", "filename": "d.png"}]
+        Rems_Dl._enrich_image_history(hist)
+        assert (hist[0]["width"], hist[0]["height"]) == (800, 600)
+        # the -1 sentinel must not leak into the payload the pill reads
+        assert "width" not in hist[1]
+    finally:
+        shared._gallery_cache.clear()
+        shared._gallery_cache.update(saved)

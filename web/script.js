@@ -861,11 +861,10 @@ function logToConsole(tabID, msg) {
         let rawPath = pathMatch ? pathMatch[1].trim() : "";
         let tagsMatch = raw.match(/\|TAGS\|\s*(.*?)(?:\s*\|TAGD\||$)/);
         let tagsStr = tagsMatch ? tagsMatch[1].trim() : "No tags";
-        // |DIMS| W H: the same pixel-dims pill history rows and the viewer get
+        // |DIMS| W H tail: cut before tag parsing or the last |TAGD| piece
+        // swallows "|DIMS| W H" as tag text (dims live in the viewer only)
         let dimsMatch = raw.match(/\|DIMS\|\s*(\d+)\s+(\d+)/);
-        let dimsPill = dimsMatch
-            ? ` <span class="g-tag-pill tag-dims" onclick="searchGalleryDims(${dimsMatch[1]}, ${dimsMatch[2]})">${dimsMatch[1]}&times;${dimsMatch[2]}</span>`
-            : "";
+        if (dimsMatch) raw = raw.slice(0, dimsMatch.index);
         // ponytail: TAGD carries categories — pills with true colors; else legacy flat text
         let tagdMatch = raw.match(/\|TAGD\|\s*(.*)/);
         let tagsHtml;
@@ -942,7 +941,7 @@ function logToConsole(tabID, msg) {
         </div>
         <div class="img-card-right">
         <div class="img-card-title" style="display:flex;align-items:center;gap:8px;opacity:1;padding:2px;"><span style="display:inline-flex;gap:6px;flex-shrink:0;">${logArtistBadge}</span></div>
-        <div class="img-card-tags">${tagsHtml}${dimsPill}</div>
+        <div class="img-card-tags">${tagsHtml}</div>
         ${ratingHtml}
         </div>
         `;
@@ -1145,9 +1144,16 @@ function renderWatcherTags() {
 }
 function onWatcherRatingChange() { onMultiRatingChange('watcherRatingDropdown', 'watcherGelRating'); }
 
+// one watcher panel serves every source with watcherPanel: true —
+// it manages whichever source the Notifications tab is currently showing
+function watcherSourceId() {
+    const s = notifSourceId();
+    return (NOTIF_SOURCES[s] && NOTIF_SOURCES[s].watcherPanel) ? s : "gelbooru";
+}
+
 async function loadGelWatchers() {
     try {
-        const r = await fetch("/api/watchers?source=gelbooru");
+        const r = await fetch("/api/watchers?source=" + watcherSourceId());
         const d = await r.json();
         gelWatchers = d.watchers || [];
         renderGelWatcherList();
@@ -1191,7 +1197,7 @@ function renderGelWatcherList() {
 async function saveGelWatcher() {
     if (!watcherTags.length) { showToast("Add at least one tag first", { warn: true }); return; }
     const body = {
-        source: "gelbooru",
+        source: watcherSourceId(),
         tags: watcherTags,
         ratings: (document.getElementById("watcherGelRating").value || "").split(/\s+/).filter(Boolean),
         interval_minutes: parseInt(document.getElementById("watcherInterval").value, 10) || 5,
@@ -1254,7 +1260,7 @@ async function deleteGelWatcher(id) {
 }
 
 function checkGelWatchersNow() {
-    fetch("/api/watchers/check_now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "gelbooru" }) })
+    fetch("/api/watchers/check_now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: watcherSourceId() }) })
         .then(r => r.json())
         .then(d => {
             if (d.started) showToast("Checking watchers…");
@@ -2007,7 +2013,6 @@ let _histReloadTimer = null;
 socket.on("update_history", function () {
     // ponytail: downloads fire this per file — coalesce history reloads or
     // the tab re-fetches and re-renders dozens of times per run
-    viewerMetaMisses.clear();  // a row may have landed since the viewer's fetch
     if (_histReloadTimer) return;
     _histReloadTimer = setTimeout(() => {
         _histReloadTimer = null;
@@ -2592,14 +2597,98 @@ const GEL_RATING_LABEL = { g: "Safe", s: "Sensitive", q: "Questionable", e: "NSF
 const NOTIF_SOURCES = {
     gelbooru: {
         name: "Gelbooru",
+        thumbRoute: "/api/gelbooru/notif_thumb", // hotlink-blocked: proxy it
         empty: "No watcher notifications yet - matching posts from your Gelbooru watchers will appear here.",
         toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
         flash: n => gelbooruGotoFlash(n),
-        card: (n, idx) => gelbooruNotifCard(n, idx),
+        card: (n, idx) => booruNotifCard(n, idx, "gelbooru"),
         watcherPanel: true, // watcher management lives in this source's page
     },
-    pixiv: {
-        name: "Pixiv",
+    danbooru: {
+        name: "Danbooru",
+        thumbRoute: "/api/danbooru/notif_thumb", // previews on cdn.donmai.us
+        empty: "No watcher notifications yet - matching posts from your Danbooru watchers will appear here.",
+        toast: n => `${n} new Danbooru post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("dan", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
+        card: (n, idx) => booruNotifCard(n, idx, "danbooru"),
+        watcherPanel: true, // same panel, per-source list (watcherSourceId)
+    },
+    // the other booru sources share one card; `site` is the jumpToSite key,
+    // ratings:false hides the watcher panel's rating dropdown
+    safebooru: {
+        name: "Safebooru", site: "safe",
+        empty: "No watcher notifications yet - matching posts from your Safebooru watchers will appear here.",
+        toast: n => `${n} new Safebooru post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("safe", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
+        card: (n, idx) => booruNotifCard(n, idx, "safebooru"),
+        watcherPanel: true,
+    },
+    rule34: {
+        name: "Rule34", site: "rule34", ratings: false,
+        empty: "No watcher notifications yet - matching posts from your Rule34 watchers will appear here.",
+        toast: n => `${n} new Rule34 post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("rule34", (m.tags || []).join(" "), ""); },
+        card: (n, idx) => booruNotifCard(n, idx, "rule34"),
+        watcherPanel: true,
+    },
+    konachan: {
+        name: "Konachan", site: "kona",
+        empty: "No watcher notifications yet - matching posts from your Konachan watchers will appear here.",
+        toast: n => `${n} new Konachan post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("kona", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
+        card: (n, idx) => booruNotifCard(n, idx, "konachan"),
+        watcherPanel: true,
+    },
+    yande: {
+        name: "Yande.re", site: "yande",
+        empty: "No watcher notifications yet - matching posts from your Yande.re watchers will appear here.",
+        toast: n => `${n} new Yande.re post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("yande", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
+        card: (n, idx) => booruNotifCard(n, idx, "yande"),
+        watcherPanel: true,
+    },
+    sankaku: {
+        name: "Sankaku", site: "sankaku",
+        empty: "No watcher notifications yet - matching posts from your Sankaku watchers will appear here.",
+        toast: n => `${n} new Sankaku post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("sankaku", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
+        card: (n, idx) => booruNotifCard(n, idx, "sankaku"),
+        watcherPanel: true,
+    },
+    gsbooru: {
+        name: "Gsbooru", site: "gsbooru",
+        empty: "No watcher notifications yet - matching posts from your Gsbooru watchers will appear here.",
+        toast: n => `${n} new Gsbooru post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("gsbooru", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
+        card: (n, idx) => booruNotifCard(n, idx, "gsbooru"),
+        watcherPanel: true,
+    },
+    zerochan: {
+        name: "Zerochan", site: "zero", ratings: false,
+        empty: "No watcher notifications yet - matching posts from your Zerochan watchers will appear here.",
+        toast: n => `${n} new Zerochan post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("zero", (m.tags || []).join(","), ""); },
+        card: (n, idx) => booruNotifCard(n, idx, "zerochan"),
+        watcherPanel: true,
+    },
+    eshuushuu: {
+        name: "E-shuushuu", site: "eshuushuu", ratings: false,
+        empty: "No watcher notifications yet - matching posts from your E-shuushuu watchers will appear here.",
+        toast: n => `${n} new E-shuushuu post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("eshuushuu", (m.tags || []).join(","), ""); },
+        card: (n, idx) => booruNotifCard(n, idx, "eshuushuu"),
+        watcherPanel: true,
+    },
+    anime_dl: {
+        name: "Anime DL", site: "anime_dl", ratings: false,
+        empty: "No watcher notifications yet - matching posts from your Anime DL watchers will appear here.",
+        toast: n => `${n} new Anime DL post${n === 1 ? "" : "s"}`,
+        // the tab's tag pills keep spaces inside one tag — "&&" is the pill split
+        flash: n => { const m = n.metadata || {}; jumpToSite("anime_dl", (m.tags || []).join(" && "), ""); },
+        card: (n, idx) => booruNotifCard(n, idx, "anime_dl"),
+        watcherPanel: true,
+    },
+    pixiv: {        name: "Pixiv",
         empty: "No notifications yet - new works from the artists you follow will appear here.",
         toast: n => `${n} new artwork${n === 1 ? "" : "s"} from artists you follow`,
         flash: n => pixivGotoArtist(String(n.artist_id || "").replace(/[^0-9]/g, "")),
@@ -2630,7 +2719,9 @@ function onNotifSourceChange(sel) {
 function renderNotifSourceSelect(counts) {
     const sel = document.getElementById("notifSource");
     if (!sel) return;
-    sel.innerHTML = Object.keys(NOTIF_SOURCES).map(id =>
+    sel.innerHTML = Object.keys(NOTIF_SOURCES)
+        .sort((a, b) => NOTIF_SOURCES[a].name.localeCompare(NOTIF_SOURCES[b].name))
+        .map(id =>
         `<option value="${id}">${NOTIF_SOURCES[id].name} (${(counts && counts[id]) || 0})</option>`).join("");
     setSelectValue(sel, notifSourceId());
 }
@@ -2649,7 +2740,14 @@ async function loadNotifications() {
         if (controls) controls.style.display = (src && src.controls) ? "inline-flex" : "none";
         const wpanel = document.getElementById("gelWatcherPanel");
         if (wpanel) wpanel.style.display = (src && src.watcherPanel) ? "block" : "none";
-        if (src && src.watcherPanel) loadGelWatchers();
+        if (src && src.watcherPanel) {
+            const t = document.getElementById("watcherPanelTitle");
+            if (t) t.textContent = NOTIF_SOURCES[watcherSourceId()].name + " Tag Watcher";
+            // sources without rating semantics hide the dropdown entirely
+            const rbox = document.getElementById("watcherRatingBox");
+            if (rbox) rbox.style.display = (src.ratings === false) ? "none" : "";
+            loadGelWatchers();
+        }
         const status = data.status || {};
         const iv = document.getElementById("notifInterval");
         if (iv && document.activeElement !== iv && status.interval_minutes) iv.value = status.interval_minutes;
@@ -2717,13 +2815,16 @@ function notifTagRow(m, titleClean) {
     return `<div style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 60px; overflow: hidden;">${pills}</div>`;
 }
 
-function gelbooruNotifCard(n, idx) {
+// shared card for the booru watcher sources — thumbs hotlink the site's
+// own preview (onerror falls back); a thumbRoute fetches server-side
+function booruNotifCard(n, idx, key) {
+    const src = NOTIF_SOURCES[key];
     const m = n.metadata || {};
     const titleClean = String(n.title || "").split("•").map(p => cleanTagDisplay(p.trim())).filter(Boolean).join(" • ");
-    const title = escapeHtml(titleClean || "New matching Gelbooru post");
+    const title = escapeHtml(titleClean || "New matching " + src.name + " post");
     const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
     const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
-    const thumb = n.thumb ? `/api/gelbooru/notif_thumb?url=${encodeURIComponent(n.thumb)}` : "";
+    const thumb = n.thumb ? (src.thumbRoute ? src.thumbRoute + "?url=" + encodeURIComponent(n.thumb) : n.thumb) : "";
     return notifCardShell(n, idx, `
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
                 <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
@@ -2731,8 +2832,8 @@ function gelbooruNotifCard(n, idx) {
             <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 40px;">
                 <div class="img-card-title" style="font-size: 14px; color: #fff; font-weight: bold;">${title}</div>
                 ${notifTagRow(m, titleClean)}
-                <div style="font-size: 12px; opacity: 0.75;">New matching Gelbooru post · ${rating}${date ? " · " + date : ""}</div>
-            </div>`, "Populate the Gelbooru downloader with this watcher's tags");
+                <div style="font-size: 12px; opacity: 0.75;">New matching ${escapeHtml(src.name)} post · ${rating}${date ? " · " + date : ""}</div>
+            </div>`, "Populate the " + escapeHtml(src.name) + " downloader with this watcher's tags");
 }
 
 // ponytail: newest 100 cards only — 1000 <img> cards is a DOM stall;
@@ -3222,7 +3323,9 @@ let historyTags = [];
 let favoriteTags = [];
 let imageHistory = [];
 // filenames whose imageHistory lookup missed — refetch once, not per click
-const viewerMetaMisses = new Set();
+// viewer meta generation/abort: one lookup per open, superseded opens drop theirs
+let viewerMetaGen = 0;
+let viewerMetaAbort = null;
 let historyQuery = "";
 let historyDateFilter = null;  // calendar filter {y,mo,d,h,mm}, kept out of the search box
 let galleryDateFilter = null;  // same shape, for the Gallery tab
@@ -3756,6 +3859,7 @@ const IMG_HIST_PAGE = 300;
 let imgHistTotal = Infinity;
 let imgHistParams = new URLSearchParams();
 let imgHistLoading = false;
+let imgHistInflight = null;
 function imgHistQueryParams() {
     const { terms, range } = historyQueryParts();
     const p = new URLSearchParams();
@@ -3764,19 +3868,35 @@ function imgHistQueryParams() {
     return p;
 }
 function imgHistHasMore() { return imageHistory.length < imgHistTotal; }
+let imgHistInflightParams = null;
 async function fetchImgHistPage(offset) {
-    if (imgHistLoading) return;
+    // join same-query in-flight pages; a different query must NOT adopt the
+    // stale rows — wait for the old request, then run the fresh one (an
+    // instant return let renderImageHistory re-trigger itself in a loop)
+    while (imgHistLoading && imgHistInflight) {
+        if (imgHistInflightParams === imgHistParams) return imgHistInflight;
+        await imgHistInflight;
+    }
+    // offset>0 callers mean "the next unfetched row": the wait may have
+    // loaded rows, so re-anchor to the list's current end (no dupes/gaps)
+    if (offset > 0) offset = imageHistory.length;
     imgHistLoading = true;
+    imgHistInflightParams = imgHistParams;
+    imgHistInflight = _fetchImgHistPage(offset);
+    try { await imgHistInflight; }
+    finally { imgHistLoading = false; imgHistInflight = null; imgHistInflightParams = null; }
+}
+async function _fetchImgHistPage(offset) {
     try {
         const p = new URLSearchParams(imgHistParams);
         p.set("limit", IMG_HIST_PAGE);
         p.set("offset", offset);
         const r = await fetch("/api/image_history?" + p.toString());
-        imgHistTotal = +(r.headers.get("X-Total-Count") || 0) || Infinity;
+        const h = r.headers.get("X-Total-Count");
+        imgHistTotal = h === null ? Infinity : (+h || 0);
         const rows = await r.json();
         if (Array.isArray(rows)) imageHistory = offset === 0 ? rows : imageHistory.concat(rows);
-    } catch (e) { console.error("image history page failed:", e); }
-    finally { imgHistLoading = false; }
+    } catch (e) { console.error("image history page failed:", e); imgHistTotal = Math.min(imgHistTotal, imageHistory.length); }
 }
 async function reloadImgHist() {
     imageHistoryVisible = 30;
@@ -3889,8 +4009,9 @@ function renderImageHistory() {
     }
     // local rows exhausted and the viewport still isn't full: pull the next
     // server page, then re-render to append it
-    if (imgHistHasMore() && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
-        fetchImgHistPage(imageHistory.length).then(() => renderImageHistory());
+    if (!imgHistLoading && imageHistory.length > 0 && imgHistHasMore() && scroller && scroller.clientHeight > 0 && scroller.scrollHeight <= scroller.clientHeight + 400) {
+        const before = imageHistory.length;
+        fetchImgHistPage(before).then(() => { if (imageHistory.length > before) renderImageHistory(); });
     }
 }
 
@@ -5952,7 +6073,12 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     const metaPanel = document.getElementById("galleryViewerMeta");
     if (metaPanel) {
         const emptyEntry = { filename: filename, filepath: "", site: "", tags: {} };
+        // one generation per open: a slow lookup that returns after the user
+        // already flipped to another image must not paint over it (and its
+        // fetch is aborted, so rapid flipping never piles up requests)
+        const gen = ++viewerMetaGen;
         const fillMeta = (entry) => {
+            if (gen !== viewerMetaGen) return;
             renderViewerMeta(entry, galleryPathFromUrl(viewerSingleUrl));
         };
         const lookup = () => {
@@ -5964,18 +6090,35 @@ function openViewerSingle(url, filename, list, idx, boxId) {
             const stem = (filename || "").replace(/\.[^.]+$/, "");
             return stem && stem !== filename ? imageHistory.find(i => (i.filename || "").replace(/\.[^.]+$/, "") === stem) || null : null;
         };
+        // paint now, synchronously: the previous image's tags are gone the
+        // moment this one opens — found-with-dims keeps an instant hit free
+        // of any fetch
         const found = lookup();
-        if (found) fillMeta(found);
-        else if (viewerMetaMisses.has(filename)) fillMeta(emptyEntry);
-        else {
-            // freshly downloaded: imageHistory can lag the download (update_history
-            // is coalesced) — refetch once so the tag box fills on first open
-            viewerMetaMisses.add(filename);
-            fetch("/api/image_history").then(r => r.json()).then(h => {
-                if (Array.isArray(h)) imageHistory = h;
-                fillMeta(lookup() || emptyEntry);
-            }).catch(() => fillMeta(emptyEntry));
-        }
+        if (found && Number(found.width) > 0 && Number(found.height) > 0) fillMeta(found);
+        else fillMeta(emptyEntry);
+        // targeted row fetch: an indexed SQLite read, so the tag box fills
+        // within a few ms even when the row is outside the loaded page
+        if (viewerMetaAbort) viewerMetaAbort.abort();
+        const ac = viewerMetaAbort = new AbortController();
+        const fetchRow = (name) => {
+            const p = new URLSearchParams({ filename: name });
+            const fp = galleryPathFromUrl(viewerSingleUrl);
+            if (fp) p.set("filepath", fp);
+            return fetch("/api/image_history/lookup?" + p.toString(), { signal: ac.signal })
+                .then(r => r.ok ? r.json() : null)
+                .catch(() => null);
+        };
+        fetchRow(filename).then(row => {
+            if (gen !== viewerMetaGen) return;
+            if (row && row.filename) { fillMeta(row); return; }
+            // JXL twin: the row was renamed after the card was made
+            const stem = (filename || "").replace(/\.[^.]+$/, "");
+            if (!stem || stem === filename) return;
+            fetchRow(stem).then(row2 => {
+                if (gen !== viewerMetaGen) return;
+                if (row2 && row2.filename) fillMeta(row2);
+            });
+        });
     }
     viewer.style.display = 'flex';
     updateViewerNav();

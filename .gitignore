@@ -160,3 +160,5 @@ database/x_cookies_import.txt
 database/planning_list.json
 database/notifications.json
 database/watchers.json
+database/rems_access_token
+database/database/

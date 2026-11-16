@@ -807,6 +807,30 @@ class GalleryStore:
             rows = [d for d in rows if _ok(d)]
         return rows[offset:offset + limit], len(rows)
 
+    def history_get(self, filename, filepath=None):
+        """One row by identity — exact filepath first, else newest filename
+        match. The viewer's tag box calls this per opened image instead of
+        paging/refetching the whole history."""
+        with self._lock:
+            conn = self._connect()
+            sel = ("SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                   "FROM image_history ")
+            row = None
+            if filepath:
+                row = conn.execute(sel + "WHERE filepath = ? ORDER BY seq DESC LIMIT 1",
+                                   (filepath,)).fetchone()
+            if row is None and filename:
+                row = conn.execute(sel + "WHERE filename = ? ORDER BY seq DESC LIMIT 1",
+                                   (filename,)).fetchone()
+            if row is None:
+                return None
+            d = dict(row)
+            try:
+                d["tags"] = json.loads(d.get("tags") or "{}")
+            except Exception:
+                d["tags"] = {}
+            return d
+
     def history_insert(self, entry):
         with self._lock:
             conn = self._connect()
