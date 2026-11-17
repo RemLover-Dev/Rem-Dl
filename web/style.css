@@ -873,6 +873,9 @@ select option:hover, select option:checked { background: var(--title-color); col
 #galleryGrid {
     flex: 1;
     overflow-y: auto;
+    /* a grid of 1fr tracks never needs horizontal scrolling — an empty
+     * startup grid showed a stray horizontal scrollbar track as a line */
+    overflow-x: hidden;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 8px;
