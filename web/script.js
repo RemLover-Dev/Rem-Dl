@@ -2721,8 +2721,11 @@ function renderNotifSourceSelect(counts) {
     if (!sel) return;
     sel.innerHTML = Object.keys(NOTIF_SOURCES)
         .sort((a, b) => NOTIF_SOURCES[a].name.localeCompare(NOTIF_SOURCES[b].name))
-        .map(id =>
-        `<option value="${id}">${NOTIF_SOURCES[id].name} (${(counts && counts[id]) || 0})</option>`).join("");
+        .map(id => {
+            const c = (counts && counts[id]) || 0;
+            // lit like the tab's notif-dot; native <select> options can't take spans
+            return `<option value="${id}"${c ? ' style="color:#ff4757;"' : ""}>${c ? "● " : ""}${NOTIF_SOURCES[id].name} (${c})</option>`;
+        }).join("");
     setSelectValue(sel, notifSourceId());
 }
 

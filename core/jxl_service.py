@@ -186,6 +186,7 @@ class JxlService:
     def allowed_path(self, value):
         if not isinstance(value, str) or not value.strip() or '\x00' in value:
             raise ValueError('Choose an image or folder first')
+        # codeql[py/path-injection] resolved then immediately constrained to home / master / picker grants before return
         path = Path(value).expanduser().resolve(strict=True)
         roots = [Path.home().resolve(), Path(self.master_folder()).resolve()]
         with self.lock:
