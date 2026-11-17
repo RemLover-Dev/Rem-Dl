@@ -3531,9 +3531,9 @@ function renderHistoryPicker() {
         <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
         <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
             <span style="opacity: .7;">Time</span>
-            <input type="text" value="${esc(s.hi)}" onchange="hpSetHour(this.value)" style="${selStyle}">
+            <input type="text" value="${esc(s.hi)}" oninput="hpLiveHour(this)" onchange="hpSetHour(this.value)" style="${selStyle}">
             <span style="opacity: .7;">:</span>
-            <input type="text" value="${esc(s.mi)}" onchange="hpSetMin(this.value)" style="${selStyle}">
+            <input type="text" value="${esc(s.mi)}" oninput="hpLiveMin(this)" onchange="hpSetMin(this.value)" style="${selStyle}">
         </div>
         <div style=" display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px;">
             ${active ? `<button onclick="hpClear()" style="background: transparent; color: inherit; border: 1px solid var(--border-color); border-radius: 5px; padding: 5px 12px; font-size: 12px; cursor: pointer;">Clear</button>` : ""}
@@ -3556,10 +3556,27 @@ function hpPickDay(d) {
     renderHistoryPicker();
 }
 function hpSetHour(v) {
-    hp.hi = v;
+    hp.hi = _clampClock(v, 23, false);
 }
 function hpSetMin(v) {
-    hp.mi = v;
+    hp.mi = _clampClock(v, 59, true);
+}
+function _clampClock(v, max, wrap) {
+    let n = parseInt(String(v).replace(/\D/g, ""), 10);
+    if (isNaN(n)) return "";
+    if (wrap && n > max) n %= 60;  // 60 is really just 00
+    else if (n > max) n = max;
+    return String(n).padStart(2, "0");
+}
+// live typing: clamp in place (no re-render, focus stays); the change event
+// then commits the normalized string via hpSetHour/hpSetMin
+function hpLiveHour(input) {
+    hp.hi = _clampClock(input.value, 23, false);
+    if (hp.hi !== input.value) input.value = hp.hi;
+}
+function hpLiveMin(input) {
+    hp.mi = _clampClock(input.value, 59, true);
+    if (hp.mi !== input.value) input.value = hp.mi;
 }
 function hpApply() {
     const s = hp;
