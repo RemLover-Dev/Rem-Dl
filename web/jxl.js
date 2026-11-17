@@ -34,6 +34,10 @@
     function render(next) {
         job = next;
         controls();
+        // dot on the Settings tab while a conversion runs — poll keeps going
+        // while the job is active even from another tab, so this stays live
+        const dot = $('jxlDot');
+        if (dot) dot.style.display = active(job) ? 'inline-block' : 'none';
         const done = (job.completed || 0) + (job.failed || 0);
         $('jxlProgress').max = Math.max(job.total || 1, 1);
         $('jxlProgress').value = done;
@@ -115,6 +119,7 @@
     const options = $('Options');
     new MutationObserver(() => {if (options.style.display !== 'none') refresh();}).observe(options, {attributes:true, attributeFilter:['style']});
     if (options.style.display !== 'none') refresh();
+    else refresh(); // one status fetch at load: a job active since before page load lights the dot
 
     const comparison = (function () {
         const modal = $('jxlCompareModal'), canvas = $('jxlCompareCanvas'), context = canvas.getContext('2d');
