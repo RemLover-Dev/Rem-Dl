@@ -3486,7 +3486,8 @@ function openHistoryPicker(btn) {
         target,
         vy: f ? f.y : now.getFullYear(),
         vm: f ? f.mo : now.getMonth(),
-        sel: f ? { y: f.y, mo: f.mo, d: f.d } : null,
+        // open on today's date pre-selected — no filter applied until Search
+        sel: f ? { y: f.y, mo: f.mo, d: f.d } : { y: now.getFullYear(), mo: now.getMonth(), d: now.getDate() },
         hi: f && f.h != null ? String(f.h).padStart(2, "0") : "",
         mi: f && f.mm != null ? String(f.mm).padStart(2, "0") : "",
         view: null, // null | 'months' | 'years' — header-label pick lists
