@@ -4505,6 +4505,14 @@ function applyGalleryLayout(l) {
     const grid = document.getElementById("galleryGrid");
     if (!grid || !l) return;
     galleryCols = l.cols;
+    // no images = empty state up: its row must stay content-sized. The early
+    // call from loadGallery runs while the empty state is still displayed and
+    // would re-apply the tile height, re-cropping the icon until the fetch
+    // returns (renderGallery removes it again in the empty branch).
+    if (!galleryState.images.length) {
+        grid.style.removeProperty('--gal-row-h');
+        return;
+    }
     const columns = `repeat(${l.cols}, minmax(0, 1fr))`;
     if (grid.style.gridTemplateColumns !== columns) grid.style.gridTemplateColumns = columns;
     if (l.rowH) {
