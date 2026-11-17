@@ -4232,6 +4232,26 @@ def _scan_and_merge_gallery():
                                 if file_sites and existing.get("site") != shared.normalize_site(file_sites[0]):
                                     existing["site"] = shared.normalize_site(file_sites[0])
                                 count_fixed += 1
+                        elif not existing.get("site"):
+                            # legacy row whose tags were imported back when
+                            # folder names counted as sites: its embedded site
+                            # was read but never written, so the row is
+                            # invisible under every site filter. One metadata
+                            # re-read repairs attribution; a file that names
+                            # no site marks itself attempted (negative
+                            # meta_mtime) so the rescan doesn't pay for it
+                            # again until the file changes.
+                            repaired = existing.get("meta_mtime")
+                            if repaired is None or repaired >= 0 or -repaired != mtime:
+                                file_sites, _ftags = _tags_from_file(full)
+                                for s in file_sites:
+                                    norm = shared.normalize_site(s)
+                                    if norm in _CANON:
+                                        existing["site"] = norm
+                                        count_fixed += 1
+                                        break
+                                if not existing.get("site"):
+                                    existing["meta_mtime"] = -mtime
                     continue
 
                 tag = parts[1] if len(parts) > 2 else ""
