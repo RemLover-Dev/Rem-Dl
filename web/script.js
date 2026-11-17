@@ -4680,7 +4680,7 @@ function warmGalleryThumbnails(images) {
             galleryThumbCache.delete(url); galleryThumbCache.set(url, hit);
             continue;
         }
-        if (galleryThumbQueue.length >= (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 128)) break;
+        if (galleryThumbQueue.length >= (typeof lightweightUI === 'function' && lightweightUI() ? 32 : 64)) break;
         galleryThumbQueued.add(url);
         galleryThumbQueue.push(url);
     }
@@ -4730,7 +4730,9 @@ function pumpGalleryThumbnails() {    if (document.hidden) return;
             if (ok) {
                 galleryThumbCache.set(url, image);
                 _thumbRetryN.delete(url);  // retry bookkeeping must not outlive success
-                while (galleryThumbCache.size > (typeof lightweightUI === 'function' && lightweightUI() ? 64 : 96)) galleryThumbCache.delete(galleryThumbCache.keys().next().value);
+                // decoded bitmaps are the RAM driver while paging — a smaller
+                // ring keeps the speculative pre-decode from holding ~35MB
+                while (galleryThumbCache.size > (typeof lightweightUI === 'function' && lightweightUI() ? 32 : 48)) galleryThumbCache.delete(galleryThumbCache.keys().next().value);
             } else if (_viewerLease && !_thumbDeferred.has(url)) {
                 _thumbDeferred.add(url);  // 503 while viewing: try again on close
             } else if (!_viewerLease && (!_thumbRetryN.has(url) || _thumbRetryN.get(url) < 8)) {
@@ -5101,7 +5103,7 @@ function renderGallery() {
         // decoding a raw path corrupts filenames that literally contain %XX
         // (gelbooru saves URL-encoded titles) — hover then 404s and never plays
         const fullU = fullImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename);
-        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="${galleryPagingFast ? 'lazy' : 'eager'}" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
+        const imgTag = `<img src="${galleryPagingFast ? 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' : src}" loading="lazy" decoding="async" onerror="this.onerror=null;this.style.display='none'">`;
         const playOverlay = isVideo ? '<span class="gallery-card-play"></span>'  : '';
         const hoverKind = isVideo ? 'video' : (ext === 'gif' ? 'gif' : '');
         const hoverU = hoverKind === 'video' ? previewImageUrl(fp.split('/').map(encodeURIComponent).join('/'), img.filename) : fullU;
