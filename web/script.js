@@ -4980,6 +4980,7 @@ function renderGallery() {
         // icon). Unsized rows fit the content; applyGalleryLayout restores
         // the height on the next image render.
         grid.style.removeProperty('--gal-row-h');
+        grid._galleryMarkup = null;
         grid.innerHTML = `<div class="gallery-empty-state" style="grid-column: 1 / -1; width: 100%; padding: 60px 20px; text-align: center; color: var(--text-color); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
             <div style="font-size: 36px; opacity: 0.6;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg></div>
             <div style="font-size: 16px; font-weight: 600; opacity: 0.95;">${safeHint}</div>
