@@ -762,7 +762,7 @@ function renderConvertingBar(worker, done, total, current) {
     <span>${label}</span>
     <span id="cvText_${key}">${pct}%</span>
     </div>
-    <div class="progress-bar-bg${current ? ' cv-indet' : ''}"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
+    <div class="progress-bar-bg${current && pct === 0 ? ' cv-indet' : ''}"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
     `;
     container.style.display = "block";
     // the encoder is one blocking call with no intra-encode progress — tick
