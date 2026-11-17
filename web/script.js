@@ -3468,6 +3468,7 @@ function historyPickerClose() {
     hp.el.remove();
     document.removeEventListener("mousedown", hp.onDoc, true);
     document.removeEventListener("keydown", hp.onKey, true);
+    window.removeEventListener("resize", hp.onResize);
     hp = null;
 }
 function openHistoryPicker(btn) {
@@ -3477,9 +3478,13 @@ function openHistoryPicker(btn) {
     const el = document.createElement("div");
     el.style.cssText = "position: fixed; z-index: 9999; width: 232px; padding: 10px; background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); color: var(--text-color); font-size: 13px;";
     document.body.appendChild(el);
-    const r = btn.getBoundingClientRect();
-    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
-    el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - 320)) + "px";
+    // anchor to the button; re-run on resize so maximizing mid-open keeps it placed
+    const place = () => {
+        const r = btn.getBoundingClientRect();
+        el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 248)) + "px";
+        el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - el.offsetHeight - 8)) + "px";
+    };
+    place();
     // reopen on this target's current filter (or today)
     const f = target === "gallery" ? galleryDateFilter : historyDateFilter;
     hp = {
@@ -3491,16 +3496,17 @@ function openHistoryPicker(btn) {
         hi: f && f.h != null ? String(f.h).padStart(2, "0") : "",
         mi: f && f.mm != null ? String(f.mm).padStart(2, "0") : "",
         view: null, // null | 'months' | 'years' — header-label pick lists
-        btn, el, onDoc: null, onKey: null,
+        btn, el, onDoc: null, onKey: null, onResize: null,
     };
     hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
     hp.onKey = (e) => { if (e.key === "Escape") historyPickerClose(); };
+    hp.onResize = place;
     document.addEventListener("mousedown", hp.onDoc, true);
     document.addEventListener("keydown", hp.onKey, true);
+    window.addEventListener("resize", hp.onResize);
     renderHistoryPicker();
-    // measured height > the 320 assumed above — re-clamp with the real one so
-    // the time row and footer never get cut off at the viewport edge
-    el.style.top = Math.min(r.bottom + 6, Math.max(8, window.innerHeight - el.offsetHeight - 8)) + "px";
+    // re-clamp with the real measured height (renderHistoryPicker sized el)
+    place();
 }
 function renderHistoryPicker() {
     const s = hp;
