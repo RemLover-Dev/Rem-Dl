@@ -3489,6 +3489,7 @@ function openHistoryPicker(btn) {
         sel: f ? { y: f.y, mo: f.mo, d: f.d } : null,
         hi: f && f.h != null ? String(f.h).padStart(2, "0") : "",
         mi: f && f.mm != null ? String(f.mm).padStart(2, "0") : "",
+        view: null, // null | 'months' | 'years' — header-label pick lists
         btn, el, onDoc: null, onKey: null,
     };
     hp.onDoc = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) historyPickerClose(); };
@@ -3507,28 +3508,39 @@ function renderHistoryPicker() {
     const n = new Date(s.vy, s.vm + 1, 0).getDate();
     const now = new Date();
     let days = "";
+    const isFutureDay = (d) => s.vy > now.getFullYear() || (s.vy === now.getFullYear() && (s.vm > now.getMonth() || (s.vm === now.getMonth() && d > now.getDate())));
     for (let i = 0; i < first; i++) days += "<span></span>";
     for (let d = 1; d <= n; d++) {
         const sel = s.sel && s.sel.y === s.vy && s.sel.mo === s.vm && s.sel.d === d;
         const today = d === now.getDate() && s.vm === now.getMonth() && s.vy === now.getFullYear();
-        days += `<span onclick="hpPickDay(${d})" style="text-align:center; padding:4px 0; border-radius:4px; cursor:pointer; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}">${d}</span>`;
+        const future = isFutureDay(d);
+        days += `<span ${future ? "" : `onclick="hpPickDay(${d})"`} style="text-align:center; padding:4px 0; border-radius:4px; cursor:${future ? "default" : "pointer"}; ${sel ? "background: var(--accent-color); color: #fff; font-weight: 600;" : today ? "box-shadow: inset 0 0 0 1px var(--accent-color);" : ""}${future ? " opacity:.3;" : ""}">${d}</span>`;
     }
     const esc = (x) => String(x).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
     const navBtn = "background: transparent; border: 1px solid var(--border-color); color: inherit; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;";
     const selStyle = "appearance: none; -webkit-appearance: none; min-width: 0; background: var(--input-bg); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 4px; padding: 3px 2px; font-size: 12px; width: 44px; text-align: center; flex: none;";
+    let body = `<div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: 11px; opacity: .6; margin-bottom: 4px;">${HP_DAYS.map(x => `<span>${x}</span>`).join("")}</div><div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>`;
+    const pickCell = (label, cls, onpick, cur, future) =>
+        `<span ${future ? "" : `onclick="${onpick}"`} style="text-align:center; padding:6px 0; border-radius:4px; font-size:11px; cursor:${future ? "default" : "pointer"}; ${cur ? "background: var(--accent-color); color: #fff; font-weight: 600;" : future ? "opacity:.3;" : ""}">${label}</span>`;
+    if (s.view === "months") {
+        body = `<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;">` +
+            HP_MONTHS.map((name, m) => pickCell(name, null, `hpPickMonth(${m})`, m === s.vm, s.vy === now.getFullYear() && m > now.getMonth())).join("") + `</div>`;
+    } else if (s.view === "years") {
+        body = `<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;">` +
+            Array.from({ length: 16 }, (_, i) => { const y = s.vy - 8 + i; return pickCell(y, null, `hpPickYear(${y})`, y === s.vy, y > now.getFullYear()); }).join("") + `</div>`;
+    }
     s.el.innerHTML = `
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
             <button onclick="hpNavYear(-1)" style="${navBtn}">&laquo;</button>
-            <b style="font-weight: 600;">${s.vy}</b>
+            <b onclick="hpToggleView('years')" style="font-weight: 600; cursor: pointer;">${s.vy}</b>
             <button onclick="hpNavYear(1)" style="${navBtn}">&raquo;</button>
         </div>
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
             <button onclick="hpNav(-1)" style="${navBtn}">&lsaquo;</button>
-            <span style="font-weight: 600;">${HP_MONTHS[s.vm]}</span>
+            <span onclick="hpToggleView('months')" style="font-weight: 600; cursor: pointer;">${HP_MONTHS[s.vm]}</span>
             <button onclick="hpNav(1)" style="${navBtn}">&rsaquo;</button>
         </div>
-        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-size: 11px; opacity: .6; margin-bottom: 4px;">${HP_DAYS.map(x => `<span>${x}</span>`).join("")}</div>
-        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">${days}</div>
+        ${body}
         <div style="display: flex; align-items: center; gap: 6px; margin-top: 10px;">
             <span style="opacity: .7;">Time</span>
             <input type="text" value="${esc(s.hi)}" oninput="hpLiveHour(this)" onchange="hpSetHour(this.value)" style="${selStyle}">
@@ -3541,18 +3553,47 @@ function renderHistoryPicker() {
         </div>`;
 }
 function hpNav(dir) {
-    const s = hp;
+    const s = hp, now = new Date();
+    // never navigate into the future — no future month/year is pickable
+    if (dir > 0 && (s.vm > now.getMonth() || s.vy > now.getFullYear())) return;
+    if (dir > 0 && s.vy === now.getFullYear() && s.vm === now.getMonth()) return;
     s.vm += dir;
     if (s.vm < 0) { s.vm = 11; s.vy--; }
     if (s.vm > 11) { s.vm = 0; s.vy++; }
+    if (s.vy === now.getFullYear() && s.vm > now.getMonth()) s.vm = now.getMonth();
     renderHistoryPicker();
 }
 function hpNavYear(dir) {
+    const now = new Date();
+    if (dir > 0 && hp.vy >= now.getFullYear()) return;
     hp.vy += dir;
+    if (hp.vy === now.getFullYear() && hp.vm > now.getMonth()) hp.vm = now.getMonth();
     renderHistoryPicker();
 }
+function hpToggleView(v) {
+    hp.view = hp.view === v ? null : v;
+    renderHistoryPicker();
+}
+function hpIsFuture(y, mo, d) {
+    const now = new Date();
+    return y > now.getFullYear() || (y === now.getFullYear() && (mo > now.getMonth() || (mo === now.getMonth() && d > now.getDate())));
+}
 function hpPickDay(d) {
+    if (hpIsFuture(hp.vy, hp.vm, d)) return;
     hp.sel = { y: hp.vy, mo: hp.vm, d };
+    hp.view = null;
+    renderHistoryPicker();
+}
+function hpPickMonth(m) {
+    if (m === hp.vm) { hp.view = null; renderHistoryPicker(); return; }
+    hp.vm = m;
+    hp.view = null;
+    renderHistoryPicker();
+}
+function hpPickYear(y) {
+    if (y === hp.vy) { hp.view = null; renderHistoryPicker(); return; }
+    hp.vy = y;
+    hp.view = null;
     renderHistoryPicker();
 }
 function hpSetHour(v) {
@@ -3568,15 +3609,29 @@ function _clampClock(v, max, wrap) {
     else if (n > max) n = max;
     return String(n).padStart(2, "0");
 }
+// a time on today's date can't be in the future — clamp to right now
+function hpClampToday(h, m) {
+    const now = new Date(), s = hp && hp.sel;
+    if (h == null || !s || s.y !== now.getFullYear() || s.mo !== now.getMonth() || s.d !== now.getDate()) return [h, m];
+    const nh = now.getHours(), nm = now.getMinutes();
+    if (h > nh) return [nh, nm];
+    if (h === nh && m != null && m > nm) m = nm;
+    return [h, m];
+}
 // live typing: clamp in place (no re-render, focus stays); the change event
 // then commits the normalized string via hpSetHour/hpSetMin
 function hpLiveHour(input) {
-    hp.hi = _clampClock(input.value, 23, false);
-    if (hp.hi !== input.value) input.value = hp.hi;
+    const n = _clampClock(input.value, 23, false);
+    const out = n === "" ? input.value.replace(/\D/g, "").slice(0, 2) : String(hpClampToday(parseInt(n, 10), null)[0]);
+    if (out !== input.value) input.value = out;
+    hp.hi = out;
 }
 function hpLiveMin(input) {
-    hp.mi = _clampClock(input.value, 59, true);
-    if (hp.mi !== input.value) input.value = hp.mi;
+    const n = _clampClock(input.value, 59, true);
+    const h = hp.hi === "" ? null : parseInt(hp.hi, 10);
+    const out = n === "" ? input.value.replace(/\D/g, "").slice(0, 2) : String(hpClampToday(h, parseInt(n, 10))[1]);
+    if (out !== input.value) input.value = out;
+    hp.mi = out;
 }
 function hpApply() {
     const s = hp;
@@ -3587,6 +3642,7 @@ function hpApply() {
         f.h = +hi;
         // anything but plain digits in the minute box = filter by hour only
         if (/^\d{1,2}$/.test(mi) && +mi <= 59) f.mm = +mi;
+        [f.h, f.mm] = hpClampToday(f.h, f.mm);
     }
     if (s.target === "gallery") {
         galleryDateFilter = f;
