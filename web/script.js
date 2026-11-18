@@ -2724,7 +2724,7 @@ function renderNotifSourceSelect(counts) {
         .map(id => {
             const c = (counts && counts[id]) || 0;
             // lit like the tab's notif-dot; native <select> options can't take spans
-            return `<option value="${id}"${c ? ' style="color:#ff4757;"' : ""}>${c ? "● " : ""}${NOTIF_SOURCES[id].name} (${c})</option>`;
+            return `<option value="${id}"${c ? ' style="color:#ff4757;"' : ""}>${NOTIF_SOURCES[id].name} (${c})${c ? " ●" : ""}</option>`;
         }).join("");
     setSelectValue(sel, notifSourceId());
 }
