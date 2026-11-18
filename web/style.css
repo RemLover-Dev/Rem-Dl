@@ -1438,7 +1438,7 @@ body { transition: color 0.3s ease; }
 .tag-eyes:hover { background: #fbbf24; color: #000; box-shadow: 0 0 0 1px #fbbf24; }
 /* pixel dimensions pill — same click affordance as the other pills */
 .tag-dims { background: rgba(255, 255, 255, 0.04); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); color: #9a9aa5; }
-.tag-dims:hover { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
+.tag-dims:hover { background: #d8d8de; color: #000; box-shadow: 0 0 0 1px #d8d8de; }
 
 .g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-flex; align-items: center; line-height: 1.4; }
 .gallery-viewer-meta:hover .g-expand-hint { display: none; }
