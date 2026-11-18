@@ -1440,6 +1440,21 @@ body { transition: color 0.3s ease; }
 .tag-dims { background: rgba(255, 255, 255, 0.04); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); color: #9a9aa5; }
 .tag-dims:hover { background: #d8d8de; color: #000; box-shadow: 0 0 0 1px #d8d8de; }
 
+/* Right-click menus — file-manager style: flat list, submenus cascade right */
+.ctx-menu { position: fixed; z-index: 5000; min-width: 170px; max-width: 340px; background: #141824; border-radius: 6px; padding: 4px 0; font-size: 13px; color: #ccc; user-select: none; box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25), 0 12px 30px rgba(0, 0, 0, 0.5); }
+.ctx-item { display: flex; align-items: center; gap: 10px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.ctx-item > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.ctx-item:hover { background: rgba(45, 212, 191, 0.12); color: #fff; }
+.ctx-item.has-sub:hover { background: rgba(45, 212, 191, 0.12); color: #fff; }
+.ctx-item.disabled { opacity: 0.4; cursor: default; }
+.ctx-item.disabled:hover { background: transparent; color: #ccc; }
+.ctx-arrow { margin-left: auto; opacity: 0.7; }
+.ctx-sep { height: 1px; margin: 4px 0; background: rgba(255, 255, 255, 0.08); }
+[data-theme="light"] .ctx-menu { background: rgba(255, 255, 255, 0.97); color: #1a1a2e; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 12px 30px rgba(0, 0, 0, 0.18); }
+[data-theme="light"] .ctx-item:hover { background: rgba(0, 210, 211, 0.15); color: #000; }
+[data-theme="light"] .ctx-item.disabled:hover { background: transparent; color: #1a1a2e; }
+[data-theme="light"] .ctx-sep { background: rgba(0, 0, 0, 0.1); }
+
 .g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-flex; align-items: center; line-height: 1.4; }
 .gallery-viewer-meta:hover .g-expand-hint { display: none; }
 @keyframes gPulse { 0% {opacity: 0.4;} 50% {opacity: 1;} 100% {opacity: 0.4;} }

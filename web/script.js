@@ -261,9 +261,10 @@ function heartIcon(filled) {
 
 // viewer/log/history tag pill -> gallery search: clean form, quoted (exact),
 // trailing comma so more terms can follow; user lands on the Gallery tab
-function searchGalleryTag(raw) {
+function searchGalleryTag(raw, exact = true) {
     const s = document.getElementById('gallerySearch');
-    if (s) s.value = '"' + cleanTagDisplay(raw) + '",';
+    const t = cleanTagDisplay(raw);
+    if (s) s.value = exact ? '"' + t + '",' : t;
     openTab('Gallery');
     closeGalleryViewer();
     loadGallery(1);
@@ -292,10 +293,11 @@ function renderCategorizedTags(tagsInput, clickable, img) {
             seenTags.add(dedupeKey);
             let cls = getTagCategoryClass(cat);
             let safeT = escJs(t);
+            const ctxAttr = ` oncontextmenu="tagContextMenu(event,'${safeT}','${escJs((img && img.site) || "")}')"`;
             if (clickable) {
-                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')">${escapeHtml(display)}</span>`;
+                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')"${ctxAttr}>${escapeHtml(display)}</span>`;
             } else {
-                html += `<span class="g-tag-pill ${cls}">${escapeHtml(display)}</span>`;
+                html += `<span class="g-tag-pill ${cls}"${ctxAttr}>${escapeHtml(display)}</span>`;
             }
         });
     });
@@ -880,12 +882,12 @@ function logToConsole(tabID, msg) {
             });
             let artistNames = cats.artist || [];
             delete cats.artist;
-            var logArtistBadge = artistNames.map(a => `<span onclick="searchGalleryTag('${escJs(a)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
+            var logArtistBadge = artistNames.map(a => `<span onclick="searchGalleryTag('${escJs(a)}')" oncontextmenu="tagContextMenu(event,'${escJs(a)}','${escJs(tabID)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
             // ponytail: log cards show plain tag text — only the artist keeps a colored badge
-            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>`;
+            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')" oncontextmenu="tagContextMenu(event,'${escJs(t)}','${escJs(tabID)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>`;
         } else {
             var logArtistBadge = "";
-            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
+            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')" oncontextmenu="tagContextMenu(event,'${escJs(t)}','${escJs(tabID)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
         }
         // filenames may contain spaces (anime_dl: "Tag Name_123.jpg") — the
         // token after "Downloaded" truncates there and the viewer's tag-box
@@ -3759,7 +3761,7 @@ function renderHistory() {
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
                 timeSpan = `<span class="hist-time" title="${when}" style="font-size: 11px; color: var(--text-color); margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div class="hist-actions" style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="queueHistoryEntry('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" oncontextmenu="tagContextMenu(event,'${escJs(item.tag)}','${escJs(item.site)}')" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div class="hist-actions" style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="queueHistoryEntry('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -4035,7 +4037,7 @@ function historyRowHtml(img) {
     <button onclick="removeImageHistory(${Number(img.history_id) || 0})" class="img-card-btn" title="Delete from History" style="position: absolute; top: 10px; right: 10px; background: rgba(255,107,107,0.2); border: 1px solid transparent; box-shadow: 0 0 0 1px #ff6b6b; color: #ff6b6b; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; font-weight: bold; transition: 0.2s; line-height: 1;">×</button>
     <button onclick="toggleImageHistoryFav('${escJs(img.filepath || "")}', this)" class="img-card-btn" title="Favourite" style="position: absolute; top: 10px; right: 42px; background: rgba(0,0,0,0.55); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,64,128,0.5); color: #ff4080; border-radius: 50%; width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; cursor: pointer; z-index: 5; font-size: 14px; transition: 0.2s; line-height: 1;">${heartIcon(img.favourite)}</button>
     <div class="img-card-left"${hHoverAttr} style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
-    <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">${hHoverKind === 'video' ? '<span class="gallery-card-play"></span>' : ''}
+    <img src="${thumbUrl}" loading="lazy" decoding="async" data-fb="${fallbackSrc}" data-ofi="${safeFp}" onerror="this.onerror=null; this.src=this.dataset.fb;" oncontextmenu="historyImageContextMenu(event,'${safeFp}')" onclick="openFullImage('${safeFp}', '${safeFn}', this)" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px; cursor: pointer;">${hHoverKind === 'video' ? '<span class="gallery-card-play"></span>' : ''}
     </div>
     <div class="img-card-right" style="justify-content: flex-start; gap: 8px; flex: 1; padding-right: 25px;">
     <div class="img-card-title" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size: 14px; color: #fff; font-weight: bold; padding: 2px; opacity:1;">${artistHtml} ${siteBadge} ${ratingHtml}</div>
@@ -5650,11 +5652,192 @@ function setGallerySelected(id, on) {
 
 function toggleGallerySelected(id) { setGallerySelected(id, !gallerySelected.has(id)); }
 
-function galleryCardContextmenu(e, id) {
+// ---- right-click menus ---------------------------------------------------
+// one engine: a menu is a list of {label, run} leaves, {label, items} submenus
+// and {sep:true}, so nested menus come free
+const CTX_CATEGORY_LABELS = {artist:"Artist", character:"Character", copyright:"Copyright", metadata:"Metadata", outfit:"Outfit", group:"Group", hair:"Hair", eyes:"Eyes", mangaka:"Mangaka", game:"Game", theme:"Theme", source:"Source", meta:"Meta", vtuber:"VTuber", series:"Series", studio:"Studio", tag:"General tags"};
+// preset-only workers (neko/nekosapi/nekos_life) take no free-text tag
+const QUEUE_SITE_KEYS = ["dan", "gelbooru", "gsbooru", "kona", "yande", "safe", "sankaku", "rule34", "zero", "pixiv", "pinterest", "x", "anime_dl", "eshuushuu", "nekosia"];
+
+let _ctxMenus = [];
+function closeContextMenu() {
+    _ctxMenus.forEach(m => m.remove());
+    _ctxMenus = [];
+}
+function _ctxCloseDeeper(depth) {
+    _ctxMenus = _ctxMenus.filter(m => {
+        if (m._depth > depth) { m.remove(); return false; }
+        return true;
+    });
+}
+function _buildContextMenu(items, depth) {
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu' + (depth ? ' ctx-sub' : '');
+    menu._depth = depth;
+    items.forEach(it => {
+        if (it.sep) {
+            const sep = document.createElement('div');
+            sep.className = 'ctx-sep';
+            menu.appendChild(sep);
+            return;
+        }
+        const row = document.createElement('div');
+        row.className = 'ctx-item' + (it.disabled ? ' disabled' : '') + (it.items ? ' has-sub' : '');
+        row.innerHTML = `<span>${escapeHtml(it.label)}</span>` + (it.items ? '<span class="ctx-arrow">›</span>' : '');
+        if (!it.disabled && it.items) {
+            row.addEventListener('mouseenter', () => {
+                _ctxCloseDeeper(depth);
+                const sub = _buildContextMenu(it.items, depth + 1);
+                sub.style.left = '0px'; sub.style.top = '0px';
+                document.body.appendChild(sub);
+                const r = row.getBoundingClientRect();
+                const sr = sub.getBoundingClientRect();
+                let x = r.right + 2, y = r.top - 4;
+                if (x + sr.width > window.innerWidth - 8) x = Math.max(8, r.left - sr.width - 2);
+                if (y + sr.height > window.innerHeight - 8) y = Math.max(8, window.innerHeight - sr.height - 8);
+                sub.style.left = x + 'px';
+                sub.style.top = y + 'px';
+                _ctxMenus.push(sub);
+            });
+        } else if (!it.disabled && it.run) {
+            row.addEventListener('mouseenter', () => _ctxCloseDeeper(depth));
+            row.addEventListener('click', ev => {
+                ev.stopPropagation();
+                closeContextMenu();
+                Promise.resolve().then(it.run).catch(err => console.error("context menu action failed:", err));
+            });
+        }
+        menu.appendChild(row);
+    });
+    return menu;
+}
+function showContextMenu(e, items) {
     e.preventDefault();
-    if (gallerySelectMode) { openGalleryViewer(id, true); return; }
-    gallerySelectMode = true;
-    toggleGallerySelected(id);
+    e.stopPropagation();
+    closeContextMenu();
+    const menu = _buildContextMenu(items, 0);
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    document.body.appendChild(menu);
+    const r = menu.getBoundingClientRect();
+    let x = e.clientX, y = e.clientY;
+    if (x + r.width > window.innerWidth - 8) x = Math.max(8, window.innerWidth - r.width - 8);
+    if (y + r.height > window.innerHeight - 8) y = Math.max(8, window.innerHeight - r.height - 8);
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    _ctxMenus = [menu];
+}
+document.addEventListener('mousedown', e => {
+    if (_ctxMenus.length && !(e.target.closest && e.target.closest('.ctx-menu'))) closeContextMenu();
+}, true);
+// wheel, not scroll: background panes (log consoles, gallery autoscroll) fire
+// scroll events on their own and would tear the menu down mid-hover
+document.addEventListener('wheel', () => closeContextMenu(), { capture: true, passive: true });
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && _ctxMenus.length) { e.preventDefault(); closeContextMenu(); }
+}, true);
+
+async function copyTextToClipboard(text, okMsg) {
+    if (!text) { showToast("Nothing to copy", { warn: true, icon: WARN_ICON }); return; }
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (err) {
+        const holder = document.createElement('textarea');
+        holder.value = text;
+        holder.style.position = 'fixed';
+        holder.style.opacity = '0';
+        document.body.appendChild(holder);
+        holder.select();
+        const ok = document.execCommand('copy');
+        holder.remove();
+        if (!ok) { showToast("Copy failed - browser refused clipboard access", { warn: true, icon: WARN_ICON }); return; }
+    }
+    showToast(okMsg || "Copied to clipboard", { icon: COPY_ICON });
+}
+
+function imageContextMenu(e, img, historyMode) {
+    const stem = String(img.filename || "").replace(/\.[^.]+$/, "");
+    const dict = normalizeTags(img.tags || {});
+    const allTags = TAG_CATEGORIES.reduce((acc, c) => acc.concat(dict[c] || []), []);
+    const catItems = TAG_CATEGORIES
+        .filter(c => (dict[c] || []).length)
+        .map(c => ({ label: CTX_CATEGORY_LABELS[c] || c, run: () => copyTextToClipboard(dict[c].join(" "), `Copied ${dict[c].length} ${CTX_CATEGORY_LABELS[c] || c} tag(s)`) }));
+    showContextMenu(e, [
+        { label: "Copy", items: [
+            { label: "Image hash", run: () => copyTextToClipboard(stem, "Copied image hash") },
+            { label: "Image", run: () => copyToClipboard(fullImageUrl(img.filepath, img.filename), img.filename) },
+            { label: "Tags", items: [
+                { label: "All tags", run: () => copyTextToClipboard(allTags.join(" "), "Copied all tags") },
+                { sep: true },
+                ...catItems,
+            ]},
+        ]},
+        { sep: true },
+        { label: img.favourite ? "Unfavourite" : "Favourite", run: () => toggleImageFavourite(img, historyMode) },
+        { label: "Delete", run: () => deleteImageFromMenu(img, historyMode) },
+    ]);
+}
+
+async function toggleImageFavourite(img, historyMode) {
+    try {
+        if (historyMode || !img.id) {
+            const r = await fetch("/api/gallery/favourite_by_name", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ filename: img.filename, filepath: img.filepath }) });
+            const d = await r.json();
+            if (d && d.success) img.favourite = d.favourite;
+        } else {
+            await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ id: img.id }) });
+            img.favourite = !img.favourite;
+        }
+    } catch (err) { console.error("favourite save failed:", err); }
+    if (historyMode) { if (typeof renderImageHistory === "function") renderImageHistory(); }
+    else loadGallery();
+}
+
+async function deleteImageFromMenu(img, historyMode) {
+    if (!await customConfirm("Delete this image? It will be removed from disk.", "Delete")) return;
+    const byName = historyMode || !img.id;
+    try {
+        const r = await fetch(byName ? "/api/gallery/delete_by_name" : "/api/gallery/delete", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(byName ? { filename: img.filename, filepath: img.filepath } : { id: img.id }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { showToast("Delete failed: " + (d.error || r.status), { warn: true, icon: WARN_ICON }); return; }
+        markDeleted(img.filepath, img.filename);
+        if (img.id) {
+            const card = document.querySelector(`.gallery-card[data-id="${CSS.escape(String(img.id))}"]`);
+            if (card) card.remove();
+        }
+        showToast(d.dedup_warning ? "Image deleted - duplicate cleanup will finish on Refresh" : "Image deleted", d.dedup_warning ? { warn: true, icon: WARN_ICON } : { icon: TRASH_ICON });
+        if (historyMode) { if (typeof renderImageHistory === "function") renderImageHistory(); }
+        else loadGallery();
+    } catch (err) { showToast("Delete failed: " + err.message, { warn: true, icon: WARN_ICON }); }
+}
+
+function historyImageContextMenu(e, filepath) {
+    const all = (typeof imgHistFiltered !== "undefined" && imgHistFiltered.length) ? imgHistFiltered : (typeof imageHistory !== "undefined" ? imageHistory : []);
+    const img = all.find(i => String(i.filepath || "") === String(filepath));
+    if (img) imageContextMenu(e, img, true);
+}
+
+function tagContextMenu(e, tag, site) {
+    if (!tag) return;
+    const fav = !!site && typeof isFavorite === "function" && isFavorite(site, tag);
+    showContextMenu(e, [
+        { label: fav ? "Remove tag favourite" : "Favourite tag", disabled: !site, run: () => toggleFavorite(site, tag) },
+        { sep: true },
+        { label: "Search tag", items: [
+            { label: "Exact match", run: () => searchGalleryTag(tag, true) },
+            { label: "Substring", run: () => searchGalleryTag(tag, false) },
+        ]},
+        { label: "Add to queue", items: QUEUE_SITE_KEYS.map(s => ({ label: siteLabel(s), run: () => queueHistoryEntry(s, tag) })) },
+    ]);
+}
+
+function galleryCardContextmenu(e, id) {
+    const img = galleryState.images.find(i => String(i.id) === String(id));
+    if (img) imageContextMenu(e, img);
 }
 
 function exitSelectMode() {
