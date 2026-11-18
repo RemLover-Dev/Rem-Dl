@@ -6,22 +6,16 @@ const CTX_CATEGORY_LABELS = {artist:"Artist", character:"Character", copyright:"
 const QUEUE_SITE_KEYS = ["dan", "gelbooru", "gsbooru", "kona", "yande", "safe", "sankaku", "rule34", "zero", "pixiv", "pinterest", "x", "anime_dl", "eshuushuu", "nekosia"];
 
 let _ctxMenus = [];
-let _ctxCloseTimer = 0;
 function closeContextMenu() {
-    if (_ctxCloseTimer) { clearTimeout(_ctxCloseTimer); _ctxCloseTimer = 0; }
     _ctxMenus.forEach(m => m.remove());
     _ctxMenus = [];
 }
-// menus are pointer-driven: walking off them dismisses them, with a short grace
-// period so the diagonal trip from a row into its submenu doesn't drop it
+// pointer-driven menus: the moment the cursor is off them they go — submenus
+// sit flush against their parent row so the trip across never touches the page
 document.addEventListener('mouseover', e => {
     if (!_ctxMenus.length) return;
-    if (e.target.closest && e.target.closest('.ctx-menu')) {
-        if (_ctxCloseTimer) { clearTimeout(_ctxCloseTimer); _ctxCloseTimer = 0; }
-        return;
-    }
-    if (_ctxCloseTimer) return;
-    _ctxCloseTimer = setTimeout(() => { _ctxCloseTimer = 0; closeContextMenu(); }, 200);
+    if (e.target.closest && e.target.closest('.ctx-menu')) return;
+    closeContextMenu();
 }, true);
 function _ctxCloseDeeper(depth) {
     _ctxMenus = _ctxMenus.filter(m => {
@@ -51,7 +45,7 @@ function _buildContextMenu(items, depth) {
                 document.body.appendChild(sub);
                 const r = row.getBoundingClientRect();
                 const sr = sub.getBoundingClientRect();
-                let x = r.right + 2, y = r.top - 4;
+                let x = r.right, y = r.top - 4;
                 if (x + sr.width > window.innerWidth - 8) x = Math.max(8, r.left - sr.width - 2);
                 if (y + sr.height > window.innerHeight - 8) y = Math.max(8, window.innerHeight - sr.height - 8);
                 sub.style.left = x + 'px';
