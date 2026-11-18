@@ -3727,19 +3727,19 @@ def _generate_thumb_bytes(full):
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout, ".jpg", "image/jpeg"
         raise RuntimeError("ffmpeg frame extraction failed")
-    if ext == ".jxl" and _giant_source(full):
-        # >40MP JXL costs ~13 bytes/px in-process (a 70MP scan ratcheted the
-        # app to 1.4GB); ffmpeg's libjxl streams it and dies after writing the
-        # thumb, so the app process never carries that spike
-        # shortcut: mjpeg output drops alpha — giant JXLs are scans, upgrade to
-        # a PNG pipe only if a transparent >40MP source shows up
-        proc = subprocess.run(
-            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", full, "-vframes", "1",
-             "-vf", f"scale={THUMB_PX}:{THUMB_PX}:force_original_aspect_ratio=decrease,pad={THUMB_PX}:{THUMB_PX}:(ow-iw)/2:(oh-ih)/2",
-             "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-            capture_output=True, timeout=300, check=False)
+    if ext == ".jxl" and (_giant_source(full) or _jbrd_source(full)):
+        # two wins over decoding in-process: JPEG-reconstructed sources are
+        # 2-4x faster in ffmpeg (0.4-1.1s vs 0.8-1.8s measured), and >40MP
+        # sources cost ~13 bytes/px in the app (a 70MP scan ratcheted it to
+        # 1.4GB) while ffmpeg's child dies after writing the thumb
+        with _thumb_child_slot:
+            proc = subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", full, "-vframes", "1",
+                 "-vf", f"scale={THUMB_PX}:{THUMB_PX}:force_original_aspect_ratio=decrease,pad={THUMB_PX}:{THUMB_PX}:(ow-iw)/2:(oh-ih)/2",
+                 "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
+                capture_output=True, timeout=300, check=False)
         if proc.returncode == 0 and proc.stdout:
-            return proc.stdout, ".jpg", "image/jpeg"
+            return proc.stdout, ".png", "image/png"
     # big JXL sources decode to ~700MB peak (raw frame is held twice by
     # pillow_jxl + PIL); one at a time keeps the process under 1GB while small
     # thumbs keep both warm workers busy
@@ -3753,6 +3753,16 @@ def _generate_thumb_bytes(full):
 
 _BIG_SOURCE_BYTES = 12 * 1024 * 1024
 _big_decode_slot = threading.Semaphore(1)
+_thumb_child_slot = threading.Semaphore(2)
+
+
+def _jbrd_source(full):
+    """True when the JXL carries a JPEG-reconstruction box (ffmpeg decodes these 2-4x faster)."""
+    try:
+        with open(full, "rb") as fh:
+            return b"jbrd" in fh.read(65536)
+    except OSError:
+        return False
 
 
 def _giant_source(full):
