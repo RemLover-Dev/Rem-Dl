@@ -42,6 +42,7 @@ import os
 import queue
 import re
 import signal
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -3704,7 +3705,6 @@ def _generate_thumb_bytes(full):
     colors (the green thumbnails); JPEG otherwise, exact old pipeline."""
     ext = os.path.splitext(full)[1].lower()
     if ext in EXTENSIONS_VIDEO:
-        import subprocess
         # VA-API decode + GPU scale measured ~45% faster than software for
         # 4K H.264 first-frame extraction; falls back to the software chain
         # unchanged when the hardware path is unavailable or fails
@@ -3727,6 +3727,19 @@ def _generate_thumb_bytes(full):
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout, ".jpg", "image/jpeg"
         raise RuntimeError("ffmpeg frame extraction failed")
+    if ext == ".jxl" and _giant_source(full):
+        # >40MP JXL costs ~13 bytes/px in-process (a 70MP scan ratcheted the
+        # app to 1.4GB); ffmpeg's libjxl streams it and dies after writing the
+        # thumb, so the app process never carries that spike
+        # shortcut: mjpeg output drops alpha — giant JXLs are scans, upgrade to
+        # a PNG pipe only if a transparent >40MP source shows up
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", full, "-vframes", "1",
+             "-vf", f"scale={THUMB_PX}:{THUMB_PX}:force_original_aspect_ratio=decrease,pad={THUMB_PX}:{THUMB_PX}:(ow-iw)/2:(oh-ih)/2",
+             "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+            capture_output=True, timeout=300, check=False)
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout, ".jpg", "image/jpeg"
     # big JXL sources decode to ~700MB peak (raw frame is held twice by
     # pillow_jxl + PIL); one at a time keeps the process under 1GB while small
     # thumbs keep both warm workers busy
@@ -3740,6 +3753,17 @@ def _generate_thumb_bytes(full):
 
 _BIG_SOURCE_BYTES = 12 * 1024 * 1024
 _big_decode_slot = threading.Semaphore(1)
+
+
+def _giant_source(full):
+    """True for the >40MP JXLs the resident gallery index knows about."""
+    try:
+        entry = shared._gallery_cache.get("by_fn", {}).get(os.path.basename(full))
+        if entry and entry.get("width") and entry.get("height"):
+            return entry["width"] * entry["height"] > 40_000_000
+    except Exception:
+        pass
+    return False
 
 
 def _decode_gate(full):
