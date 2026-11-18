@@ -179,6 +179,8 @@ function tagContextMenu(e, tag, site) {
     if (!tag) return;
     const fav = !!site && typeof isFavorite === "function" && isFavorite(site, tag);
     showContextMenu(e, [
+        { label: "Copy tag", run: () => copyTextToClipboard(cleanTagDisplay(tag), "Copied tag") },
+        { sep: true },
         { label: fav ? "Remove tag favourite" : "Favourite tag", disabled: !site, run: () => toggleFavorite(site, tag) },
         { sep: true },
         { label: "Search tag", items: [
