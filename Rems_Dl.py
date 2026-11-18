@@ -3407,6 +3407,19 @@ def thumb_by_name(filename):
 
 THUMB_CACHE = os.path.join(DATABASE_DIR, "thumb_cache")
 os.makedirs(THUMB_CACHE, exist_ok=True)
+# gallery tiles render at ~250px in the app's windows; 300px thumbs decoded
+# 360KB+ each and paging accumulated them in the webview's image cache —
+# 256px keeps tiles sharp while cutting decoded thumb RAM ~30%
+THUMB_PX = 256
+# cache filenames embed THUMB_PX: a size change must not be shadowed by
+# entries generated at the old size
+_LEGACY_THUMB_RE = re.compile(r"^[0-9a-f]{16}\.(jpg|png|json)$")
+for _legacy_name in os.listdir(THUMB_CACHE):
+    if _LEGACY_THUMB_RE.match(_legacy_name):
+        try:
+            os.remove(os.path.join(THUMB_CACHE, _legacy_name))
+        except OSError:
+            pass
 # audio-free remuxes for hover previews: WebKitGTK blocks the main thread for
 # seconds when a muted <video> with an audio track is stopped (see preview_cache)
 PREVIEW_CACHE_DIR = os.path.join(DATABASE_DIR, "preview_cache")
@@ -3440,7 +3453,7 @@ def _thumb_cache_path(full, thumb_ext=".jpg"):
     # .png and .jpg are separate cache files for the same key: an old
     # flattened JPEG of a transparent source must never be mistaken for a
     # transparency-preserving thumbnail
-    return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + thumb_ext)
+    return os.path.join(THUMB_CACHE, hashlib.sha256(full.encode()).hexdigest()[:16] + f"t{THUMB_PX}" + thumb_ext)
 
 
 def _evict_caches(full, stat_info=None):
@@ -3677,7 +3690,7 @@ def _preserve_converted_thumb(before, after):
 
 
 def _generate_thumb_bytes(full):
-    """(bytes, cache_ext, mime): 300px thumb. PNG (alpha kept) for transparent
+    """(bytes, cache_ext, mime): THUMB_PX thumb. PNG (alpha kept) for transparent
     sources — the RGB-conversion path exposed palette/RGBA hidden background
     colors (the green thumbnails); JPEG otherwise, exact old pipeline."""
     ext = os.path.splitext(full)[1].lower()
@@ -3687,14 +3700,14 @@ def _generate_thumb_bytes(full):
         # 4K H.264 first-frame extraction; falls back to the software chain
         # unchanged when the hardware path is unavailable or fails
         endargs = ["-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
-        vf_soft = "scale=300:300:force_original_aspect_ratio=decrease,pad=300:300:(ow-iw)/2:(oh-ih)/2"
+        vf_soft = f"scale={THUMB_PX}:{THUMB_PX}:force_original_aspect_ratio=decrease,pad={THUMB_PX}:{THUMB_PX}:(ow-iw)/2:(oh-ih)/2"
         cmd_soft = ["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-filter_threads", "1",
                     "-y", "-i", full, "-vframes", "1", "-ss", "0", "-vf", vf_soft, *endargs]
         try:
             proc = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-filter_threads", "1",
                                    "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
                                    "-y", "-i", full, "-vframes", "1", "-ss", "0",
-                                   "-vf", "scale_vaapi=w=300:h=300:force_original_aspect_ratio=decrease,hwdownload,format=nv12,format=yuvj420p",
+                                   "-vf", f"scale_vaapi=w={THUMB_PX}:h={THUMB_PX}:force_original_aspect_ratio=decrease,hwdownload,format=nv12,format=yuvj420p",
                                    *endargs],
                                   capture_output=True, timeout=10, check=False)
             if proc.returncode == 0 and proc.stdout:
@@ -3729,16 +3742,16 @@ def _thumb_bytes_from_source(source):
         if img.mode != "RGBA":
             img = img.convert("RGBA")
         # thumbnail() keeps the source aspect ratio
-        img.thumbnail((300, 300), Image.Resampling.BILINEAR)
+        img.thumbnail((THUMB_PX, THUMB_PX), Image.Resampling.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue(), ".png", "image/png"
     # ponytail: cap memory usage for very large images; decompress bomb protection
-    img.draft('RGB', (300, 300))
+    img.draft('RGB', (THUMB_PX, THUMB_PX))
     if img.mode not in ('RGB', 'L'):
         img = img.convert('RGB')
-    # BILINEAR: ~2x faster than LANCZOS at 300px, invisible at thumbnail size
-    img.thumbnail((300, 300), Image.Resampling.BILINEAR)
+    # BILINEAR: ~2x faster than LANCZOS at this size, invisible at thumbnail size
+    img.thumbnail((THUMB_PX, THUMB_PX), Image.Resampling.BILINEAR)
     buf = io.BytesIO()
     img.save(buf, format='JPEG', quality=80)
     return buf.getvalue(), ".jpg", "image/jpeg"
@@ -3775,7 +3788,7 @@ def _dedup_shared_decode_thumb(path, source):
 
 
 def _cached_thumb(full):
-    """300px thumb on disk under thumb_cache — survives restarts, nothing in
+    """THUMB_PX thumb on disk under thumb_cache — survives restarts, nothing in
     RAM. The disk thumb is trusted only through the versioned hint: legacy
     entries and edited sources regenerate, not serve stale. Exceptions aren't
     cached, so a mid-download read retries next request. Returns
@@ -3855,7 +3868,7 @@ def warm_page_thumbs(images):
 
 
 def _send_thumb(cache_path, mimetype="image/jpeg"):
-    """Serve the disk-cached 300px thumb. no-cache: the browser keeps the copy
+    """Serve the disk-cached THUMB_PX thumb. no-cache: the browser keeps the copy
     but revalidates, so a deleted source 404s instead of showing a ghost."""
     resp = send_file(cache_path, mimetype=mimetype, conditional=True)
     resp.headers["Cache-Control"] = "private, no-cache"

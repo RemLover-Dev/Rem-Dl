@@ -4633,6 +4633,18 @@ function galleryBufferKey(params) {
     key.delete('page'); key.delete('per_page'); key.sort();
     return key.toString();
 }
+// A flip (esp. a held arrow key sweeping many pages) makes every in-flight
+// prefetch stale: its block data and queued thumbnail decodes belong to pages
+// the user already left, yet they still occupy the connection pool and the
+// decode queue the target page's own fetch and thumbs need. Abort both;
+// already-stored ranges stay valid for instant reuse.
+function abortGalleryPrefetch() {
+    for (const request of galleryBufferRequests.values()) {
+        try { request.controller.abort(); } catch (e) {}
+    }
+    galleryBufferRequests.clear();
+    while (galleryThumbQueue.length) galleryThumbQueued.delete(galleryThumbQueue.shift());
+}
 function invalidateGalleryBuffer() {
     galleryBufferEpoch++;
     galleryPageBuffer.clear();
@@ -5136,6 +5148,16 @@ function renderGallery() {
     // nodes alive rather than tearing them down and re-triggering lazy loads.
     commitGalleryMarkup(grid, html);
     applyGalleryLayout(galleryState.layout);
+    renderGalleryPagination(page);
+}
+function renderGalleryPagination(page) {
+    const pagination = document.getElementById("galleryPagination");
+    if (!pagination) return;
+    // keep the page-jump input alive across background re-renders (downloads
+    // fire update_history -> loadGallery while the user is typing a page no.)
+    const jumpFocused = document.activeElement && document.activeElement.classList
+        && document.activeElement.classList.contains('gallery-page-jump');
+    const { total, total_pages } = galleryState;
     const countPill = `<span class="gallery-count-pill"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-9 9"/></svg>${total}</span>`;
     if (total_pages <= 1) { if (!jumpFocused) pagination.innerHTML = countPill; updateSelectBar(); return; }
     let pHtml = '';
@@ -5726,7 +5748,12 @@ let galleryPagingFast = false;
 function galleryPageNav(page) {
     const first = _galNavTimer === null;   // single press = normal render with thumbs
     clearTimeout(_galNavTimer);
+    abortGalleryPrefetch();   // only the page the user is landing on matters now
     if (!first) galleryPagingFast = true;  // key held: placeholder thumbs while traversing
+    // held-key repeats abort every in-flight fetch, so renderGallery never
+    // runs mid-hold — keep the page numbers moving with the presses
+    galleryState.page = page;
+    renderGalleryPagination(page);
     _galNavTimer = setTimeout(() => {
         _galNavTimer = null;
         if (galleryPagingFast) {
