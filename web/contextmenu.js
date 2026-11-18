@@ -201,8 +201,73 @@ function historyImageContextMenu(e, filepath) {
     if (img) imageContextMenu(e, img, true);
 }
 
+function multiImageContextMenu(e, imgs) {
+    const stems = imgs.map(img => String(img.filename || "").replace(/\.[^.]+$/, ""));
+    const tagsOf = img => {
+        const dict = normalizeTags(img.tags || {});
+        return TAG_CATEGORIES.reduce((acc, c) => acc.concat(dict[c] || []), []).map(cleanTagDisplay).join(", ");
+    };
+    const n = imgs.length;
+    showContextMenu(e, [
+        { label: `Copy ${n} images`, items: [
+            { label: "Hashes", run: () => copyTextToClipboard(stems.join("\n"), `Copied ${n} hashes`) },
+            { label: "Files", run: () => selectCopy() },
+            { label: "Tags", run: () => copyTextToClipboard(imgs.map((img, i) => stems[i] + ": " + tagsOf(img)).join("\n"), `Copied tags for ${n} images`) },
+        ]},
+        { sep: true },
+        { label: `Favourite ${n} images`, run: () => favouriteImagesBulk(imgs) },
+        { label: `Delete ${n} images`, run: () => selectDelete() },
+    ]);
+}
+
+async function favouriteImagesBulk(imgs) {
+    const todo = imgs.filter(img => img.id && !img.favourite);
+    for (const img of todo) {
+        try {
+            await fetch("/api/gallery/favourite", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ id: img.id }) });
+            img.favourite = true;
+        } catch (err) { console.error("favourite save failed:", err); }
+    }
+    showToast(`Favourited ${todo.length} image${todo.length === 1 ? "" : "s"}`);
+    loadGallery();
+}
+
+function multiTagContextMenu(e) {
+    const items = tagSelItems();
+    if (items.length < 2) return false;
+    const tags = items.map(i => i.tag);
+    const siteful = items.filter(i => i.site);
+    showContextMenu(e, [
+        { label: `Copy ${items.length} tags`, run: () => copyTextToClipboard(tags.map(cleanTagDisplay).join(", "), `Copied ${items.length} tags`) },
+        { sep: true },
+        { label: `Favourite ${items.length} tags`, disabled: !siteful.length, run: () => favouriteTagsBulk(siteful) },
+        { sep: true },
+        { label: "Search tags", items: [
+            { label: "Exact match", run: () => searchGalleryTags(tags, true) },
+            { label: "Substring", run: () => searchGalleryTags(tags, false) },
+        ]},
+    ]);
+    return true;
+}
+
+async function favouriteTagsBulk(pairs) {
+    for (const { tag, site } of pairs) {
+        if (!site || (typeof isFavorite === "function" && isFavorite(site, tag))) continue;
+        try {
+            const r = await fetch("/api/favorites", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ site, tag, action: "add" }) });
+            const d = await r.json();
+            if (d && d.favorites) favoriteTags = d.favorites;
+        } catch (err) { console.error("favorites save failed:", err); }
+    }
+    renderHistory();
+    renderFavorites();
+    tagSelClear();
+    showToast(`Favourited ${pairs.length} tag${pairs.length === 1 ? "" : "s"}`);
+}
+
 function tagContextMenu(e, tag, site) {
     if (!tag) return;
+    if (e.target.closest && e.target.closest('.tag-sel-on') && multiTagContextMenu(e)) return;
     const fav = !!site && typeof isFavorite === "function" && isFavorite(site, tag);
     showContextMenu(e, [
         { label: "Copy tag", run: () => copyTextToClipboard(cleanTagDisplay(tag), "Copied tag") },

@@ -294,10 +294,11 @@ function renderCategorizedTags(tagsInput, clickable, img) {
             let cls = getTagCategoryClass(cat);
             let safeT = escJs(t);
             const ctxAttr = ` oncontextmenu="tagContextMenu(event,'${safeT}','${escJs((img && img.site) || "")}')"`;
+            const selAttr = ` data-sel-tag="${escapeHtml(t)}" data-sel-site="${escapeHtml((img && img.site) || "")}"`;
             if (clickable) {
-                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')"${ctxAttr}>${escapeHtml(display)}</span>`;
+                html += `<span class="g-tag-pill ${cls}" onclick="searchGalleryTag('${safeT}')"${ctxAttr}${selAttr}>${escapeHtml(display)}</span>`;
             } else {
-                html += `<span class="g-tag-pill ${cls}"${ctxAttr}>${escapeHtml(display)}</span>`;
+                html += `<span class="g-tag-pill ${cls}"${ctxAttr}${selAttr}>${escapeHtml(display)}</span>`;
             }
         });
     });
@@ -882,12 +883,12 @@ function logToConsole(tabID, msg) {
             });
             let artistNames = cats.artist || [];
             delete cats.artist;
-            var logArtistBadge = artistNames.map(a => `<span onclick="searchGalleryTag('${escJs(a)}')" oncontextmenu="tagContextMenu(event,'${escJs(a)}','${escJs(tabID)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
+            var logArtistBadge = artistNames.map(a => `<span onclick="searchGalleryTag('${escJs(a)}')" oncontextmenu="tagContextMenu(event,'${escJs(a)}','${escJs(tabID)}')" data-sel-tag="${escapeHtml(a)}" data-sel-site="${escapeHtml(tabID)}" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(a))}</span>`).join('');
             // ponytail: log cards show plain tag text — only the artist keeps a colored badge
-            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')" oncontextmenu="tagContextMenu(event,'${escJs(t)}','${escJs(tabID)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>`;
+            tagsHtml = `<span style="color: var(--text-color); opacity: 0.85;">` + Object.values(cats).flat().map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')" oncontextmenu="tagContextMenu(event,'${escJs(t)}','${escJs(tabID)}')" data-sel-tag="${escapeHtml(t)}" data-sel-site="${escapeHtml(tabID)}">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>`;
         } else {
             var logArtistBadge = "";
-            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')" oncontextmenu="tagContextMenu(event,'${escJs(t)}','${escJs(tabID)}')">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
+            tagsHtml = (tagsStr && tagsStr !== "No tags") ? `<span style="color: var(--text-color); opacity: 0.85;">` + tagsStr.split(', ').map(t => `<span style="cursor:pointer;" onclick="searchGalleryTag('${escJs(t)}')" oncontextmenu="tagContextMenu(event,'${escJs(t)}','${escJs(tabID)}')" data-sel-tag="${escapeHtml(t)}" data-sel-site="${escapeHtml(tabID)}">${escapeHtml(cleanTagDisplay(t))}</span>`).join(', ') + `</span>` : "No tags";
         }
         // filenames may contain spaces (anime_dl: "Tag Name_123.jpg") — the
         // token after "Downloaded" truncates there and the viewer's tag-box
@@ -2815,7 +2816,7 @@ function notifTagRow(m, titleClean) {
         .filter(t => !titleBits.has(cleanTagDisplay(t).toLowerCase()));
     if (!tags.length) return "";
     const pills = tags.map(t =>
-        `<span class="g-tag-pill ${getTagCategoryClass(categorizeTag(t))}" onclick="searchGalleryTag('${escJs(t)}')">${escapeHtml(cleanTagDisplay(t))}</span>`
+        `<span class="g-tag-pill ${getTagCategoryClass(categorizeTag(t))}" onclick="searchGalleryTag('${escJs(t)}')" data-sel-tag="${escapeHtml(t)}" data-sel-site="">${escapeHtml(cleanTagDisplay(t))}</span>`
     ).join(' ');
     return `<div style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 60px; overflow: hidden;">${pills}</div>`;
 }
@@ -3761,7 +3762,7 @@ function renderHistory() {
                 const when = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
                 timeSpan = `<span class="hist-time" title="${when}" style="font-size: 11px; color: var(--text-color); margin-left: 10px; white-space: nowrap;">${when}</span>`;
             }
-            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" oncontextmenu="tagContextMenu(event,'${escJs(item.tag)}','${escJs(item.site)}')" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div class="hist-actions" style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="queueHistoryEntry('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
+            htmlStr += `<div class="hist-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--input-bg); padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color);"><div><span style="color: var(--accent-color); font-size: 11px; text-transform: uppercase; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--accent-color); padding: 2px 5px; border-radius: 4px; margin-right: 10px;">${escapeHtml(siteLabel(item.site))}</span><span class="hist-tag" oncontextmenu="tagContextMenu(event,'${escJs(item.tag)}','${escJs(item.site)}')" data-sel-tag="${escapeHtml(item.tag)}" data-sel-site="${escapeHtml(item.site || '')}" style="font-size: 14px; color: var(--text-color);">${escapeHtml(displayTagList(item.tag.replace(/^[a-z_]+:/i, "").replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim(), item.site))}</span>${ratingBadge}${timeSpan}</div><div class="hist-actions" style="display: flex; gap: 8px;"><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: transparent; border: 1px solid transparent; box-shadow: 0 0 0 1px var(--border-color); color: var(--text-color);" onclick="queueHistoryEntry('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}', ${item.exclude_ai ? "true" : "false"}${(item.filters && Object.keys(item.filters).length) ? `, '${escJs(JSON.stringify(item.filters))}'` : ""})"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" d="M23.987 12a2.411 2.411 0 0 0 -0.814 -1.8L11.994 0.361a1.44 1.44 0 0 0 -1.9 2.162l8.637 7.6a0.25 0.25 0 0 1 -0.165 0.437H1.452a1.44 1.44 0 0 0 0 2.88h17.111a0.251 0.251 0 0 1 0.165 0.438l-8.637 7.6a1.44 1.44 0 1 0 1.9 2.161L23.172 13.8a2.409 2.409 0 0 0 0.815 -1.8Z"/></svg></button><button class="action-btn" style="padding: 4px 8px; font-size: 12px; background: ${heartBg}; border: 1px solid transparent; box-shadow: 0 0 0 1px ${heartColor}; color: ${heartColor};" onclick="toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')">${heartBtn}</button><button class="action-btn stop-btn" style="padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;" onclick="removeFromHistory('${escJs(item.site)}', '${escJs(item.tag)}', '${escJs(item.rating || '')}')"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none"><path stroke="currentColor" stroke-width="2.5" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div></div>`;
         });
     }
     ui.innerHTML = htmlStr;
@@ -3777,7 +3778,7 @@ function renderFavorites() {
     }
     // array + one innerHTML: `ui.innerHTML +=` in a loop re-parses the whole list per item
     ui.innerHTML = favoriteTags.map(item =>
-        `<div style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(siteLabel(item.site))}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`
+        `<div data-sel-tag="${escapeHtml(item.tag)}" data-sel-site="${escapeHtml(item.site)}" style="background: var(--tab-active-bg); border: 1px solid transparent; box-shadow: 0 0 0 1px var(--title-color); padding: 5px 10px; border-radius: 20px; font-size: 13px; display: flex; align-items: center; gap: 5px; transition: 0.2s;"><span onclick="jumpToSite('${escJs(item.site)}', '${escJs(item.tag)}')" style="cursor: pointer; display: flex; align-items: center; gap: 5px; flex: 1; color: var(--text-color);"><span>${heartIcon(true)}</span><span style="color: var(--title-color); font-weight: bold; font-size: 10px; text-transform: uppercase;">[${escapeHtml(siteLabel(item.site))}]</span><span>${escapeHtml(cleanTagDisplay(item.tag.replace(/\s*-ai[-_ ](?:generated|created)\b/gi, "").replace(/\s{2,}/g, " ").trim()))}</span></span><button onclick="event.stopPropagation(); toggleFavorite('${escJs(item.site)}', '${escJs(item.tag)}')" style="background: transparent; border: none; color: #ff6b6b; cursor: pointer; font-size: 12px; padding: 0 0 0 5px; line-height: 1;">✕</button></div>`
     ).join("");
 }
 
@@ -5653,6 +5654,11 @@ function setGallerySelected(id, on) {
 function toggleGallerySelected(id) { setGallerySelected(id, !gallerySelected.has(id)); }
 
 function galleryCardContextmenu(e, id) {
+    const ids = [...gallerySelected.keys()].map(String);
+    if (ids.length > 1 && ids.includes(String(id))) {
+        const imgs = ids.map(x => galleryState.images.find(i => String(i.id) === x)).filter(Boolean);
+        if (imgs.length > 1) { multiImageContextMenu(e, imgs); return; }
+    }
     const img = galleryState.images.find(i => String(i.id) === String(id));
     if (img) imageContextMenu(e, img);
 }
