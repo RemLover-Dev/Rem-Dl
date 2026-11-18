@@ -6,10 +6,23 @@ const CTX_CATEGORY_LABELS = {artist:"Artist", character:"Character", copyright:"
 const QUEUE_SITE_KEYS = ["dan", "gelbooru", "gsbooru", "kona", "yande", "safe", "sankaku", "rule34", "zero", "pixiv", "pinterest", "x", "anime_dl", "eshuushuu", "nekosia"];
 
 let _ctxMenus = [];
+let _ctxCloseTimer = 0;
 function closeContextMenu() {
+    if (_ctxCloseTimer) { clearTimeout(_ctxCloseTimer); _ctxCloseTimer = 0; }
     _ctxMenus.forEach(m => m.remove());
     _ctxMenus = [];
 }
+// menus are pointer-driven: walking off them dismisses them, with a short grace
+// period so the diagonal trip from a row into its submenu doesn't drop it
+document.addEventListener('mouseover', e => {
+    if (!_ctxMenus.length) return;
+    if (e.target.closest && e.target.closest('.ctx-menu')) {
+        if (_ctxCloseTimer) { clearTimeout(_ctxCloseTimer); _ctxCloseTimer = 0; }
+        return;
+    }
+    if (_ctxCloseTimer) return;
+    _ctxCloseTimer = setTimeout(() => { _ctxCloseTimer = 0; closeContextMenu(); }, 200);
+}, true);
 function _ctxCloseDeeper(depth) {
     _ctxMenus = _ctxMenus.filter(m => {
         if (m._depth > depth) { m.remove(); return false; }
@@ -105,8 +118,10 @@ function imageContextMenu(e, img, historyMode) {
     const stem = String(img.filename || "").replace(/\.[^.]+$/, "");
     const dict = normalizeTags(img.tags || {});
     const allTags = TAG_CATEGORIES.reduce((acc, c) => acc.concat(dict[c] || []), []);
+    const catRank = c => (c === "metadata" ? TAG_CATEGORIES.length : TAG_CATEGORIES.indexOf(c));
     const catItems = TAG_CATEGORIES
         .filter(c => (dict[c] || []).length)
+        .sort((a, b) => catRank(a) - catRank(b))
         .map(c => ({ label: CTX_CATEGORY_LABELS[c] || c, run: () => copyTextToClipboard(dict[c].join(" "), `Copied ${dict[c].length} ${CTX_CATEGORY_LABELS[c] || c} tag(s)`) }));
     showContextMenu(e, [
         { label: "Copy", items: [
