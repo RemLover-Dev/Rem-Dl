@@ -116,13 +116,13 @@ function imageContextMenu(e, img, historyMode) {
     const catItems = TAG_CATEGORIES
         .filter(c => (dict[c] || []).length)
         .sort((a, b) => catRank(a) - catRank(b))
-        .map(c => ({ label: CTX_CATEGORY_LABELS[c] || c, run: () => copyTextToClipboard(dict[c].join(" "), `Copied ${dict[c].length} ${CTX_CATEGORY_LABELS[c] || c} tag(s)`) }));
+        .map(c => ({ label: CTX_CATEGORY_LABELS[c] || c, run: () => copyTextToClipboard(dict[c].map(cleanTagDisplay).join(", "), `Copied ${dict[c].length} ${CTX_CATEGORY_LABELS[c] || c} tag(s)`) }));
     showContextMenu(e, [
         { label: "Copy", items: [
             { label: "Image hash", run: () => copyTextToClipboard(stem, "Copied image hash") },
             { label: "Image", run: () => copyToClipboard(fullImageUrl(img.filepath, img.filename), img.filename) },
             { label: "Tags", items: [
-                { label: "All tags", run: () => copyTextToClipboard(allTags.join(" "), "Copied all tags") },
+                { label: "All tags", run: () => copyTextToClipboard(allTags.map(cleanTagDisplay).join(", "), "Copied all tags") },
                 ...(catItems.length ? [{ sep: true }, ...catItems] : []),
             ]},
         ]},
