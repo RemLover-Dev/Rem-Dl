@@ -191,3 +191,10 @@ function tagContextMenu(e, tag, site) {
             .map(s => ({ label: s.label, run: () => queueHistoryEntry(s.key, tag) })) },
     ]);
 }
+
+function dimsContextMenu(e, w, h) {
+    showContextMenu(e, [
+        { label: "Search dimensions", run: () => searchGalleryDims(w, h) },
+        { label: "Copy dimensions", run: () => copyTextToClipboard(w + "x" + h, "Copied dimensions") },
+    ]);
+}
