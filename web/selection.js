@@ -10,6 +10,19 @@ let _tagArm = null;      // armed click on a pill: {el, on, x, y}
 let _tagPainting = null; // {on} once the drag passes the threshold
 let _band = null;        // {mode, box, x0, y0, moved, base}
 let _supClick = false;
+let _pinnedMeta = null;  // viewer meta held expanded for the whole tag drag
+
+// leaving the tag box mid-drag would collapse the viewer meta under the cursor
+function _pinMeta(el) {
+    const meta = el && el.closest && el.closest('.gallery-viewer-meta');
+    if (meta && meta !== _pinnedMeta) { _unpinMeta(); meta.classList.add('band-pin'); _pinnedMeta = meta; }
+}
+
+function _unpinMeta() {
+    if (!_pinnedMeta) return;
+    _pinnedMeta.classList.remove('band-pin');
+    _pinnedMeta = null;
+}
 
 function tagSelClear() {
     document.querySelectorAll('.tag-sel-on').forEach(el => el.classList.remove('tag-sel-on'));
@@ -26,6 +39,7 @@ function _selHits(el, r) {
 }
 
 function _bandStart(mode, box, e) {
+    if (mode === 'tag') _pinMeta(box);
     _band = { mode, box, x0: e.clientX, y0: e.clientY, moved: false, base: null };
 }
 
@@ -71,6 +85,7 @@ function _bandMove(e) {
 function _bandEnd() {
     const b = _band;
     _band = null;
+    _unpinMeta();
     if (b.el) b.el.remove();
     else if (b.mode === 'tag') tagSelClear();
     else if (b.mode === 'image' && gallerySelectMode) clearSelection();
@@ -83,13 +98,19 @@ document.addEventListener('mousedown', e => {
     const tag = e.target.closest && e.target.closest(TAG_SEL_SEL);
     if (tag) {
         e.preventDefault(); // no text drag-select under the pills
+        _pinMeta(tag);
         _tagArm = { el: tag, on: !tag.classList.contains('tag-sel-on'), x: e.clientX, y: e.clientY };
         return;
     }
     const box = e.target.closest && e.target.closest(TAG_BOX_SEL);
     if (box) { e.preventDefault(); _bandStart('tag', box, e); return; }
-    const grid = e.target.closest && e.target.closest('#galleryGrid');
-    if (grid && !e.target.closest('.gallery-card')) { e.preventDefault(); _bandStart('image', grid, e); return; }
+    const grid = document.getElementById('galleryGrid');
+    const ui = e.target.closest && e.target.closest('#Gallery');
+    if (grid && ui && !e.target.closest('.gallery-card, button, input, select, textarea, a, label, .gallery-select-bar, .gallery-pagination, .gallery-dropdown-menu')) {
+        e.preventDefault();
+        _bandStart('image', grid, e);
+        return;
+    }
     tagSelClear();
 }, true);
 
@@ -114,11 +135,13 @@ document.addEventListener('mousemove', e => {
 document.addEventListener('mouseup', () => {
     _tagArm = null;
     _tagPainting = null;
+    _unpinMeta();
     if (_band) _bandEnd();
 });
 window.addEventListener('blur', () => {
     _tagArm = null;
     _tagPainting = null;
+    _unpinMeta();
     if (_band) _bandEnd();
 });
 

@@ -1388,12 +1388,12 @@ body { transition: color 0.3s ease; }
 
 /* ===== SMART HOVER META PANEL ===== */
 .gallery-viewer-meta { position: absolute; bottom: 30px; left: 0; right: 0; width: fit-content; min-width: 320px; max-width: 80%; margin: 0 auto; transform: none; background: rgba(15, 18, 25, 0.92); /* no backdrop-filter: WebKitGTK re-rasterizes the blur surface on the hover height change and everything painted into it blinks */ border: 1px solid transparent; border-radius: 24px; padding: 10px 20px; display: flex; flex-direction: column; z-index: 10010; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.15); /* height only: animating `all` repaints the shadow/background every frame — the expansion crawled on WebKitGTK; opacity keeps focus-mode's fade */ transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease; overflow: hidden; height: 44px; }
-.gallery-viewer-meta:hover, .gallery-viewer-meta.menu-pin { height: 300px; border-radius: 16px; background: rgba(15, 18, 25, 0.98); box-shadow: 0 10px 40px rgba(0, 210, 211, 0.2), 0 0 0 1px var(--title-color); transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
+.gallery-viewer-meta:hover, .gallery-viewer-meta.menu-pin, .gallery-viewer-meta.band-pin { height: 300px; border-radius: 16px; background: rgba(15, 18, 25, 0.98); box-shadow: 0 10px 40px rgba(0, 210, 211, 0.2), 0 0 0 1px var(--title-color); transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
 .g-meta-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; height: 24px; flex-shrink: 0; line-height: 1; }
 .g-meta-title { font-weight: 600; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; max-width: 480px; display: flex; align-items: center; }
 .g-meta-badges { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 .g-meta-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 15px; padding: 15px 4px 4px; border-top: 1px dashed rgba(255,255,255,0.15); overflow-y: auto; height: calc(100% - 40px); opacity: 0; align-content: flex-start; /* no fade: WebKitGTK blinks the fade while the panel's backdrop-filter layer re-rasterizes during the height expansion; the panel's own animation is the entrance */ will-change: opacity; transform: translateZ(0); backface-visibility: hidden; }
-.gallery-viewer-meta:hover .g-meta-tags, .gallery-viewer-meta.menu-pin .g-meta-tags { opacity: 1; }
+.gallery-viewer-meta:hover .g-meta-tags, .gallery-viewer-meta.menu-pin .g-meta-tags, .gallery-viewer-meta.band-pin .g-meta-tags { opacity: 1; }
 .g-meta-tags::-webkit-scrollbar { width: 4px; }
 .g-meta-tags::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 4px; }
 .g-tag-pill { background: rgba(255,255,255,0.08); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 20px; font-size: 11px; cursor: pointer; transition: 0.2s; white-space: nowrap; color: #ccc; text-shadow: none; letter-spacing: 0; -webkit-font-smoothing: antialiased;}
@@ -1460,7 +1460,7 @@ body { transition: color 0.3s ease; }
 [data-theme="light"] .ctx-sep { background: rgba(0, 0, 0, 0.1); }
 
 .g-expand-hint { font-size: 10px; color: #888; margin-left: 10px; animation: gPulse 2s infinite; display: inline-flex; align-items: center; line-height: 1.4; }
-.gallery-viewer-meta:hover .g-expand-hint, .gallery-viewer-meta.menu-pin .g-expand-hint { display: none; }
+.gallery-viewer-meta:hover .g-expand-hint, .gallery-viewer-meta.menu-pin .g-expand-hint, .gallery-viewer-meta.band-pin .g-expand-hint { display: none; }
 @keyframes gPulse { 0% {opacity: 0.4;} 50% {opacity: 1;} 100% {opacity: 0.4;} }
 
 /* ===== FOCUS MODE (CLEAN VIEW) ===== */
@@ -1527,7 +1527,7 @@ datalist, option {
     .gallery-toolbar { gap: 12px; }
     .gallery-toolbar input#gallerySearch { min-width: 240px; flex: 1; max-width: 480px; }
     .gallery-viewer-meta { max-width: 75%; }
-    .gallery-viewer-meta:hover, .gallery-viewer-meta.menu-pin { height: 380px; }
+    .gallery-viewer-meta:hover, .gallery-viewer-meta.menu-pin, .gallery-viewer-meta.band-pin { height: 380px; }
     .g-meta-title { max-width: 720px; font-size: 14px; }
 }
 @media (min-width: 2560px) {
