@@ -18,9 +18,16 @@ try:
 except Exception:
     pass
 
+import ctypes
+import contextlib
+
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+except OSError:
+    _libc = None  # Windows/macOS: no malloc_trim, arenas are not the issue there
+
 if sys.platform == "win32":
     try:
-        import ctypes
         # Set explicit AppUserModelID so Windows taskbar shows the app icon instead of Python's
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('RemLoverDev.RemsDl.App.1.0')
     except Exception:
@@ -3338,7 +3345,7 @@ def _make_display_copy(full):
     if ext in EXTENSIONS_VIDEO:
         return None
     try:
-        with _open_display_source(full, VIEWER_DISPLAY_LONG_EDGE) as src:
+        with _decode_gate(full), _open_display_source(full, VIEWER_DISPLAY_LONG_EDGE) as src:
             if not src:
                 return None  # animated reconstructed JPEG: unshrinkable
             if getattr(src, "is_animated", False) or getattr(src, "n_frames", 1) > 1:
@@ -3380,6 +3387,8 @@ def _make_display_copy(full):
         except OSError:
             pass
         return None
+    finally:
+        _trim_decode_heap()
     return cache_path
 
 
@@ -3718,8 +3727,48 @@ def _generate_thumb_bytes(full):
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout, ".jpg", "image/jpeg"
         raise RuntimeError("ffmpeg frame extraction failed")
-    with Image.open(full) as source:
-        return _thumb_bytes_from_source(source)
+    # big JXL sources decode to ~700MB peak (raw frame is held twice by
+    # pillow_jxl + PIL); one at a time keeps the process under 1GB while small
+    # thumbs keep both warm workers busy
+    with _decode_gate(full):
+        try:
+            with Image.open(full) as source:
+                return _thumb_bytes_from_source(source)
+        finally:
+            _trim_decode_heap()
+
+
+_BIG_SOURCE_BYTES = 12 * 1024 * 1024
+_big_decode_slot = threading.Semaphore(1)
+
+
+def _decode_gate(full):
+    try:
+        big = os.path.getsize(full) > _BIG_SOURCE_BYTES
+    except OSError:
+        big = False
+    return _big_decode_slot if big else contextlib.nullcontext()
+
+
+def _trim_decode_heap():
+    """A 79MP JXL decode peaks ~700MB (raw frame held twice by pillow_jxl and
+    PIL, ~9 bytes/px); glibc keeps that arena resident so the RSS ratchets
+    toward GBs over a browsing session. Hand freed blocks back to the OS after
+    each decode (Linux-only; no-op elsewhere)."""
+    try:
+        _libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _cap_malloc_arenas():
+    """Python threads each get their own 64MB glibc arena, so a few concurrent
+    decodes fragment the heap and RSS never comes back down. Two arenas keep
+    the post-decode floor near the idle baseline."""
+    try:
+        _libc.mallopt(-8, 2)  # M_ARENA_MAX
+    except Exception:
+        pass
 
 
 def _thumb_bytes_from_source(source):
@@ -3818,7 +3867,7 @@ def _remove_stale_thumb(full):
 # browser requests share existing work and hit the cache instead of
 # paying ~100-300ms of PNG decode each. Failures aren't cached, so the
 # browser request still retries.
-_thumb_warm_pool = ThreadPoolExecutor(max_workers=min(6, max(2, (os.cpu_count() or 4) // 2)), thread_name_prefix="thumbwarm")
+_thumb_warm_pool = ThreadPoolExecutor(max_workers=min(2, max(2, (os.cpu_count() or 4) // 2)), thread_name_prefix="thumbwarm")
 # own pool: a remux can run minutes (ffmpeg timeout), never block thumb workers
 _preview_warm_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="previewwarm")
 # in-flight thumb decodes: warm pool + the 6 browser connections hit the same
@@ -5207,6 +5256,7 @@ def _persist_generated_access_token():
 
 
 if __name__ == "__main__":
+    _cap_malloc_arenas()
     # one instance at a time: a second process shares database/ (gallery.json,
     # dedup.sqlite3 WAL) and has its own sockets — deletes and auto-culls in
     # one never reach the other, and the shared files race. flock auto-releases
