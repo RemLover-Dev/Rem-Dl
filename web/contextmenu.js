@@ -6,16 +6,37 @@ const CTX_CATEGORY_LABELS = {artist:"Artist", character:"Character", copyright:"
 const QUEUE_SITE_KEYS = ["dan", "gelbooru", "gsbooru", "kona", "yande", "safe", "sankaku", "rule34", "zero", "pixiv", "pinterest", "x", "anime_dl", "eshuushuu", "nekosia"];
 
 let _ctxMenus = [];
+let _ctxCloseTimer = 0;
 function closeContextMenu() {
+    if (_ctxCloseTimer) { clearTimeout(_ctxCloseTimer); _ctxCloseTimer = 0; }
     _ctxMenus.forEach(m => m.remove());
     _ctxMenus = [];
+    document.querySelectorAll('.gallery-viewer-meta.menu-pin').forEach(m => m.classList.remove('menu-pin'));
 }
-// pointer-driven menus: the moment the cursor is off them they go — submenus
-// sit flush against their parent row so the trip across never touches the page
+// right-click must not focus the pill: the browser scrolls a focused element
+// into view, which shoved the viewer's tag box down as the menu opened
+let _ctxScrollRestore = null;
+document.addEventListener('mousedown', e => {
+    if (e.button !== 2) return;
+    if (e.target.closest && e.target.closest('.g-tag-pill, .gallery-card, .image-card-log')) e.preventDefault();
+    const box = document.getElementById('galleryViewerMeta');
+    if (box) _ctxScrollRestore = { el: box, top: box.scrollTop };
+}, true);
+function _ctxRestoreScroll() {
+    const s = _ctxScrollRestore;
+    _ctxScrollRestore = null;
+    if (s && s.el.scrollTop !== s.top) s.el.scrollTop = s.top;
+}
+// pointer-driven menus: off they go, with a 150ms grace so the hop from a row
+// into its submenu doesn't drop the whole stack
 document.addEventListener('mouseover', e => {
     if (!_ctxMenus.length) return;
-    if (e.target.closest && e.target.closest('.ctx-menu')) return;
-    closeContextMenu();
+    if (e.target.closest && e.target.closest('.ctx-menu')) {
+        if (_ctxCloseTimer) { clearTimeout(_ctxCloseTimer); _ctxCloseTimer = 0; }
+        return;
+    }
+    if (_ctxCloseTimer) return;
+    _ctxCloseTimer = setTimeout(() => { _ctxCloseTimer = 0; closeContextMenu(); }, 150);
 }, true);
 function _ctxCloseDeeper(depth) {
     _ctxMenus = _ctxMenus.filter(m => {
@@ -79,6 +100,11 @@ function showContextMenu(e, items) {
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
     _ctxMenus = [menu];
+    // keep the viewer meta expanded while its menu is open: losing :hover as the
+    // cursor travels into the menu collapsed the box and yanked the tags down
+    const meta = e.target.closest && e.target.closest('.gallery-viewer-meta');
+    if (meta) meta.classList.add('menu-pin');
+    _ctxRestoreScroll();
 }
 document.addEventListener('mousedown', e => {
     if (_ctxMenus.length && !(e.target.closest && e.target.closest('.ctx-menu'))) closeContextMenu();
