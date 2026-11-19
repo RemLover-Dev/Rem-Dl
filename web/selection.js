@@ -8,7 +8,10 @@ const SEL_THRESHOLD = 5;
 
 let _tagArm = null;      // armed click on a pill: {el, on, x, y}
 let _tagPainting = null; // {on} once the drag passes the threshold
-let _band = null;        // {mode, box, x0, y0, moved, base}
+let _band = null;        // {mode, box, x0, y0, moved, base, scroller, pt}
+let _edgeRAF = 0;        // shared edge scroller for band and paint drags
+let _edgeScroller = null;
+let _edgePt = null;
 let _supClick = false;
 let _pinnedMeta = null;  // viewer meta held expanded for the whole tag drag
 
@@ -45,13 +48,106 @@ function _selHits(el, r) {
     return q.right >= r.left && q.left <= r.right && q.bottom >= r.top && q.top <= r.bottom;
 }
 
+// the band auto-scrolls the nearest scrollable ancestor when the pointer
+// reaches its top/bottom edge (a held mouse fires no mousemove, so the tick
+// below keeps scrolling on its own)
+function _scrollAncestor(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        if (n.scrollHeight > n.clientHeight + 1 && /(auto|scroll)/.test(cs.overflowY)) return n;
+    }
+    return null;
+}
+
 function _bandStart(mode, box, e) {
     if (mode === 'tag') _pinMeta(box);
-    _band = { mode, box, x0: e.clientX, y0: e.clientY, moved: false, base: null };
+    _band = { mode, box, x0: e.clientX, y0: e.clientY, moved: false, base: null,
+              scroller: _scrollAncestor(box), pt: { x: e.clientX, y: e.clientY } };
+}
+
+function _bandApply() {
+    const b = _band;
+    const e = b.pt;
+    const box = b.box.getBoundingClientRect();
+    const rect = {
+        left: Math.max(box.left, Math.min(b.x0, e.x)),
+        top: Math.max(box.top, Math.min(b.y0, e.y)),
+        right: Math.min(box.right, Math.max(b.x0, e.x)),
+        bottom: Math.min(box.bottom, Math.max(b.y0, e.y)),
+    };
+    b.el.style.left = rect.left + 'px';
+    b.el.style.top = rect.top + 'px';
+    b.el.style.width = Math.max(0, rect.right - rect.left) + 'px';
+    b.el.style.height = Math.max(0, rect.bottom - rect.top) + 'px';
+    if (b.mode === 'tag') {
+        b.box.querySelectorAll(TAG_SEL_SEL).forEach(el => { if (_selHits(el, rect)) el.classList.add('tag-sel-on'); });
+        return;
+    }
+    if (typeof gallerySelected === "undefined") return;
+    const wanted = new Set(b.base);
+    b.box.querySelectorAll('.gallery-card[data-id]').forEach(card => { if (_selHits(card, rect)) wanted.add(card.dataset.id); });
+    document.querySelectorAll('#galleryGrid .gallery-card.selected').forEach(card => {
+        if (!wanted.has(card.dataset.id)) setGallerySelected(card.dataset.id, false);
+    });
+    wanted.forEach(id => { if (!gallerySelected.has(id)) setGallerySelected(id, true); });
+}
+
+const EDGE_SCROLL_PX = 40;
+const EDGE_SCROLL_MAX = 24;
+
+function _edgeStart(scroller, pt) {
+    _edgeScroller = scroller;
+    _edgePt = pt;
+    if (!_edgeRAF) _edgeRAF = requestAnimationFrame(_edgeTick);
+}
+
+function _edgeStop() {
+    if (_edgeRAF) cancelAnimationFrame(_edgeRAF);
+    _edgeRAF = 0;
+    _edgeScroller = null;
+    _edgePt = null;
+}
+
+// the app sets `scroll-behavior: smooth` globally; a per-frame scrollTop write
+// would animate and fight the next frame, so edge scrolls go instant
+function _edgeScrollBy(dy) {
+    const el = _edgeScroller || document.documentElement;
+    const prev = el.style.scrollBehavior;
+    el.style.scrollBehavior = 'auto';
+    const before = el.scrollTop;
+    el.scrollTop = before + dy;
+    const moved = el.scrollTop !== before;
+    el.style.scrollBehavior = prev;
+    return moved;
+}
+
+function _edgeTick() {
+    _edgeRAF = 0;
+    const sc = _edgeScroller;
+    const pt = _edgePt;
+    if (!pt || (!_band && !_tagPainting)) return;
+    let dy = 0;
+    const r = sc ? sc.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+    if (pt.y < r.top + EDGE_SCROLL_PX) dy = -EDGE_SCROLL_MAX * Math.min(1, (r.top + EDGE_SCROLL_PX - pt.y) / EDGE_SCROLL_PX);
+    else if (pt.y > r.bottom - EDGE_SCROLL_PX) dy = EDGE_SCROLL_MAX * Math.min(1, (pt.y - (r.bottom - EDGE_SCROLL_PX)) / EDGE_SCROLL_PX);
+    if (dy) {
+        _edgeScrollBy(dy);
+        if (_band) _bandApply();
+        else _paintAt(pt);
+    }
+    _edgeRAF = requestAnimationFrame(_edgeTick);
+}
+
+// one pill under the pointer (paint drags select through the exposed rows too)
+function _paintAt(pt) {
+    const el = document.elementFromPoint(pt.x, pt.y);
+    const hit = el && el.closest && el.closest(TAG_SEL_SEL);
+    if (hit) hit.classList.toggle('tag-sel-on', _tagPainting.on);
 }
 
 function _bandMove(e) {
     const b = _band;
+    b.pt = { x: e.clientX, y: e.clientY };
     if (!b.moved) {
         if (Math.hypot(e.clientX - b.x0, e.clientY - b.y0) < SEL_THRESHOLD) return;
         b.moved = true;
@@ -65,34 +161,18 @@ function _bandMove(e) {
         b.el = document.createElement('div');
         b.el.className = 'sel-band';
         document.body.appendChild(b.el);
+        _edgeStart(b.scroller, b.pt);
     }
-    const box = b.box.getBoundingClientRect();
-    const rect = {
-        left: Math.max(box.left, Math.min(b.x0, e.clientX)),
-        top: Math.max(box.top, Math.min(b.y0, e.clientY)),
-        right: Math.min(box.right, Math.max(b.x0, e.clientX)),
-        bottom: Math.min(box.bottom, Math.max(b.y0, e.clientY)),
-    };
-    b.el.style.left = rect.left + 'px';
-    b.el.style.top = rect.top + 'px';
-    b.el.style.width = Math.max(0, rect.right - rect.left) + 'px';
-    b.el.style.height = Math.max(0, rect.bottom - rect.top) + 'px';
-    if (b.mode === 'tag') {
-        b.box.querySelectorAll(TAG_SEL_SEL).forEach(el => { if (_selHits(el, rect)) el.classList.add('tag-sel-on'); });
-        return;
-    }
-    const wanted = new Set(b.base);
-    b.box.querySelectorAll('.gallery-card[data-id]').forEach(card => { if (_selHits(card, rect)) wanted.add(card.dataset.id); });
-    document.querySelectorAll('#galleryGrid .gallery-card.selected').forEach(card => {
-        if (!wanted.has(card.dataset.id)) setGallerySelected(card.dataset.id, false);
-    });
-    wanted.forEach(id => { if (!gallerySelected.has(id)) setGallerySelected(id, true); });
+    _bandApply();
+    if (b.moved) _edgePt = b.pt;
 }
 
 function _bandEnd() {
     const b = _band;
     _band = null;
+    _edgeStop();
     _unpinMeta();
+    if (!b) return;
     if (b.el) b.el.remove();
     else if (b.mode === 'tag') tagSelClear();
     else if (b.mode === 'image' && gallerySelectMode) clearSelection();
@@ -129,9 +209,11 @@ document.addEventListener('mousemove', e => {
         _tagPainting = { on: a.on };
         _supClick = true;
         a.el.classList.toggle('tag-sel-on', a.on);
+        _edgeStart(_scrollAncestor(a.el), { x: e.clientX, y: e.clientY });
         return;
     }
     if (_tagPainting) {
+        _edgePt = { x: e.clientX, y: e.clientY };
         const el = e.target.closest && e.target.closest(TAG_SEL_SEL);
         if (el) { el.classList.toggle('tag-sel-on', _tagPainting.on); _supClick = true; }
         return;
@@ -139,18 +221,15 @@ document.addEventListener('mousemove', e => {
     if (_band) _bandMove(e);
 }, true);
 
-document.addEventListener('mouseup', () => {
+function _endDrag() {
     _tagArm = null;
     _tagPainting = null;
+    _edgeStop();
     _unpinMeta();
     if (_band) _bandEnd();
-});
-window.addEventListener('blur', () => {
-    _tagArm = null;
-    _tagPainting = null;
-    _unpinMeta();
-    if (_band) _bandEnd();
-});
+}
+document.addEventListener('mouseup', _endDrag);
+window.addEventListener('blur', _endDrag);
 
 // a paint drag must not also fire the pill's search / the card's open-viewer
 document.addEventListener('click', e => {
