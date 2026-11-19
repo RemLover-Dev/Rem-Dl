@@ -477,6 +477,11 @@ class PixivWorker(BaseDownloader):
                 return False
 
             self.downloaded_count += 1
+            try:
+                from core import notifications as _notif
+                await asyncio.to_thread(_notif.drop_downloaded, "pixiv", zip_src, gif_name)
+            except Exception as e:
+                self.log(f"Notification prune skipped: {e}")
             self.dl_history.add(gif_name)
             await asyncio.to_thread(save_history, self.site_root, self.dl_history)
             rel = os.path.relpath(gif_path, MASTER_FOLDER)

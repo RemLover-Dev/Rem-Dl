@@ -11,6 +11,7 @@ pixiv_notifications.json is folded in once on first access.
 """
 
 import os
+import re
 import threading
 
 from core.database import DATABASE_DIR, DatabaseManager
@@ -24,6 +25,17 @@ MAX_SEEN = 4000
 
 _lock = threading.RLock()
 _migration_done = False
+
+_HASH_RE = re.compile(r"[0-9a-f]{32}")
+
+# downloader name -> notification source id (the watcher modules use the
+# long names, the worker classes use the short tab names)
+WORKER_SOURCES = {"kona": "konachan", "dan": "danbooru",
+                  "safe": "safebooru", "zero": "zerochan"}
+
+
+def source_for_worker(name):
+    return WORKER_SOURCES.get(name, name)
 
 
 def _key(source, external_id, watcher_id=""):
@@ -197,6 +209,56 @@ def mark_read(source, keys=None):
                 i["read"] = True
         _save(raw)
     return unread()
+
+
+def _mentions(text, token):
+    """token appears in text as a whole id, not inside a longer number."""
+    return re.search(r"(?<![0-9a-z])" + re.escape(token) + r"(?![0-9a-z])", text) is not None
+
+
+def _is_downloaded(item, text, digest):
+    """Does this notification's post match the file just downloaded?
+
+    text is the download URL + filename (lowercase); digest is the served
+    md5. Booru URLs/filenames carry the site's own md5, pixiv-style URLs and
+    filenames carry the work id — either one identifies the post."""
+    md = item.get("metadata") or {}
+    urls = " ".join(str(md.get(k) or "") for k in ("url", "file_url")).lower()
+    urls += " " + str(item.get("thumb") or "").lower()
+    for h in _HASH_RE.findall(urls):
+        if h == digest or h in text:
+            return True
+    for pid in {str(item.get("external_id") or ""), str(md.get("post_id") or "")}:
+        if pid and _mentions(text, pid.lower()):
+            return True
+    return False
+
+
+def drop_downloaded(source, url="", filename="", file_hash=""):
+    """Forget notifications whose post just landed on disk.
+
+    Best-effort identity match (site hash in the URL/filename, or the post
+    id for pixiv-style names); dropped keys move to `seen` so the next scan
+    never re-notifies them. Returns the number of notifications removed."""
+    text = " ".join(t for t in (url, filename) if t).lower()
+    digest = (file_hash or "").lower()
+    if not text and not digest:
+        return 0
+    with _lock:
+        raw = _load()
+        keep, dropped = [], []
+        for i in raw["items"]:
+            if i.get("source") == source and _is_downloaded(i, text, digest):
+                dropped.append(i)
+            else:
+                keep.append(i)
+        if not dropped:
+            return 0
+        raw["items"] = keep
+        raw["seen"] = ([i["key"] for i in dropped if i.get("key")]
+                       + raw["seen"])[:MAX_SEEN]
+        _save(raw)
+    return len(dropped)
 
 
 def clear(source):

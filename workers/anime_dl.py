@@ -173,6 +173,16 @@ class AnimeDlWorker(BaseDownloader):
                     return False
 
                 self.downloaded_count += 1
+                # the post that produced this file is no longer "new" — drop
+                # its watcher notification (URL/filename carry the site's
+                # hash or the post id, so no post_id plumbing is needed)
+                try:
+                    from core import notifications as _notif
+                    await asyncio.to_thread(_notif.drop_downloaded,
+                                            _notif.source_for_worker(self.name),
+                                            url, filename, generated["md5"])
+                except Exception as e:
+                    self.log(f"Notification prune skipped: {e}")
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 

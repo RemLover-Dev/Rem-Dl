@@ -2199,6 +2199,16 @@ class BaseDownloader:
                                              getattr(dup, "replaced_stat", None))
 
                 self.downloaded_count += 1
+                # the post that produced this file is no longer "new" — drop
+                # its watcher notification (the URL/filename carry the site's
+                # hash or the post id, so no post_id plumbing is needed)
+                try:
+                    from core import notifications as _notif
+                    await asyncio.to_thread(_notif.drop_downloaded,
+                                            _notif.source_for_worker(self.name),
+                                            url, filename, served["md5"])
+                except Exception as e:
+                    print(f"[NOTIF] prune skipped for {filename}: {e}")
                 self.dl_history.add(filename)
                 # ponytail: rewriting the whole history file per download is
                 # O(history) each time — flush every 10, plus a final flush
