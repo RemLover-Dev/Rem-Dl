@@ -26,6 +26,7 @@ async function login(value) {
     const r = await fetch(BASE + '/auth', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token:value})});
     if (r.ok) location.replace(BASE + '/');
     else if (r.status === 401) showForm('Invalid access token.');
+    else if (r.status === 429) showForm('Too many attempts — wait a moment and try again.');
     else if (r.status === 403) showForm('Request blocked (403) — check REMS_ALLOWED_HOSTS and the reverse-proxy Host header.');
     else if (r.status === 404) showForm('Sign-in endpoint not found (404) — check the reverse-proxy path configuration.');
     else if (r.status >= 500) showForm('Server error (' + r.status + '). Check the app logs.');
@@ -57,9 +58,11 @@ class AccessGuard:
         if len(self.token) < 32:
             raise ValueError('REMS_ACCESS_TOKEN must contain at least 32 characters')
         self.cookie_value = secrets.token_urlsafe(32)
-        # failed /auth attempts per client IP: backoff makes LAN brute-force
-        # slow without any lockout that a shared NAT could trigger
+        # failed /auth attempts per client IP: after 5 misses each further
+        # attempt must wait out an exponential window (answered 429, never a
+        # blocking sleep — a sleep pinned one threading-mode thread per probe)
         self._auth_fails = {}
+        self._auth_last = {}
         # A different name per process/port avoids collisions between app instances.
         self.cookie_name = 'rems_' + secrets.token_hex(8)
         self.hosts = set(hosts or ('localhost', '127.0.0.1', '::1'))
@@ -150,23 +153,30 @@ class AccessGuard:
                 candidate = data.get('token') if isinstance(data, dict) else None
             except (ValueError, TypeError):
                 candidate = None
-            # brute-force backoff: each consecutive miss from one IP delays
-            # its next check up to 30s (5 misses are free, then it climbs)
+            # brute-force backoff: 5 misses are free, then each further attempt
+            # waits out an exponential window (max 30s)
             import time as _time
             client_ip = (req.remote_addr or 'unknown')[:64]
             fails = self._auth_fails.get(client_ip, 0)
-            # cap: a longer sleep pins a threading-mode thread longer per hit
             if fails >= 5:
-                _time.sleep(min(2 ** (fails - 5), 10))
+                wait = min(2 ** (fails - 5), 30)
+                remaining = int(self._auth_last.get(client_ip, 0) + wait - _time.time())
+                if remaining > 0:
+                    blocked = Response('Too many attempts', status=429)
+                    blocked.headers['Retry-After'] = str(remaining)
+                    return respond(blocked)
             if len(self._auth_fails) > 1000:
                 # trim oldest, never bulk-clear: a reset lets an attacker
                 # clear their own backoff by spamming past the cap
                 for k in list(self._auth_fails)[:len(self._auth_fails) - 500]:
                     self._auth_fails.pop(k, None)
+                    self._auth_last.pop(k, None)
             if not self._valid(candidate, self.token):
                 self._auth_fails[client_ip] = fails + 1
+                self._auth_last[client_ip] = _time.time()
                 return respond(Response('Unauthorized', status=401))
             self._auth_fails.pop(client_ip, None)
+            self._auth_last.pop(client_ip, None)
             response = Response(status=204)
             # req.scheme is http behind a TLS-terminating proxy — the browser
             # Origin tells us whether the cookie will actually travel over https.

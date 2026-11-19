@@ -25,6 +25,14 @@ All notable changes to Rems Dl will be documented in this file.
 - **Planning Modals Positioned at Screen Top:** Planning add/edit/bulk dialogs are now centered on screen instead of top-aligned.
 - **Dropdown Menus Drifting in Glass Panels:** The custom select (Format, Ratings, ...) positioned its open menu against the real containing block (the app's `backdrop-filter` glass panel), so it now lands exactly under its trigger everywhere.
 - **Viewer GIF Playback:** Animated GIFs/APNGs render through a live-element fallback in the image viewer (pan/zoom math preserved) instead of a single static canvas frame.
+- **Zerochan Duplicate Downloads:** The listing's md5 now goes through the same pre-download source-hash claim as the other sites, so a post already stored under a different filename variant is dropped before transfer instead of downloaded and deleted.
+- **Zerochan "No Images Found" With One New Image Left:** Asking for 1 more image on a tag where the first posts are already downloaded reported the tag empty. The listing now always covers the full 200-post cap and posts whose file is already on disk/history are filtered out before any request, so the scan keeps paging until it finds the new post (5 known + amount 1 now fetches the 6th).
+- **Zerochan Download Bar:** The worker's buffered download never reported bytes, so the progress bar sat still until a file finished. It now streams to `.part` and reports the fraction ~5×/s from `Content-Length`, matching the other workers.
+- **Zerochan Speed:** gallery-dl lists the whole tag in a single process and request (up to its 200-post cap, so later pages are local slices instead of a new process per page), and a single post-page GET per image then supplies the exact URL and categorized tags — 4-way concurrently. A warm single-image run drops from ~61 s to ~3.5 s; a warm 100-post page is ~25 s.
+- **Zerochan Broken JSON 500 Payload:** The listing's malformed HTTP 500 body (`{"\r\n{"items": ...}`) is now recovered by re-anchoring on `"items"`, in both the worker and the watcher.
+
+### Changed
+- **Zerochan Engine Order:** With Zerochan credentials set in Settings, gallery-dl runs first, logged in through the same credentials (it sees posts the anonymous API hides), but only for the listing: one process and request for the whole tag, then local page slices. Without credentials, or when gallery-dl fails, the built-in `curl_cffi` engine lists (`?json`, XML feed as fallback) instead. In both cases the app fetches one post page per image for the real full URL and categorized tags, and logs each page (`Scanning gallery-dl/API... (Page N)`) instead of sitting at 0% silently. Nothing patches the installed gallery-dl anymore, so source runs, Docker and CI-built executables behave identically.
 
 ---
 

@@ -177,6 +177,10 @@ class XWorker(BaseDownloader):
             async for tweet in api.search(q, limit=-1):
                 if self.stop_event.is_set():
                     break
+                # the amount is fulfilled by photos, but without this the scan
+                # kept paging the whole profile after the last wanted image
+                if collected >= need:
+                    break
                 scanned += 1
                 author = (tweet.user.username or "").lower()
                 if author != self.handle.lower() or tweet.retweetedTweet is not None:

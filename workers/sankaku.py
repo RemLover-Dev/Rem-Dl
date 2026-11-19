@@ -115,6 +115,9 @@ class SankakuWorker(BaseWorker):
 
         collected_count = 0
         page = 1
+        # page number + limit on the server side: keep the size constant or
+        # later pages offset back onto posts already fetched
+        page_limit = min(40, self.amount) if self.amount > 0 else 40
 
         consecutive_errors = 0
         retried_rate_limit = False
@@ -122,9 +125,8 @@ class SankakuWorker(BaseWorker):
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
-                limit_val = min(40, self.amount - collected_count if self.amount > 0 else 40)
 
-                params = {"limit": limit_val, "page": page}
+                params = {"limit": page_limit, "page": page}
                 if self.net_config.get("hide_pools", False):
                     params["hide_posts_in_books"] = "always"
 

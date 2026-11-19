@@ -777,19 +777,33 @@ class TestAdapters:
         w.log = lambda m: None
 
         payload = _img_bytes(31)
+        mid = len(payload) // 2
+
         class Resp:
             status_code = 200
-            content = payload
-            headers = {"content-type": "image/png"}
+            headers = {"content-type": "image/png",
+                       "Content-Length": str(len(payload))}
+
+            def iter_content(self, *a, **k):
+                yield payload[:mid]
+                yield payload[mid:]
+
+            def close(self):
+                pass
 
         class CS:
             def get(self, *a, **k): return Resp()
         monkeypatch.setattr(w, "_ensure_curl_session", lambda: CS())
         monkeypatch.setattr(w, "_verify_flag", lambda: True)
 
+        seen = []
+        w._emit_progress = lambda: seen.append(dict(w._inflight))
+
         fp = os.path.join(w.site_root, "Tag", "shot.png")
         assert asyncio.run(w._async_download_file(
             "http://example.com/x.png", fp, "shot.png", [], [])) is True
+        # the bar must move while bytes stream, not only when the file lands
+        assert any(k == fp and 0 < v <= 1 for snap in seen for k, v in snap.items())
         served = hash_bytes(payload)
         pairs = _pairs(store, fp)
         for algo in ("md5", "sha1", "sha256"):

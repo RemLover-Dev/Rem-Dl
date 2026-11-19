@@ -330,6 +330,10 @@ class AnimeDlWorker(BaseDownloader):
                     done, pending = await asyncio.wait(
                         pending, return_when=asyncio.FIRST_COMPLETED)
                     for fut in done:
+                        # the wait() condition only guards the round, so a whole
+                        # batch of finished details could blow past the amount
+                        if collected >= need:
+                            break
                         if fut.cancelled():
                             continue
                         try:

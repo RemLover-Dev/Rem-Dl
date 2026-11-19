@@ -118,17 +118,19 @@ class Rule34Worker(BaseWorker):
 
         collected_count = 0
         page = 0
+        # page_id is a page number and the API offsets by limit: a shrinking
+        # per-page limit made later pages re-serve earlier posts
+        page_limit = min(1000, self.amount) if self.amount > 0 else 100
 
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             self.log(f"Scanning via rule34Py... (Page {page})")
-            chunk_limit = min(1000, self.amount - collected_count if self.amount > 0 else 100)
             results = None
             max_retries = 5
 
             for attempt in range(max_retries):
                 try:
                     await pace_requests()
-                    results = await asyncio.to_thread(self.client.search, self.api_tags, page_id=page, limit=chunk_limit, exclude_ai=self.exclude_ai)
+                    results = await asyncio.to_thread(self.client.search, self.api_tags, page_id=page, limit=page_limit, exclude_ai=self.exclude_ai)
                     break
                 except TypeError as e:
                     if "string indices must be integers" in str(e):

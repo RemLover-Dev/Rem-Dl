@@ -194,7 +194,6 @@ Rems Dl/
 ├── core/
 │   ├── shared.py           # Tag engine, gallery store, BaseDownloader async pipeline
 │   ├── database.py         # JSON database manager (history, favorites, UI config)
-│   ├── gallery_dl_interop.py # Runtime gallery-dl page-html enablement (source runs)
 │   └── check_imports.py    # Import sanity checker
 ├── workers/                # Source-specific download modules
 ├── web/
@@ -423,7 +422,7 @@ xcopy database dist\Rems_Dl\database\*.json
 ```
 The ready-to-run build lands in `dist/Rems_Dl/Rems_Dl.exe` (onedir), with `icon/icon.ico` baked in as the executable icon. Zip the `dist/Rems_Dl` folder and share it -- no Python needed on the target PC.
 
-> The spec bundles `web/` (UI + favicon) and `icon/`. The `database/*.json` tag DBs (~170 MB) are copied next to the exe by the `xcopy` step so offline autocomplete works. Your `Rems Dl/` downloads and `.env` are created next to the exe on first run. Zerochan's gallery-dl integration needs no manual patching: source runs enable `page-html` on your own installed gallery-dl copy automatically (`core/gallery_dl_interop.py`), and frozen builds use the built-in API engine.
+> The spec bundles `web/` (UI + favicon) and `icon/`. The `database/*.json` tag DBs (~170 MB) are copied next to the exe by the `xcopy` step so offline autocomplete works. Your `Rems Dl/` downloads and `.env` are created next to the exe on first run. Zerochan prefers a separately installed gallery-dl when Zerochan credentials are set in Settings (it runs logged in, without patching the installed copy) and otherwise falls back to the app's built-in `curl_cffi` engine, so source runs, Docker and frozen builds behave the same.
 
 ### Linux binary (via WSL)
 PyInstaller is not cross-platform -- a Linux binary must be built **on Linux**. From Windows, use WSL:

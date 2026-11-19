@@ -113,6 +113,7 @@ from core.planning_import import (
 )
 from core.preview_cache import evict as evict_preview
 from core.preview_cache import preview_path
+from core.preview_cache import prune_older_than as prune_preview
 from core.preview_cache import ready_for as preview_ready_for
 
 # Respect administrator/user WebView2 flags. Heap/process limits and disabled
@@ -5356,6 +5357,14 @@ if __name__ == "__main__":
             index build, ~75ms os.walk, ~63ms gallery load — all three were
             paid on the first search / first gallery page load.
             """
+            # bound the hover-remux cache: previews not served for 30 days go;
+            # serving touches the file, so an opened preview is never pruned
+            try:
+                pruned = prune_preview(PREVIEW_CACHE_DIR)
+                if pruned:
+                    print(f"Preview cache: removed {pruned} stale remuxes", flush=True)
+            except Exception as e:
+                print(f"Preview cache prune failed: {e}", flush=True)
             # the History tab's first 30 rows are warmable NOW (thumb files on
             # disk survive the rescan's save) — after the rescan was too late:
             # an immediate History open sent 30 uncached thumb requests down the

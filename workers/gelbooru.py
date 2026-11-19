@@ -93,6 +93,10 @@ class GelbooruWorker(BaseWorker):
 
         collected_count = 0
         pid = 0
+        # pid is a page number and the server offsets by limit: a per-page
+        # limit that shrank with the remaining amount made later pages
+        # re-serve earlier posts. Keep one size for the whole run.
+        page_limit = min(100, self.amount) if self.amount > 0 else 100
 
         consecutive_errors = 0
         retried_rate_limit = False
@@ -100,8 +104,7 @@ class GelbooruWorker(BaseWorker):
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
-                limit_val = min(100, self.amount - collected_count if self.amount > 0 else 100)
-                params = {"page": "dapi", "s": "post", "q": "index", "tags": self.api_tag, "pid": pid, "limit": limit_val, "json": 1}
+                params = {"page": "dapi", "s": "post", "q": "index", "tags": self.api_tag, "pid": pid, "limit": page_limit, "json": 1}
                 if api_key and user_id:
                     params["api_key"] = api_key
                     params["user_id"] = user_id

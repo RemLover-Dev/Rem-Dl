@@ -55,22 +55,24 @@ class SafebooruWorker(BaseWorker):
 
         collected_count = 0
         pid = 0
+        # pid is a page number and the server offsets by limit: a shrinking
+        # limit shifted later pages back onto earlier posts
+        page_limit = min(100, self.amount) if self.amount > 0 else 100
 
         consecutive_errors = 0
         retried_rate_limit = False
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
-                limit_val = min(100, self.amount - collected_count if self.amount > 0 else 100)
 
                 async with self.session.get("https://safebooru.org/index.php", params={
                     "page": "dapi", "s": "post", "q": "index",
-                    "tags": self.original_tag, "pid": pid, "limit": limit_val, "json": 1
+                    "tags": self.original_tag, "pid": pid, "limit": page_limit, "json": 1
                 }) as resp:
                     if resp.status in [403, 429]:
                         if not retried_rate_limit:
                             retried_rate_limit = True
-                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {pid_page}")
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {pid}")
                             await asyncio.sleep(30)
                             continue
                         self.log(f"ERROR {resp.status}. Change proxy.")

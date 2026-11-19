@@ -195,8 +195,12 @@ class PinterestWorker(BaseWorker):
             finally:
                 _restore_proxy_env(saved)
 
-        from pinterest_dl import PinterestDL
-        from pinterest_dl.download import MediaDownloader
+        try:
+            from pinterest_dl import PinterestDL
+            from pinterest_dl.download import MediaDownloader
+        except ImportError:
+            self.log("pinterest-dl is not installed — run: pip install pinterest-dl")
+            return
 
         client = PinterestDL.with_api(timeout=5, verbose=False, ensure_alt=True)
 
@@ -221,13 +225,16 @@ class PinterestWorker(BaseWorker):
             self.log("No auth — public content only")
 
         existing = await asyncio.to_thread(self._count_existing)
-        fetch_num = self.amount + existing
+        # 0 means "all" on every other tab; pinterest-dl needs a finite number,
+        # and a 0 here made on_progress reject every pin and report "none found"
+        want = self.amount or 200
+        fetch_num = want + existing
 
         seen_ids = set()
         collected = []
 
         def on_progress(media):
-            if len(collected) >= self.amount:
+            if len(collected) >= want:
                 return
             if media.id in seen_ids:
                 return
@@ -238,7 +245,7 @@ class PinterestWorker(BaseWorker):
             collected.append(media)
             shared.socketio_emit("pinterest_progress", {
                 "index": len(collected),
-                "total": self.amount,
+                "total": want,
                 "alt": media.alt or "",
                 "id": media.id
             })
@@ -252,7 +259,7 @@ class PinterestWorker(BaseWorker):
             self.log(f"Scrape error: {e}")
             return
 
-        medias = collected[:self.amount]
+        medias = collected[:want]
         if not medias:
             self.log("No media found.")
             return
@@ -306,7 +313,7 @@ class PinterestWorker(BaseWorker):
                 self._remember_filename(filename)
 
                 downloaded += 1
-                self.log(f"[SUCCESS] Downloaded {filename} ({downloaded}/{self.amount}) |PATH| {rel} |TAGS| {', '.join(tags[:5])}")
+                self.log(f"[SUCCESS] Downloaded {filename} ({downloaded}/{want}) |PATH| {rel} |TAGS| {', '.join(tags[:5])}")
             except Exception as e:
                 self.log(f"[FAILED] {media.id}: {e}")
 

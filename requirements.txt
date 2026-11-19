@@ -18,3 +18,5 @@ pillow-jxl-plugin>=1.3,<2
 imagehash>=4.3,<5
 # X (Twitter) worker loguru wiring
 loguru>=0.7,<1
+# Pinterest worker (public API + cookie search; [browser] extra only for login)
+pinterest-dl>=1.3,<2

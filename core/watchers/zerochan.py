@@ -1,6 +1,5 @@
-"""Zerochan watcher adapter: ?json API over curl_cffi/chrome131 (same
-engine family as the patched gallery-dl extractor). No created_at in
-the listing -> the baseline swallows everything (conservative)."""
+"""Zerochan watcher adapter: ?json API over curl_cffi/chrome131.
+No created_at in the listing -> the baseline swallows everything."""
 
 import json
 import urllib.parse
@@ -33,13 +32,19 @@ def fetch(encoded_tag, pid):
                           # interstitial; zerochan allows gallery-dl clients
                           "User-Agent": "gallery-dl"},
                  verify=bool(st.get("verify_tls", True)))
-    if resp.status_code != 200:
-        raise RuntimeError(f"zerochan HTTP {resp.status_code}")
     text = resp.text or ""
-    # strip ad-script inserts like the patched extractor does
-    if "window.adsbygoogle" in text:
-        text = "{" + text[text.find('"items":'):]
-    return json.loads(text).get("items") or []
+    if not text or (resp.status_code != 200 and '"items"' not in text):
+        raise RuntimeError(f"zerochan HTTP {resp.status_code}")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        # the template sometimes answers 500 with the real object wrapped in
+        # junk ("{\r\n{...items...}\r\n</ul>"); re-anchor and stop at its end
+        pos = text.find('"items"')
+        if pos < 0:
+            raise
+        data = json.JSONDecoder().raw_decode("{" + text[pos:])[0]
+    return data.get("items") or []
 
 
 def fields(p):

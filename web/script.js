@@ -699,9 +699,12 @@ function updateProgressBar(worker, msg) {
         let match = msg.match(/All (\d+) downloads/);
         let countText = match ? match[1] : "";
 
-        let endText = countText ? `${CHECK_SVG} All ${countText} Media Downloaded Successfully! ${CHECK_SVG}` : `${CHECK_SVG} Task Finished Successfully!`;
+        let endText = countText ? `${CHECK_SVG} All ${countText} Media Downloaded Successfully! ${CHECK_SVG}` : `${CHECK_SVG} Task Finished Successfully! ${CHECK_SVG}`;
+        // nothing found is not a success: warning icons on both sides, red
+        let endColor = "#2ecc71", endGlow = "rgba(46, 204, 113, 0.5)";
         if (msg.includes("No new") || msg.includes("No posts")) {
-            endText = `${CHECK_SVG} No New Images Found.`;
+            endText = `${WARN_ICON} No New Images Found. ${WARN_ICON}`;
+            endColor = "#e74c3c"; endGlow = "rgba(231, 76, 60, 0.45)";
         }
         if (msg.includes("failed to download!")) {
             let failMatch = msg.match(/([\d]+) failed to download!/);
@@ -712,7 +715,7 @@ function updateProgressBar(worker, msg) {
         }
 
         // جایگزین کردن کل ساختار نوارها با یک متن وسط‌چین و بزرگ
-        container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: #2ecc71; text-shadow: 0 0 10px rgba(46, 204, 113, 0.5);">${endText}</div>`;
+        container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: ${endColor}; text-shadow: 0 0 10px ${endGlow};">${endText}</div>`;
         return;
     }
 
@@ -759,13 +762,14 @@ function renderConvertingBar(worker, done, total, current) {
     _convertingBar[worker] = true;
     if (workerRunning[worker] !== false) { workerRunning[worker] = false; renderRunBtn(worker); }
     const pct = total > 0 ? Math.max(0, Math.min(100, Math.round(done * 100 / total))) : 0;
+    const countText = total > 1 ? `${done}/${total} · ` : "";
     const label = current ? `${GEAR_SVG} Converting <span style="opacity:.85">${escapeHtml(current)}</span>` : `${GEAR_SVG} Converting...`;
     container.innerHTML = `
     <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:10px; margin-bottom:5px;">
     <span>${label}</span>
-    <span id="cvText_${key}">${pct}%</span>
+    <span id="cvText_${key}">${countText}${pct}%</span>
     </div>
-    <div class="progress-bar-bg${current && pct === 0 ? ' cv-indet' : ''}"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
+    <div class="progress-bar-bg${current ? ' cv-indet' : ''}"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
     `;
     container.style.display = "block";
     // the encoder is one blocking call with no intra-encode progress — tick
@@ -779,7 +783,7 @@ function renderConvertingBar(worker, done, total, current) {
     _cvTimer[worker].iv = setInterval(() => {
         if (!_convertingBar[worker]) { clearInterval(_cvTimer[worker].iv); return; }
         const el = document.getElementById("cvText_" + key);
-        if (el) el.textContent = `${pct}% (${Math.round((Date.now() - t0) / 1000)}s)`;
+        if (el) el.textContent = `${countText}${pct}% (${Math.round((Date.now() - t0) / 1000)}s)`;
         else clearInterval(_cvTimer[worker].iv);
     }, 1000);
 }

@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -59,6 +60,36 @@ def test_preview_strips_audio(tmp_path):
     # second call hits the cache, no new file
     assert preview_path(str(src), str(cache)) == out
     assert len(os.listdir(cache)) == 1
+
+
+def test_prune_removes_cold_previews_only(tmp_path):
+    from core.preview_cache import prune_older_than
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cold = cache / "cold.mp4"
+    warm = cache / "warm.mp4"
+    cold.write_bytes(b"x")
+    warm.write_bytes(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(str(cold), (old, old))
+    assert prune_older_than(str(cache), days=30) == 1
+    assert not cold.exists()
+    assert warm.exists()
+
+
+def test_serving_a_preview_touches_its_cache(tmp_path):
+    from core.preview_cache import _cache_path, ready_for
+    src = tmp_path / "video.mp4"
+    src.write_bytes(b"v")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cached = _cache_path(str(src), str(cache))
+    with open(cached, "wb") as f:
+        f.write(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(cached, (old, old))
+    assert ready_for(str(src), str(cache)) == cached
+    assert time.time() - os.path.getmtime(cached) < 60
 
 
 @requires_ffmpeg

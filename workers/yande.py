@@ -70,6 +70,9 @@ class YandeWorker(BaseWorker):
 
         collected_count = 0
         page = 1
+        # page number + limit on the server side: keep the size constant or
+        # later pages offset back onto posts already fetched
+        page_limit = min(100, self.amount) if self.amount > 0 else 100
 
         consecutive_errors = 0
         retried_rate_limit = False
@@ -77,9 +80,8 @@ class YandeWorker(BaseWorker):
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
-                limit_val = min(100, self.amount - collected_count if self.amount > 0 else 100)
 
-                async with self.session.get("https://yande.re/post.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}) as resp:
+                async with self.session.get("https://yande.re/post.json", params={"tags": self.api_tag, "page": page, "limit": page_limit}) as resp:
                     if resp.status in [403, 429]:
                         if not retried_rate_limit:
                             retried_rate_limit = True
