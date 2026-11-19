@@ -2,7 +2,7 @@
 // Tag selection lives in the DOM (.tag-sel-on), so a re-render drops it for
 // free — no ids to prune and no stale state between views.
 
-const TAG_SEL_SEL = '[data-sel-tag]';
+const TAG_SEL_SEL = '[data-sel-tag], [data-sel-dims]';
 const TAG_BOX_SEL = '.g-meta-tags, .hist-tags, .console-log, #historyListUI, #favoritesListUI';
 const SEL_THRESHOLD = 5;
 
@@ -29,8 +29,15 @@ function tagSelClear() {
 }
 
 function tagSelItems() {
-    return [...document.querySelectorAll('.tag-sel-on')]
+    return [...document.querySelectorAll('.tag-sel-on[data-sel-tag]')]
         .map(el => ({ tag: el.dataset.selTag, site: el.dataset.selSite || '' }));
+}
+
+// dimension pills are selectable but are not tags — the bulk menu only
+// copies them, it never searches/favourites them as a tag
+function dimSelItems() {
+    return [...document.querySelectorAll('.tag-sel-on[data-sel-dims]')]
+        .map(el => el.dataset.selDims);
 }
 
 function _selHits(el, r) {

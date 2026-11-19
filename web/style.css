@@ -1399,49 +1399,51 @@ body { transition: color 0.3s ease; }
 .g-tag-pill { background: rgba(255,255,255,0.08); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 20px; font-size: 11px; cursor: pointer; transition: 0.2s; white-space: nowrap; color: #ccc; text-shadow: none; letter-spacing: 0; -webkit-font-smoothing: antialiased;}
 /* 10-12px badges inherit the global 4px text-shadow — it smears at this size (same fix as .g-tag-pill) */
 .img-card-rating, .img-card-title span, .g-meta-badges span { text-shadow: none; letter-spacing: 0; -webkit-font-smoothing: antialiased; }
-.g-tag-pill:hover { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
+.g-tag-pill:hover, .g-tag-pill.tag-sel-on { background: var(--title-color); color: #000; box-shadow: 0 0 0 1px var(--title-color); }
 
 /* Tag category colors */
 .tag-artist { background: rgba(255, 140, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 140, 0, 0.4); color: #ffc069; }
-.tag-artist:hover { background: #e67e00; color: #000; box-shadow: 0 0 0 1px #e67e00; }
+.tag-artist:hover, .tag-artist.tag-sel-on { background: #e67e00; color: #000; box-shadow: 0 0 0 1px #e67e00; }
 .tag-character { background: rgba(0, 128, 0, 0.15); box-shadow: 0 0 0 1px rgba(0, 128, 0, 0.4); color: #7ce47c; }
-.tag-character:hover { background: #228b22; color: #000; box-shadow: 0 0 0 1px #228b22; }
+.tag-character:hover, .tag-character.tag-sel-on { background: #228b22; color: #000; box-shadow: 0 0 0 1px #228b22; }
 .tag-copyright { background: rgba(255, 105, 180, 0.15); box-shadow: 0 0 0 1px rgba(255, 105, 180, 0.4); color: #ffa4d1; }
-.tag-copyright:hover { background: #ff69b4; color: #000; box-shadow: 0 0 0 1px #ff69b4; }
+.tag-copyright:hover, .tag-copyright.tag-sel-on { background: #ff69b4; color: #000; box-shadow: 0 0 0 1px #ff69b4; }
 .tag-metadata { background: rgba(255, 165, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 165, 0, 0.4); color: #ffd07a; }
-.tag-metadata:hover { background: #ffa500; color: #000; box-shadow: 0 0 0 1px #ffa500; }
+.tag-metadata:hover, .tag-metadata.tag-sel-on { background: #ffa500; color: #000; box-shadow: 0 0 0 1px #ffa500; }
 .tag-tag { background: rgba(0, 255, 255, 0.1); box-shadow: 0 0 0 1px rgba(0, 255, 255, 0.3); color: #7df2f2; }
-.tag-tag:hover { background: #00e5e5; color: #000; box-shadow: 0 0 0 1px #00e5e5; }
+.tag-tag:hover, .tag-tag.tag-sel-on { background: #00e5e5; color: #000; box-shadow: 0 0 0 1px #00e5e5; }
 .tag-mangaka { background: rgba(255, 69, 0, 0.15); box-shadow: 0 0 0 1px rgba(255, 69, 0, 0.4); color: #ff8a5c; }
-.tag-mangaka:hover { background: #ff4500; color: #000; box-shadow: 0 0 0 1px #ff4500; }
+.tag-mangaka:hover, .tag-mangaka.tag-sel-on { background: #ff4500; color: #000; box-shadow: 0 0 0 1px #ff4500; }
 .tag-game { background: rgba(138, 43, 226, 0.15); box-shadow: 0 0 0 1px rgba(138, 43, 226, 0.4); color: #d29af2; }
-.tag-game:hover { background: #8a2be2; color: #000; box-shadow: 0 0 0 1px #8a2be2; }
+.tag-game:hover, .tag-game.tag-sel-on { background: #8a2be2; color: #000; box-shadow: 0 0 0 1px #8a2be2; }
 .tag-outfit { background: rgba(219, 112, 147, 0.15); box-shadow: 0 0 0 1px rgba(219, 112, 147, 0.4); color: #f2a0b8; }
-.tag-outfit:hover { background: #db7093; color: #000; box-shadow: 0 0 0 1px #db7093; }
+.tag-outfit:hover, .tag-outfit.tag-sel-on { background: #db7093; color: #000; box-shadow: 0 0 0 1px #db7093; }
 .tag-theme { background: rgba(65, 105, 225, 0.15); box-shadow: 0 0 0 1px rgba(65, 105, 225, 0.4); color: #9ab4f5; }
-.tag-theme:hover { background: #4169e1; color: #000; box-shadow: 0 0 0 1px #4169e1; }
+.tag-theme:hover, .tag-theme.tag-sel-on { background: #4169e1; color: #000; box-shadow: 0 0 0 1px #4169e1; }
 .tag-source { background: rgba(169, 169, 169, 0.15); box-shadow: 0 0 0 1px rgba(169, 169, 169, 0.4); color: #d6d6d6; }
-.tag-source:hover { background: #a9a9a9; color: #000; box-shadow: 0 0 0 1px #a9a9a9; }
+.tag-source:hover, .tag-source.tag-sel-on { background: #a9a9a9; color: #000; box-shadow: 0 0 0 1px #a9a9a9; }
 .tag-meta { background: rgba(128, 128, 128, 0.15); box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.4); color: #cfcfcf; }
-.tag-meta:hover { background: #808080; color: #000; box-shadow: 0 0 0 1px #808080; }
+.tag-meta:hover, .tag-meta.tag-sel-on { background: #808080; color: #000; box-shadow: 0 0 0 1px #808080; }
 .tag-vtuber { background: rgba(255, 110, 199, 0.15); box-shadow: 0 0 0 1px rgba(255, 110, 199, 0.4); color: #ff6ec7; }
-.tag-vtuber:hover { background: #ff6ec7; color: #000; box-shadow: 0 0 0 1px #ff6ec7; }
+.tag-vtuber:hover, .tag-vtuber.tag-sel-on { background: #ff6ec7; color: #000; box-shadow: 0 0 0 1px #ff6ec7; }
 .tag-series { background: rgba(0, 191, 255, 0.15); box-shadow: 0 0 0 1px rgba(0, 191, 255, 0.4); color: #00bfff; }
-.tag-series:hover { background: #00bfff; color: #000; box-shadow: 0 0 0 1px #00bfff; }
+.tag-series:hover, .tag-series.tag-sel-on { background: #00bfff; color: #000; box-shadow: 0 0 0 1px #00bfff; }
 .tag-group { background: rgba(189, 183, 107, 0.15); box-shadow: 0 0 0 1px rgba(189, 183, 107, 0.4); color: #bdb76b; }
-.tag-group:hover { background: #bdb76b; color: #000; box-shadow: 0 0 0 1px #bdb76b; }
+.tag-group:hover, .tag-group.tag-sel-on { background: #bdb76b; color: #000; box-shadow: 0 0 0 1px #bdb76b; }
 .tag-studio { background: rgba(188, 143, 143, 0.15); box-shadow: 0 0 0 1px rgba(188, 143, 143, 0.4); color: #bc8f8f; }
-.tag-studio:hover { background: #bc8f8f; color: #000; box-shadow: 0 0 0 1px #bc8f8f; }
+.tag-studio:hover, .tag-studio.tag-sel-on { background: #bc8f8f; color: #000; box-shadow: 0 0 0 1px #bc8f8f; }
 .tag-hair { background: rgba(163, 230, 53, 0.15); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(163, 230, 53, 0.4); color: #a3e635; }
-.tag-hair:hover { background: #a3e635; color: #000; box-shadow: 0 0 0 1px #a3e635; }
+.tag-hair:hover, .tag-hair.tag-sel-on { background: #a3e635; color: #000; box-shadow: 0 0 0 1px #a3e635; }
 .tag-eyes { background: rgba(251, 191, 36, 0.15); border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4); color: #fbbf24; }
-.tag-eyes:hover { background: #fbbf24; color: #000; box-shadow: 0 0 0 1px #fbbf24; }
+.tag-eyes:hover, .tag-eyes.tag-sel-on { background: #fbbf24; color: #000; box-shadow: 0 0 0 1px #fbbf24; }
 /* pixel dimensions pill — same click affordance as the other pills */
 .tag-dims { background: rgba(255, 255, 255, 0.04); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); color: #9a9aa5; }
-.tag-dims:hover { background: #d8d8de; color: #000; box-shadow: 0 0 0 1px #d8d8de; }
+.tag-dims:hover, .tag-dims.tag-sel-on { background: #d8d8de; color: #000; box-shadow: 0 0 0 1px #d8d8de; }
 /* drag-paint / marquee: a dragged-over tag must not text-select under the pointer */
-[data-sel-tag] { -webkit-user-select: none; user-select: none; }
-.tag-sel-on { background: rgba(0, 210, 211, 0.45) !important; color: #000 !important; box-shadow: 0 0 0 1px var(--title-color) !important; }
+[data-sel-tag], [data-sel-dims] { -webkit-user-select: none; user-select: none; }
+/* pills highlight with their own hover colour (rules above); inline-styled
+   tags (log badges, console/history text) fall back to the app highlight */
+.tag-sel-on:not(.g-tag-pill) { background: var(--tab-active-bg) !important; color: var(--title-color) !important; box-shadow: 0 0 0 1px var(--title-color) !important; }
 .sel-band { position: fixed; z-index: 20000; pointer-events: none; border: 1px dashed var(--title-color); background: rgba(0, 210, 211, 0.12); border-radius: 3px; }
 
 /* Right-click menus — file-manager style: flat list, submenus cascade right */

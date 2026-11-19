@@ -233,22 +233,45 @@ async function favouriteImagesBulk(imgs) {
 }
 
 function multiTagContextMenu(e) {
-    const items = tagSelItems();
-    if (items.length < 2) return false;
+    const items = typeof tagSelItems === "function" ? tagSelItems() : [];
+    const dims = typeof dimSelItems === "function" ? dimSelItems() : [];
+    if (items.length + dims.length < 2) return false;
     const tags = items.map(i => i.tag);
     const siteful = items.filter(i => i.site);
-    showContextMenu(e, [
-        { label: `Copy ${items.length} tags`, run: () => copyTextToClipboard(tags.map(cleanTagDisplay).join(", "), `Copied ${items.length} tags`) },
-        { sep: true },
-        { label: `Favourite ${items.length} tags`, disabled: !siteful.length, run: () => favouriteTagsBulk(siteful) },
-        { sep: true },
-        { label: "Search tags", items: [
-            { label: "Exact match", run: () => searchGalleryTags(tags, true) },
-            { label: "Substring", run: () => searchGalleryTags(tags, false) },
-        ]},
-    ]);
+    const menu = [];
+    if (items.length) {
+        menu.push(
+            { label: `Copy ${items.length} tag${items.length === 1 ? "" : "s"}`, run: () => copyTextToClipboard(tags.map(cleanTagDisplay).join(", "), `Copied ${items.length} tag${items.length === 1 ? "" : "s"}`) },
+            { sep: true },
+            { label: `Favourite ${items.length} tag${items.length === 1 ? "" : "s"}`, disabled: !siteful.length, run: () => favouriteTagsBulk(siteful) },
+            { sep: true },
+            { label: "Search tags", items: [
+                { label: "Exact match", run: () => searchGalleryTags(tags, true) },
+                { label: "Substring", run: () => searchGalleryTags(tags, false) },
+            ]});
+    }
+    if (dims.length) {
+        if (menu.length) menu.push({ sep: true });
+        menu.push({ label: `Copy ${dims.length} dimension${dims.length === 1 ? "" : "s"}`, run: () => copyTextToClipboard(dims.join(", "), `Copied ${dims.length} dimension${dims.length === 1 ? "" : "s"}`) });
+    }
+    showContextMenu(e, menu);
     return true;
 }
+
+// a multi-selection owns the right-click: anywhere in the window opens the
+// bulk menu, not just on a selected pill/card. Capture phase so the element's
+// own inline oncontextmenu never runs.
+document.addEventListener('contextmenu', e => {
+    if (e.target.closest && e.target.closest('.ctx-menu, input, textarea, select')) return;
+    if (document.querySelector('.tag-sel-on') && multiTagContextMenu(e)) {
+        e.preventDefault(); e.stopPropagation(); return;
+    }
+    if (typeof gallerySelected === "undefined" || typeof galleryState === "undefined") return;
+    const ids = [...gallerySelected.keys()].map(String);
+    if (ids.length < 2) return;
+    const imgs = ids.map(x => galleryState.images.find(i => String(i.id) === x)).filter(Boolean);
+    if (imgs.length > 1) { e.preventDefault(); e.stopPropagation(); multiImageContextMenu(e, imgs); }
+}, true);
 
 async function favouriteTagsBulk(pairs) {
     for (const { tag, site } of pairs) {

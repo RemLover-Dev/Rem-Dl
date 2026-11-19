@@ -305,7 +305,7 @@ function renderCategorizedTags(tagsInput, clickable, img) {
     // pixel dims trail the tag pills (-1 sentinel rows hide; click filters)
     const dw = Number(img && img.width), dh = Number(img && img.height);
     if (dw > 0 && dh > 0) {
-        html += `<span class="g-tag-pill tag-dims" onclick="searchGalleryDims(${dw}, ${dh})" oncontextmenu="dimsContextMenu(event, ${dw}, ${dh})">${dw}&times;${dh}</span>`;
+        html += `<span class="g-tag-pill tag-dims" data-sel-dims="${dw}x${dh}" onclick="searchGalleryDims(${dw}, ${dh})" oncontextmenu="dimsContextMenu(event, ${dw}, ${dh})">${dw}&times;${dh}</span>`;
     }
     return html;
 }
