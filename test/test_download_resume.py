@@ -4,6 +4,7 @@ import os
 
 import aiohttp
 
+from core import shared
 from core.shared import BaseDownloader
 
 
@@ -108,3 +109,8 @@ def test_truncated_download_resumes_with_range(monkeypatch, tmp_path):
         assert f.read() == full
     assert not os.path.exists(filepath + ".part")
     assert not any("[FAILED]" in m for m in logs)
+    # the publish reaper is a daemon thread: a spec left here fires after
+    # teardown with the real send_tags and leaks a history row into whatever
+    # test runs next (seen on the Windows runner)
+    with shared._PUBLISH_HOLD_LOCK:
+        shared._PENDING_PUBLISH.clear()
