@@ -392,15 +392,16 @@ class ZerochanWorker(BaseDownloader):
     def _gallery_dl_enumerate(self, tag, page=1, page_size=10):
         """One page of posts via gallery-dl using the Settings login.
 
-        gallery-dl lists the whole tag (up to the 200-post cap) in a single
-        process and request, so the listing is fetched once and later pages
-        are sliced from it. Returns (posts, engine_ok); engine_ok False means
+        gallery-dl lists the whole tag (up to the run's cap) in a single
+        process, so the listing is fetched once and later pages are sliced
+        from it. Returns (posts, engine_ok); engine_ok False means
         gallery-dl itself failed and the caller must switch engines.
         """
         if getattr(self, "_gdl_listing", None) is None:
             # always list the full cap: already-downloaded posts are filtered
             # out below, so a smaller listing would starve a small amount
-            posts, engine_ok = self._gallery_dl_list(tag, 200)
+            posts, engine_ok = self._gallery_dl_list(
+                tag, getattr(self, "_gdl_limit", 200))
             if not engine_ok:
                 return [], False
             self._gdl_listing = posts
@@ -1050,6 +1051,14 @@ class ZerochanWorker(BaseDownloader):
         page = 1
         MAX_PAGES = 50
         PAGE_SIZE = 10
+        # One gallery-dl process covers the whole run: its listing is sliced
+        # locally, so the range follows the requested amount (200 is the floor
+        # — known posts are filtered out after listing and must not starve it).
+        # 2000 caps one listing walk (~20 requests) for absurd amounts.
+        self._gdl_limit = min(max(200, self.amount or 200), 2000)
+        if self.amount <= 0 or self.amount > self._gdl_limit:
+            self.log(f"gallery-dl lists at most {self._gdl_limit} posts per run; "
+                     f"re-run to continue past that.")
         # gallery-dl first only when it can actually log in: with the user's
         # Zerochan credentials it sees posts the anonymous API hides, and that
         # is the whole reason it stays the preferred engine.
@@ -1084,14 +1093,6 @@ class ZerochanWorker(BaseDownloader):
                 break
 
             if use_gallery_dl:
-                # gallery-dl's listing stops at 200 posts: hand over to the
-                # built-in API BEFORE asking for a range past the cap
-                if (page - 1) * PAGE_SIZE >= 200:
-                    use_gallery_dl = False
-                    self.log("gallery-dl listing cap (200) reached — switching "
-                             "to the built-in Zerochan API for the rest of the tag.")
-                    page = (page - 1) * PAGE_SIZE // json_per_page + 1
-                    continue
                 # the whole tag is listed once; later pages are local slices
                 self.log(f"Scanning gallery-dl... (Page {page})")
                 posts, engine_ok = await asyncio.to_thread(

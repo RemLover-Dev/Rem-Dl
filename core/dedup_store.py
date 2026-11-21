@@ -469,6 +469,17 @@ def is_larger(new_q: tuple, old_q: tuple) -> bool:
     return new_sz > old_sz
 
 
+def sizes_comparable(new_path: str, old_path: str) -> bool:
+    """Bytes only break a keep-larger tie within one format family.
+
+    Auto-JXL shrinks a file without changing its pixels, so the stored JXL is
+    always smaller than the PNG/JPEG it replaced. Comparing bytes across the
+    two would keep the bigger original and throw the converted file away.
+    """
+    jxl = lambda p: os.path.splitext(str(p or ""))[1].lower() == ".jxl"
+    return jxl(new_path) == jxl(old_path)
+
+
 def compute_signature(path: str) -> Signature:
     rgb, cw, ch = _prepare(path)
 
@@ -1024,7 +1035,8 @@ class DedupStore:
                     except OSError:
                         new_size = 0
                     new_q = (sig.content_w * sig.content_h, new_size)
-                    if is_larger(new_q, self._row_quality(match)):
+                    if (sizes_comparable(filepath, match["filepath"])
+                            and is_larger(new_q, self._row_quality(match))):
                         return self._replace_with_larger_locked(
                             match, filepath, sig, site, post_id)
                 return DedupResult(

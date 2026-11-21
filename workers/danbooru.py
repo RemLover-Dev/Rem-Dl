@@ -45,7 +45,7 @@ class DanbooruWorker(BaseWorker):
 
     async def _log_auth_status(self):
         # ponytail: one cheap call so the log states the real tier —
-        # Member accounts keep the 2-tag cap, so "authenticated" alone misleads
+        # Member accounts keep the 3-tag cap, so "authenticated" alone misleads
         try:
             async with self.session.get(
                     "https://danbooru.donmai.us/profile.json",
@@ -60,7 +60,7 @@ class DanbooruWorker(BaseWorker):
                 name = prof.get("name", self.dan_login)
                 tier = prof.get("level_string", "")
                 if tier.lower() == "member":
-                    self.log(f"Authenticated as {name} ({tier} — 2-tag search limit still applies; higher tiers raise it)")
+                    self.log(f"Authenticated as {name} ({tier} — 3-tag search limit still applies; higher tiers raise it)")
                 elif tier:
                     self.log(f"Authenticated as {name} ({tier})")
                 else:

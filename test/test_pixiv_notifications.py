@@ -165,25 +165,17 @@ def test_missing_token_logs_steps_once(store, monkeypatch):
     assert lines == []
 
 
-def test_interval_clamps_to_1_2_hours(store, monkeypatch):
-    for value, expected in [(30, 60), (60, 60), (90, 90), (120, 120), (500, 120)]:
-        monkeypatch.setattr(pn.DatabaseManager, "load_ui_config",
-                            lambda v=value: {"pixiv_watch_minutes": v})
-        assert pn.interval_minutes() == expected
-    monkeypatch.setattr(pn.DatabaseManager, "load_ui_config",
-                        lambda: {"pixiv_watch_minutes": "junk"})
-    assert pn.interval_minutes() == 90
+def test_interval_is_30_minutes(store):
+    assert pn.interval_minutes() == 30
 
 
-def test_timer_counts_while_closed(store, monkeypatch):
-    monkeypatch.setattr(pn.DatabaseManager, "load_ui_config",
-                        lambda: {"pixiv_watch_minutes": 90})
+def test_timer_counts_while_closed(store):
     # never checked -> due immediately (scan once the app is open)
     assert pn.seconds_until_due() == 0
-    # checked 20 min ago -> 70 min of wall-clock left
-    pn._stamp_check(time.time() - 20 * 60)
+    # checked 10 min ago -> 20 min of wall-clock left
+    pn._stamp_check(time.time() - 10 * 60)
     due = pn.seconds_until_due()
-    assert 69 * 60 <= due <= 70 * 60
+    assert 19 * 60 <= due <= 20 * 60
     # checked 3 h ago (PC was off) -> overdue, scan at once
     pn._stamp_check(time.time() - 180 * 60)
     assert pn.seconds_until_due() == 0
@@ -215,14 +207,12 @@ def test_clear_does_not_renotify(store):
     assert [e["work_id"] for e in fresh] == ["3"]
 
 
-def test_api_endpoints(store, monkeypatch):
-    monkeypatch.setattr(pn.DatabaseManager, "load_ui_config",
-                        lambda: {"pixiv_watch_minutes": 90})
+def test_api_endpoints(store):
     client = Rems_Dl.app.test_client()
     client.environ_base["HTTP_USER_AGENT"] = "RemsDlDesktopApp test"
     data = client.get("/api/pixiv/notifications").get_json()
     assert data["items"] == [] and data["unread"] == 0
-    assert data["interval_minutes"] == 90
+    assert data["interval_minutes"] == 30
 
     pn.ingest([_work(1), _work(2)])
     assert client.get("/api/pixiv/notifications").get_json()["unread"] == 2
@@ -233,6 +223,21 @@ def test_api_endpoints(store, monkeypatch):
     r = client.post("/api/pixiv/notifications/clear")
     assert r.status_code == 200 and r.get_json()["unread"] == 0
     assert client.get("/api/pixiv/notifications").get_json()["items"] == []
+
+
+def test_general_notifications_endpoint_mixes_sources(store):
+    client = Rems_Dl.app.test_client()
+    client.environ_base["HTTP_USER_AGENT"] = "RemsDlDesktopApp test"
+    pn.ingest([_work(1)])
+    notifications.ingest("gelbooru", [{"external_id": "g1", "title": "rem"}])
+    data = client.get("/api/notifications?source=all").get_json()
+    assert {i["source"] for i in data["items"]} == {"pixiv", "gelbooru"}
+    assert data["unread"] == 2
+    # the startup dot fetch returns counts only
+    assert client.get("/api/notifications").get_json()["items"] == []
+    assert client.post("/api/notifications/read", json={"source": "all"}).get_json()["unread"] == 0
+    assert client.post("/api/notifications/clear", json={"source": "all"}).status_code == 200
+    assert client.get("/api/notifications?source=all").get_json()["items"] == []
 
 
 def test_thumb_rejects_foreign_hosts(store):

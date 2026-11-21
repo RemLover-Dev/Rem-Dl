@@ -4,10 +4,11 @@ SANKA_LOGIN/SANKA_PASSWORD login)."""
 import os
 
 from core.watchers.moe import fields, keep, query
-from core.watchers.net import get, post
+from core.watchers.net import api_settings, get, post
 
 LIMIT = 40
 API = "https://sankakuapi.com"
+NAME = "Sankaku"
 
 
 def _headers():
@@ -16,7 +17,9 @@ def _headers():
          "Referer": "https://www.sankakucomplex.com/"}
     token = os.getenv("SANKA_ACCESS_TOKEN", "")
     if not token:
-        login, pw = os.getenv("SANKA_LOGIN", ""), os.getenv("SANKA_PASSWORD", "")
+        cfg = api_settings()
+        login = cfg.get("sanka_login") or ""
+        pw = cfg.get("sanka_password") or ""
         if login and pw:
             for url in (f"{API}/auth/token",
                         "https://login.sankakucomplex.com/auth/token"):
@@ -40,7 +43,7 @@ def fetch(api_tag, pid):
                params={"limit": LIMIT, "page": pid + 1, "tags": api_tag},
                headers=_headers())
     if resp.status_code in (401, 403, 429):
-        raise RuntimeError(f"sankaku HTTP {resp.status_code}")
+        raise RuntimeError(f"HTTP {resp.status_code}")
     resp.raise_for_status()
     posts = resp.json() or []
     return posts if isinstance(posts, list) else []

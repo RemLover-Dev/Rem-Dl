@@ -13,6 +13,7 @@ from core.watchers.net import get
 # search pages show ~20 thumbs — approximate, only feeds the cap text
 LIMIT = 20
 TAGS_DB = os.path.join(DATABASE_DIR, "eshuushuu_tags.json")
+NAME = "E-shuushuu"
 
 
 def _tag_id(name):
@@ -65,7 +66,7 @@ def query(tags, ratings):
         name = " ".join(t.replace("_", " ").split())
         tid = _tag_id(name)
         if not tid:
-            raise RuntimeError(f"unknown e-shuushuu tag '{t}'")
+            raise RuntimeError(f"unknown tag '{t}'")
         ids.append(tid)
     return ",".join(ids)
 
@@ -79,7 +80,7 @@ def fetch(api_tag, pid):
     params.append(f"page={pid + 1}")
     resp = get(f"https://e-shuushuu.net/search?{'&'.join(params)}", timeout=15)
     if resp.status_code in (403, 429):
-        raise RuntimeError(f"eshuushuu HTTP {resp.status_code}")
+        raise RuntimeError(f"HTTP {resp.status_code}")
     resp.raise_for_status()
     if "/search" not in str(resp.url):
         return []  # unknown tag -> homepage redirect

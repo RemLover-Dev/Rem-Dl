@@ -25,6 +25,16 @@ MAX_SEEN = 4000
 
 _lock = threading.RLock()
 _migration_done = False
+# parsed-store cache: every UI poll used to re-read and re-parse the file
+_cache = {"key": None, "raw": None}
+
+
+def _stat_key():
+    try:
+        st = os.stat(NOTIF_FILE)
+        return (NOTIF_FILE, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (NOTIF_FILE, None, None)
 
 _HASH_RE = re.compile(r"[0-9a-f]{32}")
 
@@ -44,12 +54,17 @@ def _key(source, external_id, watcher_id=""):
 
 def _save(raw):
     DatabaseManager.save_json(NOTIF_FILE, raw)
+    _cache["raw"] = raw
+    _cache["key"] = _stat_key()
 
 
 def _load():
     """Read the store; fold the legacy pixiv file in on first access."""
     global _migration_done
     with _lock:
+        key = _stat_key()
+        if _cache["raw"] is not None and _cache["key"] == key:
+            return _cache["raw"]
         raw = DatabaseManager.load_json(NOTIF_FILE)
         if not isinstance(raw, dict):
             raw = {}
@@ -60,6 +75,7 @@ def _load():
         if not _migration_done:
             _migration_done = True
             _migrate_legacy_pixiv(raw)
+        _cache["raw"], _cache["key"] = raw, _stat_key()
         return raw
 
 
@@ -202,7 +218,7 @@ def mark_read(source, keys=None):
         raw = _load()
         kset = set(keys) if keys else None
         for i in raw["items"]:
-            if i.get("source") != source:
+            if source != "all" and i.get("source") != source:
                 continue
             if (kset is None or i.get("key") in kset
                     or i.get("external_id") in kset):
@@ -263,12 +279,12 @@ def drop_downloaded(source, url="", filename="", file_hash=""):
 
 def clear(source):
     """Drop a source's notifications but remember their keys, so the next
-    scan doesn't re-notify them."""
+    scan doesn't re-notify them. source="all" clears every source."""
     with _lock:
         raw = _load()
         keep, moved = [], []
         for i in raw["items"]:
-            if i.get("source") == source:
+            if source == "all" or i.get("source") == source:
                 if i.get("key"):
                     moved.append(i["key"])
             else:

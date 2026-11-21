@@ -687,10 +687,12 @@ function updateProgressBar(worker, msg) {
     // 1. نمایش پیام پایانی بزرگ و زیبا و حذف نوارها
     if (msg.includes("Queue finished")) {
         workerRunning[worker] = false; renderRunBtn(worker);
-        const m = msg.match(/Queue finished: (\d+) tasks(?:, (\d+) downloaded)?(?:, (\d+) failed)?/);
-        const jobs = m ? m[1] : "", d = m && m[2] ? m[2] : "0", f = m && m[3] ? m[3] : "0";
+        const m = msg.match(/Queue finished: (\d+) tasks(?:, (\d+) downloaded)?(?:, (\d+) failed)?(?: \(([^)]*)\))?/);
+        const jobs = m ? m[1] : "", d = m && m[2] ? m[2] : "0", f = m && m[3] ? m[3] : "0", z = m && m[4] ? m[4] : "";
         let endText = `${CHECK_SVG} Queue finished: ${jobs} tasks - ${d} downloaded`;
         if (f !== "0") endText += `, <span style="color: #e74c3c;">${f} failed</span>`;
+        if (z) endText += ` (${z})`;
+        endText += ` ${CHECK_SVG}`;
         container.innerHTML = `<div style="text-align:center; padding: 20px 0; font-size: 17px; font-weight: bold; color: #2ecc71; text-shadow: 0 0 10px rgba(46, 204, 113, 0.5);">${endText}</div>`;
         return;
     }
@@ -761,13 +763,17 @@ function renderConvertingBar(worker, done, total, current) {
     if (!container) return;
     _convertingBar[worker] = true;
     if (workerRunning[worker] !== false) { workerRunning[worker] = false; renderRunBtn(worker); }
-    const pct = total > 0 ? Math.max(0, Math.min(100, Math.round(done * 100 / total))) : 0;
-    const countText = total > 1 ? `${done}/${total} · ` : "";
-    const label = current ? `${GEAR_SVG} Converting <span style="opacity:.85">${escapeHtml(current)}</span>` : `${GEAR_SVG} Converting...`;
+    // all files converted but the window waits for the last cards to publish —
+    // never show 100% while that finishing step can still take a while
+    const finishing = total > 0 && done >= total;
+    const pct = finishing ? 99 : (total > 0 ? Math.max(0, Math.min(99, Math.floor(done * 100 / total))) : 0);
+    const countText = !finishing && total > 1 ? `${Math.floor(done)}/${total} · ` : "";
+    const label = finishing ? `${GEAR_SVG} Finishing...` : (current ? `${GEAR_SVG} Converting <span style="opacity:.85">${escapeHtml(current)}</span>` : `${GEAR_SVG} Converting...`);
+    const head = finishing ? "" : `${countText}${pct}%`;
     container.innerHTML = `
     <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:10px; margin-bottom:5px;">
     <span>${label}</span>
-    <span id="cvText_${key}">${countText}${pct}%</span>
+    <span id="cvText_${key}">${head}</span>
     </div>
     <div class="progress-bar-bg${current ? ' cv-indet' : ''}"><div class="progress-bar-fill cv-shimmer" id="cvBar_${key}" style="width:${pct}%; background: linear-gradient(90deg, #9b59b6, #e84393);"></div></div>
     `;
@@ -783,7 +789,7 @@ function renderConvertingBar(worker, done, total, current) {
     _cvTimer[worker].iv = setInterval(() => {
         if (!_convertingBar[worker]) { clearInterval(_cvTimer[worker].iv); return; }
         const el = document.getElementById("cvText_" + key);
-        if (el) el.textContent = `${countText}${pct}% (${Math.round((Date.now() - t0) / 1000)}s)`;
+        if (el) el.textContent = head ? `${head} (${Math.round((Date.now() - t0) / 1000)}s)` : `(${Math.round((Date.now() - t0) / 1000)}s)`;
         else clearInterval(_cvTimer[worker].iv);
     }, 1000);
 }
@@ -1151,16 +1157,41 @@ function renderWatcherTags() {
 }
 function onWatcherRatingChange() { onMultiRatingChange('watcherRatingDropdown', 'watcherGelRating'); }
 
-// one watcher panel serves every source with watcherPanel: true —
-// it manages whichever source the Notifications tab is currently showing
 function watcherSourceId() {
-    const s = notifSourceId();
-    return (NOTIF_SOURCES[s] && NOTIF_SOURCES[s].watcherPanel) ? s : "gelbooru";
+    const el = document.getElementById("watcherSource");
+    return (el && el.value) || "gelbooru";
+}
+
+// tag-suggest route per watcher source (source ids differ from the
+// downloader tab keys: danbooru→dan, konachan→kona, ...)
+const WATCHER_SUGGEST = {
+    gelbooru: "gelbooru", danbooru: "dan", safebooru: "safe", rule34: "rule34",
+    konachan: "kona", yande: "yande", sankaku: "sankaku", gsbooru: "gsbooru",
+    zerochan: "zerochan", eshuushuu: "eshuushuu", anime_dl: "anime_dl",
+};
+
+function syncWatcherRatingBox() {
+    const src = NOTIF_SOURCES[watcherSourceId()] || {};
+    // sources without rating semantics hide the dropdown entirely
+    const rbox = document.getElementById("watcherRatingBox");
+    if (rbox) rbox.style.display = (src.ratings === false) ? "none" : "";
+    // X watches an account, not tags
+    const isX = watcherSourceId() === "x";
+    const label = document.getElementById("watcherTagLabel");
+    if (label) label.textContent = isX ? "Account:" : "Watch tags:";
+    const input = document.getElementById("watcherTag");
+    if (input) input.placeholder = isX ? "e.g. @artist or x.com/artist" : "e.g. rem_blue_hair, 1girl";
+}
+
+function onWatcherSourceChange(sel) {
+    cancelGelWatcherEdit();
+    syncWatcherRatingBox();
+    loadGelWatchers();
 }
 
 async function loadGelWatchers() {
     try {
-        const r = await fetch("/api/watchers?source=" + watcherSourceId());
+        const r = await fetch("/api/watchers");
         const d = await r.json();
         gelWatchers = d.watchers || [];
         renderGelWatcherList();
@@ -1185,13 +1216,14 @@ function renderGelWatcherList() {
     box.innerHTML = gelWatchers.map(w => {
         const ratings = (w.ratings || []).map(r => (GEL_RATING_LABEL[r.split(":")[1]] || r)).join(", ") || "All ratings";
         const last = w.last_checked_at ? relTime(w.last_checked_at) : "never";
+        const site = (NOTIF_SOURCES[w.source] && NOTIF_SOURCES[w.source].name) || w.source;
         const state = w.enabled ? "" : " (disabled)";
-        const err = w.error ? `<div style="color:#e08585; font-size:11px;">⚠ ${escapeHtml(w.error)}</div>` : "";
+        const err = w.error ? `<div style="color:#e08585; font-size:11px;">${WARN_ICON} ${escapeHtml(w.error)} ${WARN_ICON}</div>` : "";
         const pending = !w.initialized ? `<div style="opacity:0.6; font-size:11px;">first check establishes a baseline (no notifications)</div>` : "";
         return `<div style="border:1px solid var(--border-color); border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <div style="flex:1; min-width:200px;">
                 <div style="font-size:13px; font-weight:bold;">${escapeHtml(w.tags.map(t => t.startsWith("-") ? "-" + cleanTagDisplay(t.slice(1)) : cleanTagDisplay(t)).join(" "))}${state}</div>
-                <div style="font-size:11px; opacity:0.7;">${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
+                <div style="font-size:11px; opacity:0.7;">${escapeHtml(site)} · ${escapeHtml(ratings)} · checked ${last} · every ${w.interval_minutes} min</div>
                 ${err}${pending}
             </div>
             <button class="action-btn" onclick="editGelWatcher('${escJs(w.watcher_id)}')">Edit</button>
@@ -1221,6 +1253,9 @@ async function saveGelWatcher() {
 function editGelWatcher(id) {
     const w = gelWatchers.find(x => x.watcher_id === id);
     if (!w) return;
+    // switch the form's site first — its change handler cancels any edit
+    const ssel = document.getElementById("watcherSource");
+    if (ssel && w.source) setSelectValue(ssel, w.source);
     editingWatcherId = id;
     watcherTags = (w.tags || []).slice();
     renderWatcherTags();
@@ -1267,7 +1302,8 @@ async function deleteGelWatcher(id) {
 }
 
 function checkGelWatchersNow() {
-    fetch("/api/watchers/check_now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: watcherSourceId() }) })
+    // no source: the panel lists every site's watchers
+    fetch("/api/watchers/check_now", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
         .then(r => r.json())
         .then(d => {
             if (d.started) showToast("Checking watchers…");
@@ -1843,7 +1879,11 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
 
         suggestTimer = setTimeout(async () => {
             try {
-                let resp = await fetch(apiEndpoint, {
+                // apiEndpoint may be a function: the watcher form's site
+                // select changes the suggest route while the input lives on
+                const url = (typeof apiEndpoint === "function") ? apiEndpoint() : apiEndpoint;
+                if (!url) { dropdown.style.display = "none"; return; }
+                let resp = await fetch(url, {
                     method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ query: queryVal, net_config: globalNetConfig })
                 });
@@ -1957,7 +1997,8 @@ document.addEventListener("DOMContentLoaded", function() {
     enhanceAllSelects();
     setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay);
     setupAutosuggest("gelbooruTag", "gelbooruAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
-    setupAutosuggest("watcherTag", "watcherAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
+    setupAutosuggest("watcherTag", "watcherAutosuggest", function() { const s = WATCHER_SUGGEST[watcherSourceId()]; return s ? "/api/tags/" + s : ""; }, cleanTagDisplay);
+    syncWatcherRatingBox();
     setupAutosuggest("konaTag", "konaAutosuggest", "/api/tags/kona", cleanTagDisplay);
     setupAutosuggest("safeTag", "safeAutosuggest", "/api/tags/safe", cleanTagDisplay);
     setupAutosuggest("sankakuTag", "sankakuAutosuggest", "/api/tags/sankaku", cleanTagDisplay);
@@ -1991,8 +2032,9 @@ socket.on("conversion_progress", function (data) {
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
     if (!data || data.stopped || data.more || data.converting) return;
-    const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
-    const dup = z ? ` (${z} duplicates removed)` : "";
+    const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0, k = data.skipped || 0;
+    const note = [z ? `${z} duplicates removed` : "", k ? `${k} skipped` : ""].filter(Boolean).join(", ");
+    const dup = note ? ` (${note})` : "";
     const jobs = data.jobs || 1;
     if (jobs > 1) {
         showToast(`${siteLabel(data.worker)} finished downloading`);
@@ -2594,13 +2636,12 @@ function openTab(tabName, btn) {
 
 // --- Multi-source notifications ---
 let notifItems = [];
-let notifSource = null;
 const NOTIF_FALLBACK = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%231a1c29' rx='8'/><rect x='30' y='34' width='40' height='32' rx='4' fill='none' stroke='%23888888' stroke-width='4'/><circle cx='42' cy='46' r='4' fill='%23888888'/><path d='M34 62l12-12 8 8 6-6 6 6z' fill='%23888888'/></svg>";
 const GEL_RATING_LABEL = { g: "Safe", s: "Sensitive", q: "Questionable", e: "NSFW" };
 
-// Source registry: dropdown options, unread counts, empty text, card
-// markup and the ⚡ flash all come from here — adding a source means
-// adding one entry, not threading if/else through the UI.
+// Source registry: display name, toast, card markup and the ⚡ flash all
+// come from here — the general feed mixes sources by looking each item's
+// `source` up in this map.
 const NOTIF_SOURCES = {
     gelbooru: {
         name: "Gelbooru",
@@ -2609,7 +2650,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Gelbooru post${n === 1 ? "" : "s"}`,
         flash: n => gelbooruGotoFlash(n),
         card: (n, idx) => booruNotifCard(n, idx, "gelbooru"),
-        watcherPanel: true, // watcher management lives in this source's page
     },
     danbooru: {
         name: "Danbooru",
@@ -2618,7 +2658,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Danbooru post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("dan", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
         card: (n, idx) => booruNotifCard(n, idx, "danbooru"),
-        watcherPanel: true, // same panel, per-source list (watcherSourceId)
     },
     // the other booru sources share one card; `site` is the jumpToSite key,
     // ratings:false hides the watcher panel's rating dropdown
@@ -2628,7 +2667,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Safebooru post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("safe", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
         card: (n, idx) => booruNotifCard(n, idx, "safebooru"),
-        watcherPanel: true,
     },
     rule34: {
         name: "Rule34", site: "rule34", ratings: false,
@@ -2636,7 +2674,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Rule34 post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("rule34", (m.tags || []).join(" "), ""); },
         card: (n, idx) => booruNotifCard(n, idx, "rule34"),
-        watcherPanel: true,
     },
     konachan: {
         name: "Konachan", site: "kona",
@@ -2644,7 +2681,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Konachan post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("kona", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
         card: (n, idx) => booruNotifCard(n, idx, "konachan"),
-        watcherPanel: true,
     },
     yande: {
         name: "Yande.re", site: "yande",
@@ -2652,7 +2688,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Yande.re post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("yande", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
         card: (n, idx) => booruNotifCard(n, idx, "yande"),
-        watcherPanel: true,
     },
     sankaku: {
         name: "Sankaku", site: "sankaku",
@@ -2660,7 +2695,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Sankaku post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("sankaku", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
         card: (n, idx) => booruNotifCard(n, idx, "sankaku"),
-        watcherPanel: true,
     },
     gsbooru: {
         name: "Gsbooru", site: "gsbooru",
@@ -2668,7 +2702,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Gsbooru post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("gsbooru", (m.tags || []).join(" "), (m.ratings || []).join(" ")); },
         card: (n, idx) => booruNotifCard(n, idx, "gsbooru"),
-        watcherPanel: true,
     },
     zerochan: {
         name: "Zerochan", site: "zero", ratings: false,
@@ -2676,7 +2709,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new Zerochan post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("zero", (m.tags || []).join(","), ""); },
         card: (n, idx) => booruNotifCard(n, idx, "zerochan"),
-        watcherPanel: true,
     },
     eshuushuu: {
         name: "E-shuushuu", site: "eshuushuu", ratings: false,
@@ -2684,7 +2716,6 @@ const NOTIF_SOURCES = {
         toast: n => `${n} new E-shuushuu post${n === 1 ? "" : "s"}`,
         flash: n => { const m = n.metadata || {}; jumpToSite("eshuushuu", (m.tags || []).join(","), ""); },
         card: (n, idx) => booruNotifCard(n, idx, "eshuushuu"),
-        watcherPanel: true,
     },
     anime_dl: {
         name: "Anime DL", site: "anime_dl", ratings: false,
@@ -2693,20 +2724,26 @@ const NOTIF_SOURCES = {
         // the tab's tag pills keep spaces inside one tag — "&&" is the pill split
         flash: n => { const m = n.metadata || {}; jumpToSite("anime_dl", (m.tags || []).join(" && "), ""); },
         card: (n, idx) => booruNotifCard(n, idx, "anime_dl"),
-        watcherPanel: true,
     },
-    pixiv: {        name: "Pixiv",
-        empty: "No notifications yet - new works from the artists you follow will appear here.",
-        toast: n => `${n} new artwork${n === 1 ? "" : "s"} from artists you follow`,
-        flash: n => pixivGotoArtist(String(n.artist_id || "").replace(/[^0-9]/g, "")),
-        card: (n, idx) => pixivNotifCard(n, idx),
-        controls: true, // interval + Check now row belongs to the pixiv watcher
+    pixiv: {
+        name: "Pixiv",
+        thumbRoute: "/api/pixiv/notif_thumb",
+        empty: "No notifications yet - new works from the artists you follow and from your Pixiv tag watchers will appear here.",
+        toast: n => `${n} new Pixiv post${n === 1 ? "" : "s"}`,
+        flash: n => n.artist_id
+            ? pixivGotoArtist(String(n.artist_id).replace(/[^0-9]/g, ""))
+            : pixivGotoTags((n.metadata || {}).tags || []),
+        // follows entries carry artist_id; watcher entries are plain booru cards
+        card: (n, idx) => n.artist_id ? pixivNotifCard(n, idx) : booruNotifCard(n, idx, "pixiv"),
+    },
+    x: {
+        name: "X (Twitter)", ratings: false,
+        empty: "No watcher notifications yet - new posts from the accounts you watch will appear here.",
+        toast: n => `${n} new X post${n === 1 ? "" : "s"}`,
+        flash: n => { const m = n.metadata || {}; jumpToSite("x", (m.tags || []).join(" "), ""); },
+        card: (n, idx) => booruNotifCard(n, idx, "x"),
     },
 };
-
-function notifSourceId() {
-    return notifSource || (typeof uiConfig !== "undefined" && uiConfig.notif_source) || "pixiv";
-}
 
 function setNotifDot(n) {
     const d = document.getElementById("notifDot");
@@ -2715,59 +2752,21 @@ function setNotifDot(n) {
 // startup: show the dot for unread that arrived before this page load
 fetch("/api/notifications").then(r => r.json()).then(d => setNotifDot((d && d.unread) || 0)).catch(() => {});
 
-function onNotifSourceChange(sel) {
-    if (sel.value === notifSourceId()) return; // programmatic setSelectValue fires change too
-    notifSource = sel.value;
-    uiConfig.notif_source = notifSource;
-    persistUiConfig();
-    loadNotifications();
-}
-
-function renderNotifSourceSelect(counts) {
-    const sel = document.getElementById("notifSource");
-    if (!sel) return;
-    sel.innerHTML = Object.keys(NOTIF_SOURCES)
-        .sort((a, b) => NOTIF_SOURCES[a].name.localeCompare(NOTIF_SOURCES[b].name))
-        .map(id => {
-            const c = (counts && counts[id]) || 0;
-            // lit like the tab's notif-dot; native <select> options can't take spans
-            return `<option value="${id}"${c ? ' style="color:#ff4757;"' : ""}>${NOTIF_SOURCES[id].name} (${c})${c ? " ●" : ""}</option>`;
-        }).join("");
-    setSelectValue(sel, notifSourceId());
-}
-
 async function loadNotifications() {
     try {
-        const source = notifSourceId();
-        const resp = await fetch("/api/notifications?source=" + encodeURIComponent(source));
+        // one general list: every source mixed, newest first
+        const resp = await fetch("/api/notifications?source=all");
         const data = await resp.json();
         notifItems = data.items || [];
-        renderNotifSourceSelect(data.unread_by_source);
         renderNotifications();
         setNotifDot(data.unread || 0);
-        const src = NOTIF_SOURCES[source];
-        const controls = document.getElementById("notifPixivControls");
-        if (controls) controls.style.display = (src && src.controls) ? "inline-flex" : "none";
-        const wpanel = document.getElementById("gelWatcherPanel");
-        if (wpanel) wpanel.style.display = (src && src.watcherPanel) ? "block" : "none";
-        if (src && src.watcherPanel) {
-            const t = document.getElementById("watcherPanelTitle");
-            if (t) t.textContent = NOTIF_SOURCES[watcherSourceId()].name + " Tag Watcher";
-            // sources without rating semantics hide the dropdown entirely
-            const rbox = document.getElementById("watcherRatingBox");
-            if (rbox) rbox.style.display = (src.ratings === false) ? "none" : "";
-            loadGelWatchers();
-        }
+        loadGelWatchers();
         const status = data.status || {};
-        const iv = document.getElementById("notifInterval");
-        if (iv && document.activeElement !== iv && status.interval_minutes) iv.value = status.interval_minutes;
         updateNotifStatus(status);
-        if (status.pending_toast > 0) {
-            showToast(src && src.toast ? src.toast(status.pending_toast) : `${status.pending_toast} new notification${status.pending_toast === 1 ? "" : "s"}`);
-        }
-        // viewing a page = reading that source (other sources stay lit on the bell)
+        if (status.pending_toast > 0) showToast(NOTIF_SOURCES.pixiv.toast(status.pending_toast));
+        // viewing the page = reading it (the bell only lights for unread)
         if (notifItems.some(i => !i.read)) {
-            const r = await fetch("/api/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: source }) });
+            const r = await fetch("/api/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "all" }) });
             const rd = await r.json();
             setNotifDot((rd && rd.unread) || 0);
         }
@@ -2834,7 +2833,7 @@ function booruNotifCard(n, idx, key) {
     const title = escapeHtml(titleClean || "New matching " + src.name + " post");
     const rating = GEL_RATING_LABEL[n.rating] || (n.rating ? escapeHtml(n.rating) : "any rating");
     const date = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
-    const thumb = n.thumb ? (src.thumbRoute ? src.thumbRoute + "?url=" + encodeURIComponent(n.thumb) : n.thumb) : "";
+    const thumb = n.thumb ? (src.thumbRoute ? src.thumbRoute + "?url=" + encodeURIComponent(n.thumb) : escapeHtml(n.thumb)) : "";
     return notifCardShell(n, idx, `
             <div class="img-card-left" style="width: 100px; display: flex; flex-direction: column; gap: 6px;">
                 <img src="${thumb}" loading="lazy" decoding="async" data-fb="${NOTIF_FALLBACK}" onerror="this.onerror=null; this.src=this.dataset.fb;" style="width: 100px; height: 100px; object-fit: cover; border-radius: 8px;">
@@ -2853,9 +2852,8 @@ const NOTIF_RENDER_CAP = 100;
 function renderNotifications() {
     const box = document.getElementById("notifList");
     if (!box) return;
-    const src = NOTIF_SOURCES[notifSourceId()];
     if (!notifItems.length) {
-        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">${escapeHtml((src && src.empty) || "No notifications yet.")}</div>`;
+        box.innerHTML = `<div style="opacity:0.6; font-size:13px;">No notifications yet - matching posts from your tag watchers and new works from artists you follow will appear here.</div>`;
         return;
     }
     const shown = notifItems.slice(0, NOTIF_RENDER_CAP);
@@ -2887,30 +2885,17 @@ function pixivGotoArtist(artistId) {
     document.getElementById("pixivTag").value = artistId;
 }
 
-function saveNotifInterval(el) {
-    let v = parseInt(el.value, 10);
-    if (!v) v = 90;
-    v = Math.max(60, Math.min(120, v));
-    el.value = v;
-    uiConfig.pixiv_watch_minutes = v;
-    persistUiConfig();
-}
-
-function checkPixivNow() {
-    fetch("/api/pixiv/notifications/check", { method: "POST" })
-        .then(r => r.json())
-        .then(d => {
-            if (d.started) showToast("Checking for new works…");
-            else showToast("A check is already running", { warn: true });
-            setTimeout(loadNotifications, 6000);
-        })
-        .catch(() => {});
+function pixivGotoTags(tags) {
+    const word = (tags || []).filter(t => t && !String(t).startsWith("-")).join(" ");
+    if (!word) return;
+    openTab("Pixiv");
+    setSelectValue(document.getElementById("pixivMode"), "search");
+    document.getElementById("pixivTag").value = word;
 }
 
 async function clearNotifications() {
-    const src = NOTIF_SOURCES[notifSourceId()];
-    if (!await customConfirm(`Clear these ${(src && src.name) || ""} notifications? Posts you've already seen won't reappear.`, "Clear")) return;
-    await fetch("/api/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: notifSourceId() }) });
+    if (!await customConfirm("Clear all notifications? Posts you've already seen won't reappear.", "Clear")) return;
+    await fetch("/api/notifications/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "all" }) });
     await loadNotifications();
 }
 
@@ -5606,6 +5591,8 @@ function openGalleryViewer(id, force) {
     // on close we restore the page the user actually opened the viewer on,
     // otherwise the tab-switch reload surprises them with a different page
     _viewerOpenedPage = currentGalleryPage;
+    const mp = document.getElementById("galleryViewerMeta");
+    if (mp) mp.style.minWidth = "";
     showViewerImage();
 }
 
@@ -6307,7 +6294,11 @@ function renderViewerMeta(entry, filepath) {
     const seq = ++_metaFillSeq;
     const paint = (site) => {
         if (seq !== _metaFillSeq) return;
+        // ratchet the collapsed width to the previous content so switching to
+        // a shorter title cannot snap the panel narrower mid-browse
+        const prevW = mp.getBoundingClientRect().width;
         mp.innerHTML = viewerMetaHtml(Object.assign({}, entry, { site: site }), true);
+        if (prevW) mp.style.minWidth = prevW + "px";
         if (fav) fav.innerHTML = heartIcon(!!entry.favourite);
     };
     const ext = ((filepath || "").split('.').pop() || "").toLowerCase();

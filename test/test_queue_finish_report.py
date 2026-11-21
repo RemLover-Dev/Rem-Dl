@@ -18,6 +18,15 @@ def test_single_job_report_matches_legacy(monkeypatch):
     assert "gelbooru" not in shared._BATCH_STATS
 
 
+def test_pre_download_skips_get_their_own_note(monkeypatch):
+    _reset()
+    monkeypatch.setattr(shared, "queue_has_more", lambda site: False)
+    logs = []
+    p = shared.finish_report("gelbooru", 8, 0, 1, False, logs.append, skipped=3)
+    assert logs == ["--- All 8 downloads completed successfully! (1 duplicates removed, 3 skipped) ---"]
+    assert p["skipped"] == 3 and p["duplicates"] == 1
+
+
 def test_batch_aggregates_and_reports_once(monkeypatch):
     _reset()
     pending = [True, True, False]  # jobs 1-2 have successors, job 3 is last
@@ -72,4 +81,18 @@ def test_queue_final_reaches_ui_only_via_payload(monkeypatch):
     p = shared.finish_report("gelbooru", 4, 0, 2, False, logs.append)
     assert logs == ["--- Tag finished: 6 downloaded, 1 failed — next queued job starting ---"]
     assert p == {"worker": "gelbooru", "downloaded": 10, "failed": 1, "duplicates": 2,
-                 "stopped": False, "jobs": 2, "more": False}
+                 "skipped": 0, "stopped": False, "jobs": 2, "more": False}
+
+
+def test_abandoned_batch_does_not_inflate_the_next_run(monkeypatch):
+    # job 1 queued a successor that never ran (queue cleared/stopped):
+    # the leftover batch must not make the next single run report 2 tasks
+    _reset()
+    monkeypatch.setattr(shared, "queue_has_more", lambda site: True)
+    shared.finish_report("gelbooru", 3, 0, 0, False, logs_ok := [].append)
+    assert "gelbooru" in shared._BATCH_STATS
+    shared.reset_batch("gelbooru")
+    assert "gelbooru" not in shared._BATCH_STATS
+    monkeypatch.setattr(shared, "queue_has_more", lambda site: False)
+    p = shared.finish_report("gelbooru", 1, 0, 0, False, logs_ok)
+    assert p["jobs"] == 1 and p["downloaded"] == 1

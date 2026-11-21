@@ -1,11 +1,12 @@
 """Configurable tag watchers -> shared notifications.
 
-One centralized scheduler thread (no thread-per-watcher): each enabled,
-due watcher runs check_watcher() -- a bounded, resumable newest-first
-scan of a tag feed. Every site is adapted behind its own module
+One centralized scheduler with a small bounded pool: each enabled, due
+watcher runs check_watcher() -- a bounded, resumable newest-first scan of
+a tag feed -- so one slow site cannot starve the rest. Every site is adapted behind its own module
 (core/watchers/<site>.py exposing query/fetch/fields/LIMIT and an
 optional keep(w, post) filter); the checkpoint/baseline engine here is
-source-agnostic.
+source-agnostic. Cursor-paged sites (X) expose fetch_pages(api_tag, w)
+instead of fetch: it returns the whole new window in one call.
 
 Checkpoint rules:
   * first check with results = baseline: only posts uploaded after the
@@ -27,9 +28,10 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from core import notifications
-from core.database import DATABASE_DIR, DatabaseManager
+from core.database import DATABASE_DIR, DatabaseManager, get_settings
 
 WATCHERS_FILE = os.path.join(DATABASE_DIR, "watchers.json")
 MAX_PAGES_PER_CHECK = 10   # bounded scan per check (resumable via scan_pid)
@@ -47,9 +49,11 @@ from core.watchers import (  # noqa: E402
     gelbooru,
     gsbooru,
     konachan,
+    pixiv,
     rule34,
     sankaku,
     safebooru,
+    x_twitter,
     yande,
     zerochan,
 )
@@ -66,6 +70,8 @@ _ADAPTERS = {
     "zerochan": zerochan,
     "eshuushuu": eshuushuu,
     "anime_dl": anime_dl,
+    "pixiv": pixiv,
+    "x": x_twitter,
 }
 SOURCES = tuple(_ADAPTERS)
 
@@ -74,6 +80,9 @@ _wakeup = threading.Event()
 _STATE = {"running": False}
 _emit_fn = None
 _log_fn = None
+_INFLIGHT = set()
+_INFLIGHT_LOCK = threading.Lock()
+_POOL = None
 
 
 # ---------- store ----------
@@ -286,7 +295,10 @@ def check_watcher(w):
     try:
         mod = _source(src)
         api_tag = mod.query(w.get("tags") or [], w.get("ratings") or [])
-        keep = getattr(mod, "keep", None)
+        keep_fn = getattr(mod, "keep", None)
+        # adapter contract is keep(watcher, post) -- it may read the
+        # watcher's tags/ratings, so bind the watcher here
+        keep = (lambda p: keep_fn(w, p)) if keep_fn else None
         limit = mod.LIMIT
         pid = int(w.get("scan_pid") or 0)
         checkpoint = w.get("last_seen_post_id")
@@ -296,8 +308,15 @@ def check_watcher(w):
         pages_done = 0
 
         if pid == 0:
-            posts = mod.fetch(api_tag, 0)
-            pages_done = 1
+            fetch_pages = getattr(mod, "fetch_pages", None)
+            if fetch_pages:
+                # cursor-paged sites (X): the adapter returns the whole new
+                # window at once, so there is no page cursor to resume
+                posts = fetch_pages(api_tag, w)
+                pages_done = MAX_PAGES_PER_CHECK
+            else:
+                posts = mod.fetch(api_tag, 0)
+                pages_done = 1
             if not posts:
                 _set_runtime(wid, {"last_checked_at": time.time(), "error": ""})
                 return {"new": 0, "error": ""}
@@ -322,7 +341,12 @@ def check_watcher(w):
                              snapshot=w)
                 return {"new": len(new_entries), "error": ""}
             cycle_newest = str(posts[0]["id"])
-            fresh, reached = _collect(posts, checkpoint, fresh, keep)
+            if fetch_pages:
+                # the adapter already bounded the window (new posts only)
+                fresh = [p for p in posts if not keep or keep(p)]
+                reached = True
+            else:
+                fresh, reached = _collect(posts, checkpoint, fresh, keep)
             pid = 1
 
         while not reached and not exhausted and pages_done < MAX_PAGES_PER_CHECK:
@@ -365,7 +389,12 @@ def check_watcher(w):
                      snapshot=w)
         return {"new": len(new_entries), "error": err}
     except Exception as e:  # watcher failures must never take anything down
-        err = str(e)[:300]
+        # name the site with its display capitalization ("Danbooru: HTTP 403")
+        name = getattr(mod, "NAME", str(src).title())
+        err = str(e)
+        if not err.lower().startswith(name.lower()):
+            err = f"{name}: {err}"
+        err = err[:300]
         _set_runtime(wid, {"last_checked_at": time.time(), "error": err})
         return {"new": 0, "error": err}
 
@@ -412,11 +441,24 @@ def due_watchers(now=None):
             if w.get("enabled") and now >= _due_at(w)]
 
 
+def _in_flight(wid):
+    with _INFLIGHT_LOCK:
+        return wid in _INFLIGHT
+
+
+def _idle_due(now=None):
+    """Due watchers that are not already being checked."""
+    return [w for w in due_watchers(now) if not _in_flight(w.get("id"))]
+
+
 def _seconds_until_due():
     enabled = [w for w in list_watchers() if w.get("enabled")]
     if not enabled:
         return 60.0
-    return max(1.0, min(_due_at(w) for w in enabled) - time.time())
+    pending = [w for w in enabled if not _in_flight(w.get("id"))]
+    if not pending:
+        return 5.0  # everything due is running; a done-callback wakes us
+    return max(1.0, min(_due_at(w) for w in pending) - time.time())
 
 
 def _log(msg):
@@ -438,25 +480,53 @@ def _emit(w, new_count):
         pass
 
 
-def _loop():
-    time.sleep(8)  # let the server + frontend come up first
-    while True:
-        for w in due_watchers():
+def _submit(w):
+    """Run one check on the pool; never two checks for the same watcher."""
+    wid = w.get("id")
+    with _INFLIGHT_LOCK:
+        if wid in _INFLIGHT:
+            return
+        _INFLIGHT.add(wid)
+
+    def run():
+        try:
             prev_error = w.get("error") or ""
             res = check_watcher(w)
             if res.get("error") and res["error"] != prev_error:
                 _log(f"[{w['source']}] {res['error']}")
             if res.get("new"):
                 _emit(w, res["new"])
+        finally:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(wid)
+            _wakeup.set()
+
+    _POOL.submit(run)
+
+
+def _loop():
+    time.sleep(8)  # let the server + frontend come up first
+    while True:
+        for w in _idle_due():
+            _submit(w)
         _wakeup.wait(timeout=_seconds_until_due())
         _wakeup.clear()
 
 
+def _pool_size():
+    """Watcher concurrency follows the user's Settings request limit."""
+    try:
+        return max(1, int(float(get_settings().get("req_rate_limit", 4))))
+    except (TypeError, ValueError):
+        return 4
+
+
 def start_scheduler(emit_fn, log_fn=None):
-    global _emit_fn, _log_fn
+    global _emit_fn, _log_fn, _POOL
     _emit_fn = emit_fn
     _log_fn = log_fn
     if _STATE["running"]:
         return
     _STATE["running"] = True
+    _POOL = ThreadPoolExecutor(max_workers=_pool_size(), thread_name_prefix="rems-watcher")
     threading.Thread(target=_loop, daemon=True).start()

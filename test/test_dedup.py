@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from core.database import get_settings
-from core.dedup_store import DedupStore, PureHash
+from core.dedup_store import DedupStore, PureHash, sizes_comparable
 from core.shared import check_duplicate
 
 
@@ -250,3 +250,33 @@ class TestDedupStore:
 
         assert len(errors) == 0
         assert store.count() > 0
+
+
+def test_sizes_comparable_only_within_one_format_family():
+    assert sizes_comparable("a.png", "b.jpg")
+    assert sizes_comparable("a.jxl", "b.JXL")
+    assert not sizes_comparable("a.jxl", "b.png")
+
+
+class TestKeepLargerAcrossFormats:
+    def test_converted_jxl_is_not_replaced_by_a_bigger_png(self, tmp_path):
+        """Auto-JXL shrinks the stored file; the same pixels re-downloaded as a
+        bigger PNG must stay a duplicate instead of replacing the .jxl."""
+        store = DedupStore(db_path=str(tmp_path / "dedup.sqlite3"))
+        try:
+            png = tmp_path / "img.png"
+            Image.new("RGB", (300, 300), color=(100, 150, 200)).save(png)
+            assert not store.check_and_add(
+                str(png), site="zerochan", post_id="1").is_duplicate
+            jxl = tmp_path / "img.jxl"
+            jxl.write_bytes(b"x" * 64)          # converted: much smaller on disk
+            store.relocate_filepath(str(png), str(jxl))
+            png.unlink()
+            bigger = tmp_path / "img_big.png"
+            Image.new("RGB", (300, 300), color=(100, 150, 200)).save(
+                bigger, compress_level=0)
+            res = store.check_and_add(bigger, site="zerochan", post_id="2")
+            assert res.is_duplicate
+            assert res.matched_path == str(jxl)
+        finally:
+            store.close()

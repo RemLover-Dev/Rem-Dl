@@ -1,11 +1,10 @@
 """Gsbooru watcher adapter: /api/posts with Bearer key (GSBOORU_API_KEY
 env; generate one in gsbooru account settings)."""
 
-import os
-
-from core.watchers.net import get
+from core.watchers.net import api_settings, get
 
 LIMIT = 100
+NAME = "Gsbooru"
 API = "https://gsbooru.org/api/posts"
 # rating is an integer {0: g, 1: s, 2: q, 3: e} (e empty live)
 RATING_BY_INT = {0: "g", 1: "s", 2: "q", 3: "e"}
@@ -34,15 +33,15 @@ def keep(w, p):
 def fetch(api_tag, pid):
     """One page (1-based; pid stays 0-based)."""
     tag, rating_param = api_tag
-    key = os.getenv("GSBOORU_API_KEY", "")
+    key = api_settings().get("gsbooru_api_key") or ""
     if not key:
-        raise RuntimeError("gsbooru: GSBOORU_API_KEY missing in .env")
+        raise RuntimeError("GSBOORU_API_KEY missing in Settings or .env")
     params = {"tags": tag, "page": pid + 1, "limit": LIMIT}
     if rating_param:
         params["rating"] = rating_param
     resp = get(API, params=params, headers={"Authorization": f"Bearer {key}"})
     if resp.status_code in (401, 403, 429):
-        raise RuntimeError(f"gsbooru HTTP {resp.status_code}")
+        raise RuntimeError(f"HTTP {resp.status_code}")
     resp.raise_for_status()
     return (resp.json() or {}).get("posts") or []
 

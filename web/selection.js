@@ -9,6 +9,7 @@ const SEL_THRESHOLD = 5;
 let _tagArm = null;      // armed click on a pill: {el, on, x, y}
 let _tagPainting = null; // {on} once the drag passes the threshold
 let _band = null;        // {mode, box, x0, y0, moved, base, scroller, pt}
+let _bandRAF = 0;        // coalesces mousemove bursts into one apply per frame
 let _edgeRAF = 0;        // shared edge scroller for band and paint drags
 let _edgeScroller = null;
 let _edgePt = null;
@@ -61,8 +62,24 @@ function _scrollAncestor(el) {
 
 function _bandStart(mode, box, e) {
     if (mode === 'tag') _pinMeta(box);
-    _band = { mode, box, x0: e.clientX, y0: e.clientY, moved: false, base: null,
-              scroller: _scrollAncestor(box), pt: { x: e.clientX, y: e.clientY } };
+    _band = { mode, box, x0: e.clientX, y0: e.clientY, moved: false,
+              shift: !!e.shiftKey, entered: false,
+              // marquee semantics: pills selected before the drag stay selected,
+              // anything the band leaves behind is dropped live
+              base: mode === 'tag' ? new Set(box.querySelectorAll('.tag-sel-on')) : null,
+              // the grid scrolls, not the tab, even when the drag starts in the
+              // toolbar/pagination padding above or below it
+              scroller: _scrollAncestor(e.target) ||
+                        (mode === 'image' ? document.getElementById('galleryGrid') : null),
+              pt: { x: e.clientX, y: e.clientY } };
+}
+
+function _bandSchedule() {
+    if (_bandRAF) return;
+    _bandRAF = requestAnimationFrame(() => {
+        _bandRAF = 0;
+        if (_band) _bandApply();
+    });
 }
 
 function _bandApply() {
@@ -75,21 +92,59 @@ function _bandApply() {
         right: Math.min(box.right, Math.max(b.x0, e.x)),
         bottom: Math.min(box.bottom, Math.max(b.y0, e.y)),
     };
-    b.el.style.left = rect.left + 'px';
-    b.el.style.top = rect.top + 'px';
+    b.el.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
     b.el.style.width = Math.max(0, rect.right - rect.left) + 'px';
     b.el.style.height = Math.max(0, rect.bottom - rect.top) + 'px';
     if (b.mode === 'tag') {
-        b.box.querySelectorAll(TAG_SEL_SEL).forEach(el => { if (_selHits(el, rect)) el.classList.add('tag-sel-on'); });
+        const hits = new Set();
+        b.box.querySelectorAll(TAG_SEL_SEL).forEach(el => { if (_selHits(el, rect)) hits.add(el); });
+        // like a file-manager marquee: leaving a pill unselects it while the
+        // button is still held, re-entering selects it again
+        b.box.querySelectorAll('.tag-sel-on').forEach(el => {
+            if (!b.base.has(el) && !hits.has(el)) el.classList.remove('tag-sel-on');
+        });
+        hits.forEach(el => el.classList.add('tag-sel-on'));
         return;
     }
     if (typeof gallerySelected === "undefined") return;
-    const wanted = new Set(b.base);
-    b.box.querySelectorAll('.gallery-card[data-id]').forEach(card => { if (_selHits(card, rect)) wanted.add(card.dataset.id); });
-    document.querySelectorAll('#galleryGrid .gallery-card.selected').forEach(card => {
-        if (!wanted.has(card.dataset.id)) setGallerySelected(card.dataset.id, false);
+    const hitCards = [];
+    b.box.querySelectorAll('.gallery-card[data-id]').forEach(card => {
+        if (_selHits(card, rect)) hitCards.push(card);
     });
-    wanted.forEach(id => { if (!gallerySelected.has(id)) setGallerySelected(id, true); });
+    // an empty band over blank grid space must not flip the grid into select
+    // mode: nothing is selected yet, so nothing changes until a card is hit
+    if (!b.entered) {
+        if (!hitCards.length) return;
+        b.entered = true;
+        if (!b.shift) clearSelection();
+        gallerySelectMode = true;
+        updateSelectBar();
+    }
+    const wanted = new Set(b.base || []);
+    hitCards.forEach(card => wanted.add(card.dataset.id));
+    // apply the delta directly: setGallerySelected() calls updateSelectBar()
+    // per card, which is O(n²) on every frame and makes the band stutter
+    let changed = false;
+    document.querySelectorAll('#galleryGrid .gallery-card.selected').forEach(card => {
+        if (wanted.has(card.dataset.id)) return;
+        gallerySelected.delete(card.dataset.id);
+        card.classList.remove('selected');
+        const box = card.querySelector('.gallery-card-select');
+        if (box) box.checked = false;
+        changed = true;
+    });
+    hitCards.forEach(card => {
+        const id = card.dataset.id;
+        if (gallerySelected.has(id)) return;
+        const img = galleryState.images.find(i => i.id === id);
+        if (!img) return;
+        gallerySelected.set(id, img.filepath || "");
+        card.classList.add('selected');
+        const box = card.querySelector('.gallery-card-select');
+        if (box) box.checked = true;
+        changed = true;
+    });
+    if (changed) updateSelectBar();
 }
 
 const EDGE_SCROLL_PX = 40;
@@ -153,23 +208,22 @@ function _bandMove(e) {
         b.moved = true;
         _supClick = true;
         if (b.mode === 'image') {
-            gallerySelectMode = true;
-            b.base = e.shiftKey ? new Set(gallerySelected.keys()) : new Set();
-            if (!e.shiftKey) clearSelection();
-            updateSelectBar();
+            b.base = b.shift ? new Set(gallerySelected.keys()) : new Set();
         }
         b.el = document.createElement('div');
         b.el.className = 'sel-band';
         document.body.appendChild(b.el);
         _edgeStart(b.scroller, b.pt);
     }
-    _bandApply();
+    _bandSchedule();
     if (b.moved) _edgePt = b.pt;
 }
 
 function _bandEnd() {
     const b = _band;
+    if (b && b.el) _bandApply();   // the last move may still be waiting on rAF
     _band = null;
+    if (_bandRAF) { cancelAnimationFrame(_bandRAF); _bandRAF = 0; }
     _edgeStop();
     _unpinMeta();
     if (!b) return;
@@ -191,11 +245,12 @@ document.addEventListener('mousedown', e => {
     }
     const box = e.target.closest && e.target.closest(TAG_BOX_SEL);
     if (box) { e.preventDefault(); _bandStart('tag', box, e); return; }
-    const grid = document.getElementById('galleryGrid');
     const ui = e.target.closest && e.target.closest('#Gallery');
-    if (grid && ui && !e.target.closest('.gallery-card, button, input, select, textarea, a, label, .gallery-select-bar, .gallery-pagination, .gallery-dropdown-menu')) {
+    // the whole tab is the marquee's box, so a drag can start on the toolbar's
+    // empty line or under the pagination bar and still select grid cards
+    if (ui && !e.target.closest('.gallery-card, button, input, select, textarea, a, label, .gallery-select-bar, .gallery-dropdown-menu')) {
         e.preventDefault();
-        _bandStart('image', grid, e);
+        _bandStart('image', ui, e);
         return;
     }
     tagSelClear();

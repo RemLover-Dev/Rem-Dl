@@ -38,6 +38,9 @@ _CONVERT_STATE = {}
 # file the converter is encoding right now, even before the batch window
 # opens — the initial conversion_progress carries it so the label is live
 _CONVERT_CURRENT = {}
+# per-site (file, started, eta) for the in-flight encode: the bar interpolates
+# elapsed/eta so it moves inside one image instead of jumping per file
+_CONVERT_ETA = {}
 
 
 _publish_reaper_started = False
@@ -57,28 +60,32 @@ def _start_publish_reaper():
         while True:
             time.sleep(0.5)
             now = time.time()
-            due = []
             with _PUBLISH_HOLD_LOCK:
-                for fp, cur in _PENDING_PUBLISH.items():
-                    held = cur.get("held")
-                    if held:
-                        if now - held < PUBLISH_HOLD_MAX_S:
-                            continue
-                        if not os.path.exists(fp) and cur.get("holds", 0) < 10:
-                            # hold expired while the converter still owns the
-                            # file (source unlinked, jxl not installed yet):
-                            # re-arm instead of popping — a pop here would make
-                            # the later release find no spec and orphan the
-                            # converted file. Bounded: 10 windows ≈ 30 min.
+                items = list(_PENDING_PUBLISH.items())
+            due = []
+            for fp, cur in items:
+                held = cur.get("held")
+                if held:
+                    if now - held < PUBLISH_HOLD_MAX_S:
+                        continue
+                    if not os.path.exists(fp) and cur.get("holds", 0) < 10:
+                        # hold expired while the converter still owns the
+                        # file (source unlinked, jxl not installed yet):
+                        # re-arm instead of popping — a pop here would make
+                        # the later release find no spec and orphan the
+                        # converted file. Bounded: 10 windows ≈ 30 min.
+                        with _PUBLISH_HOLD_LOCK:
+                            if _PENDING_PUBLISH.get(fp) is not cur:
+                                continue
                             cur["holds"] = cur.get("holds", 0) + 1
                             cur["held"] = now
-                            continue
-                    elif now - cur.get("grace_at", now) < PUBLISH_GRACE_S:
-                        continue  # dedup-swap grace window still open
-                    due.append((fp, cur))
+                        continue
+                elif now - cur.get("grace_at", now) < PUBLISH_GRACE_S:
+                    continue  # dedup-swap grace window still open
+                due.append(fp)
             # _pop_pending_publish takes the same lock — keep it OUT of the
             # with-block above or the non-reentrant lock wedges
-            for fp, cur in due:
+            for fp in due:
                 _pop_and_publish(fp)
 
     threading.Thread(target=_reap, name="rems-publish-reaper", daemon=True).start()
@@ -108,6 +115,8 @@ def _pop_pending_publish(filepath: str):
             site = spec.get("site")
             if _CONVERT_CURRENT.get(site) == spec.get("filename"):
                 _CONVERT_CURRENT.pop(site, None)
+            if _CONVERT_ETA.get(site, {}).get("file") == spec.get("filename"):
+                _CONVERT_ETA.pop(site, None)
     if spec is not None:
         site = spec.get("site")
         st = _CONVERT_STATE.get(site)
@@ -120,14 +129,17 @@ def _pop_pending_publish(filepath: str):
     return spec
 
 
-def notify_convert_start(abs_fp: str):
+def notify_convert_start(abs_fp: str, eta: float = 0.0):
     """The converter began encoding this file — tick the batch bar's label so
-    progress shows the in-flight image, not only finished ones."""
+    progress shows the in-flight image, not only finished ones. `eta` is the
+    caller's seconds-per-image estimate for the interpolation ticks."""
     with _PUBLISH_HOLD_LOCK:
         spec = _PENDING_PUBLISH.get(abs_fp)
         site = spec.get("site") if spec else None
         if site:
             _CONVERT_CURRENT[site] = spec.get("filename") or os.path.basename(abs_fp)
+            _CONVERT_ETA[site] = {"file": _CONVERT_CURRENT[site],
+                                  "started": time.monotonic(), "eta": eta}
         st = _CONVERT_STATE.get(site) if site else None
         if not st:
             return
@@ -138,8 +150,35 @@ def notify_convert_start(abs_fp: str):
                    "current": spec.get("filename") or os.path.basename(abs_fp)})
 
 
+def notify_convert_tick(abs_fp: str):
+    """Fractional progress for the in-flight image: the auto converter waits on
+    its worker subprocess and calls this ~2/s, so the bar moves inside a file."""
+    from core.jxl_progress import fraction
+    with _PUBLISH_HOLD_LOCK:
+        spec = _PENDING_PUBLISH.get(abs_fp)
+        site = spec.get("site") if spec else None
+        st = _CONVERT_STATE.get(site) if site else None
+        eta = _CONVERT_ETA.get(site) if site else None
+        if not (st and eta) or not eta.get("eta") or eta.get("file") != spec.get("filename"):
+            return
+        total = st["total"]
+        left = sum(1 for s in _PENDING_PUBLISH.values() if s.get("site") == site)
+        done = max(0, total - left) + fraction(eta["started"], eta["eta"], time.monotonic())
+        current = _CONVERT_CURRENT.get(site)
+    socketio_emit("conversion_progress",
+                  {"worker": site, "done": min(total, done), "total": total,
+                   "current": current})
+
+
+def reset_batch(site: str):
+    """Drop a batch that never reported (queue cleared or stopped between
+    jobs): its counts must not leak into the next run's summary."""
+    with _BATCH_STATS_LOCK:
+        _BATCH_STATS.pop(site, None)
+
+
 def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
-                  stopped: bool, log) -> dict:
+                  stopped: bool, log, skipped: int = 0) -> dict:
     """Accumulate per-site batch stats, log the finish line (batch final is
     box-only), build the worker_finished payload.
 
@@ -148,17 +187,23 @@ def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
     publish; the frontend shows the conversion progress bar meanwhile."""
     more = (not stopped) and bool(queue_has_more and queue_has_more(site))
     with _BATCH_STATS_LOCK:
-        b = _BATCH_STATS.setdefault(site, {"jobs": 0, "downloaded": 0, "failed": 0, "duplicates": 0})
+        b = _BATCH_STATS.setdefault(site, {"jobs": 0, "downloaded": 0, "failed": 0, "duplicates": 0, "skipped": 0})
         b["jobs"] += 1
         b["downloaded"] += downloaded
         b["failed"] += failed
         b["duplicates"] += duplicates
+        b["skipped"] = b.get("skipped", 0) + skipped
         # payload built inside the same critical section — two concurrent
         # finish_reports for one site otherwise interleave the counters
-        payload = {"worker": site, "downloaded": b["downloaded"], "failed": b["failed"], "duplicates": b["duplicates"], "stopped": stopped, "jobs": b["jobs"], "more": more}
+        payload = {"worker": site, "downloaded": b["downloaded"], "failed": b["failed"], "duplicates": b["duplicates"], "skipped": b["skipped"], "stopped": stopped, "jobs": b["jobs"], "more": more}
         if not more:
             _BATCH_STATS.pop(site, None)
-    dup_note = f" ({duplicates} duplicates removed)" if duplicates else ""
+    notes = []
+    if duplicates:
+        notes.append(f"{duplicates} duplicates removed")
+    if skipped:
+        notes.append(f"{skipped} skipped")
+    dup_note = f" ({', '.join(notes)})" if notes else ""
     text = None
     if stopped:
         if downloaded > 0 and failed > 0:
@@ -180,27 +225,41 @@ def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
     if more:
         log(text)
         return payload
-    pending = _publish_left(site)
-    if not pending:
+    # only this window's specs: a queued successor may add its own while the
+    # banner waits, and those must not keep this batch's box open
+    with _PUBLISH_HOLD_LOCK:
+        mine = {fp for fp, s in _PENDING_PUBLISH.items() if s.get("site") == site}
+        mine |= {fp for fp, st in _PUBLISHING.items() if st == site}
+    if not mine:
         if text:
             log(text)
         return payload
-    _CONVERT_STATE[site] = {"total": pending, "payload": dict(payload)}
+    token = object()
+    with _PUBLISH_HOLD_LOCK:
+        _CONVERT_STATE[site] = {"total": len(mine), "payload": dict(payload),
+                                "token": token, "files": mine}
     # the immediate caller's worker_finished carries converting=True — the
     # frontend ignores it; the re-emit from _finish_after_convert (a copy
     # without the flag) is the one that renders the success box
     payload["converting"] = True
-    socketio_emit("conversion_progress", {"worker": site, "done": 0, "total": pending,
+    socketio_emit("conversion_progress", {"worker": site, "done": 0, "total": len(mine),
                                           "current": _CONVERT_CURRENT.get(site)})
 
     def _finish_after_convert():
         deadline = time.time() + PUBLISH_HOLD_MAX_S + 10
         while time.time() < deadline:
-            if not _publish_left(site):
+            with _PUBLISH_HOLD_LOCK:
+                left = any(fp in _PENDING_PUBLISH or fp in _PUBLISHING for fp in mine)
+            if not left:
                 break
             time.sleep(0.5)
-        st = _CONVERT_STATE.pop(site, None)
-        _CONVERT_CURRENT.pop(site, None)
+        with _PUBLISH_HOLD_LOCK:
+            st = _CONVERT_STATE.get(site)
+            if st is None or st.get("token") is not token:
+                return  # a newer window owns the site now
+            _CONVERT_STATE.pop(site, None)
+            _CONVERT_CURRENT.pop(site, None)
+            _CONVERT_ETA.pop(site, None)
         if st:
             # the stopped batch's success box renders from the deferred log
             # line instead (worker_finished with stopped is ignored upstream)
@@ -486,6 +545,7 @@ def _publish_spec(spec):
     rel_path = spec["rel_path"]
     filename = spec["filename"]
     site = spec["site"]
+    failed = []
     try:
         # send_tags first: the viewer's tag box reads imageHistory via the
         # update_history socket, so the history row must exist before the
@@ -493,20 +553,31 @@ def _publish_spec(spec):
         send_tags(site, filename, spec["tags_list"], spec["artists"], rel_path,
                   spec["characters"], spec["copyrights"], spec["metadata_tags"],
                   spec["outfits"], spec["groups"], spec["hair"], spec["eyes"])
-        if spec.get("write_metadata", True):
+    except Exception as e:
+        failed.append("history")
+        print(f"[DEDUP] history publish failed for {filepath}: {e}")
+    if spec.get("write_metadata", True):
+        try:
             write_image_metadata(filepath, spec["tags_list"], spec["artists"], site,
                                  spec["characters"], spec["copyrights"],
                                  spec["metadata_tags"], spec["outfits"],
                                  spec["groups"], spec["hair"], spec["eyes"],
                                  extra_sites=extract_site_tags(spec["tags_list"],
                                                                spec["metadata_tags"], site))
+        except Exception as e:
+            failed.append("metadata")
+            print(f"[DEDUP] metadata write failed for {filepath}: {e}")
+    try:
         add_to_gallery(site, filename, rel_path, spec["tags_list"], spec["artists"],
                        spec["characters"], spec["copyrights"], spec["metadata_tags"],
                        spec["outfits"], spec["groups"], spec["hair"], spec["eyes"],
                        spec.get("rating"))
     except Exception as e:
-        print(f"[DEDUP] deferred publish failed for {filepath}: {e}")
+        failed.append("gallery")
+        print(f"[DEDUP] gallery publish failed for {filepath}: {e}")
     spec["log"](f"[SUCCESS] Downloaded {filename} {spec['count_head']} |PATH| {rel_path} |TAGS| {spec['top_tags']} |TAGD| {spec['tagd']}{dims_log_token(filepath)}")
+    if failed:
+        spec["log"](f"[WARN] {filename} downloaded but not indexed ({', '.join(failed)})")
     if not os.path.exists(filepath):
         # a keep-larger kill landed while these cards were being created —
         # the killer's own event fired too early to match them, so retract
@@ -801,8 +872,11 @@ def save_gallery(data):
     (that is how a rescan drops entries whose file is gone).
     """
     with _GALLERY_LOCK:
-        _store().save_entries(data.get("images", []))
+        pruned = _store().save_entries(data.get("images", []))
         _reindex_gallery_locked(data)
+    if pruned:
+        # a partial list would silently drop rows; make any prune visible
+        print(f"[GALLERY] save pruned {pruned} entries")
 
 def save_gallery_partial(entries):
     """Persist only the given entries — no prune, index kept warm.
@@ -1867,6 +1941,7 @@ class BaseDownloader:
         self.downloaded_count = 0
         self.failed_count = 0
         self.duplicate_count = 0
+        self.skipped_count = 0
         self.download_queue = None
         self.is_scanning = False
         self.enqueued_count = 0
@@ -2024,9 +2099,11 @@ class BaseDownloader:
 
         try:
             if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
+                self.skipped_count += 1
                 return False
         except Exception:
             if filename in self.dl_history or filename in self.queued_items:
+                self.skipped_count += 1
                 return False
 
         # source-md5 gate: a stored or in-flight duplicate of these exact bytes
@@ -2037,6 +2114,7 @@ class BaseDownloader:
                 self._claim_source_md5, filepath, source_md5, tags_list, artists,
                 characters, copyrights, metadata_tags,
                 outfits, groups, hair, eyes):
+            self.skipped_count += 1
             return False
 
         # ponytail: no HEAD request here — it cost a full round-trip per file
@@ -2349,7 +2427,8 @@ class BaseDownloader:
             try:
                 socketio_emit("worker_finished", finish_report(
                     self.name, self.downloaded_count, self.failed_count,
-                    self.duplicate_count, bool(self.stop_event.is_set()), self.log))
+                    self.duplicate_count, bool(self.stop_event.is_set()), self.log,
+                    self.skipped_count))
             except Exception:
                 pass
         except Exception as critical_e:

@@ -79,9 +79,48 @@ def test_dropped_key_moves_to_seen(store):
         "external_id": "111", "metadata": {"url": ""}}]) == []
 
 
+def test_repeated_reads_use_the_parse_cache(store, monkeypatch):
+    _ingest("gelbooru", 111)
+    calls = []
+    real = notifications.DatabaseManager.load_json
+
+    def counted(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(notifications.DatabaseManager, "load_json", counted)
+    notifications.items("gelbooru")
+    notifications.summary()
+    assert calls == [], "an unchanged store must not be re-parsed"
+
+
+def test_external_rewrite_invalidates_the_cache(store):
+    _ingest("gelbooru", 111)
+    assert len(notifications.items("gelbooru")) == 1
+    notifications.DatabaseManager.save_json(
+        store, {"items": [], "seen": ["x"], "last_check": {}})
+    assert notifications.items("gelbooru") == []
+
+
 def test_worker_name_mapping():
     assert notifications.source_for_worker("kona") == "konachan"
     assert notifications.source_for_worker("dan") == "danbooru"
     assert notifications.source_for_worker("safe") == "safebooru"
     assert notifications.source_for_worker("zero") == "zerochan"
     assert notifications.source_for_worker("gelbooru") == "gelbooru"
+
+
+def test_general_view_reads_and_clears_every_source(store):
+    _ingest("gelbooru", 111)
+    _ingest("pixiv", 222)
+    assert notifications.summary(None)[1] == 2
+
+    assert notifications.mark_read("all") == 0
+    assert notifications.summary(None)[1] == 0
+    assert len(notifications.items("gelbooru")) == 1  # read, not dropped
+
+    notifications.clear("all")
+    assert notifications.items() == []
+    # cleared keys are remembered: the next scan must not re-notify them
+    assert notifications.ingest("gelbooru", [{"external_id": "111"}]) == []
+    assert notifications.ingest("pixiv", [{"external_id": "222"}]) == []

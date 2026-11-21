@@ -12,6 +12,7 @@ zerochan adapter."""
 API = "https://api.anime-pictures.net/api/v3"
 # the worker uses the same page size — the API caps it silently
 LIMIT = 80
+NAME = "Anime DL"
 
 
 def _cf_get(url, **kw):
@@ -40,7 +41,7 @@ def fetch(tag, pid):
     resp = _cf_get(f"{API}/posts", params={"page": pid, "limit": LIMIT,
                                            "search_tag": tag, "lang": "en"})
     if resp.status_code != 200:
-        raise RuntimeError(f"anime_dl HTTP {resp.status_code}")
+        raise RuntimeError(f"HTTP {resp.status_code}")
     return resp.json().get("posts") or []
 
 

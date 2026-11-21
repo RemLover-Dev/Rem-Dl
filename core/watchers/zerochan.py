@@ -6,6 +6,7 @@ import urllib.parse
 
 LIMIT = 200
 BASE = "https://www.zerochan.net"
+NAME = "Zerochan"
 
 
 def query(tags, ratings):
@@ -34,7 +35,7 @@ def fetch(encoded_tag, pid):
                  verify=bool(st.get("verify_tls", True)))
     text = resp.text or ""
     if not text or (resp.status_code != 200 and '"items"' not in text):
-        raise RuntimeError(f"zerochan HTTP {resp.status_code}")
+        raise RuntimeError(f"HTTP {resp.status_code}")
     try:
         data = json.loads(text)
     except ValueError:

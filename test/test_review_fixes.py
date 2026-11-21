@@ -197,6 +197,29 @@ def test_completion_log_waits_for_mid_publish_cards():
             shared._PENDING_PUBLISH.pop("fp2", None)
 
 
+def test_publish_failure_is_visible_and_does_not_hide_success(tmp_path):
+    """A DB failure during publish must warn, not vanish behind [SUCCESS]."""
+    import core.shared as shared
+    p = tmp_path / "x.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    logs = []
+    spec = {"filepath": str(p), "rel_path": "gelbooru/x/x.png",
+            "filename": "x.png", "site": "gelbooru", "tags_list": [],
+            "artists": [], "characters": [], "copyrights": [],
+            "metadata_tags": [], "outfits": [], "groups": [], "hair": [],
+            "eyes": [], "write_metadata": False, "count_head": "",
+            "top_tags": "", "tagd": "", "log": logs.append}
+    real_tags, real_gallery = shared.send_tags, shared.add_to_gallery
+    shared.send_tags = lambda *a, **k: None
+    shared.add_to_gallery = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down"))
+    try:
+        shared._publish_spec(spec)
+    finally:
+        shared.send_tags, shared.add_to_gallery = real_tags, real_gallery
+    assert any(line.startswith("[SUCCESS]") for line in logs)
+    assert any("not indexed (gallery)" in line for line in logs)
+
+
 def test_image_history_paging_and_search(lib, client):
     """/api/image_history?limit=&offset=&q= serves the archive in pages with
     X-Total-Count; no params keeps the legacy full-list shape."""

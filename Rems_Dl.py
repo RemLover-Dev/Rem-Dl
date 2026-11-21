@@ -517,6 +517,10 @@ def static_files(path): return send_from_directory(STATIC_FOLDER, path)
 def config_manager():
     if request.method == "POST":
         data = request.json or {}
+        proxy_url = str(data.get("proxy_url") or "")
+        if data.get("use_proxy") and proxy_url and not re.match(r"^https?://", proxy_url):
+            return jsonify({"success": False,
+                            "error": "proxy_url must start with http:// or https://"}), 400
         settings.update(data)
         settings.save_config()
         if data.get("use_proxy"):
@@ -952,10 +956,13 @@ def _auto_jxl_spawn_worker(request_path, response_path):
 
 def _auto_jxl_convert_one(path, effort):
     import json
+    import subprocess
     import tempfile
     from pathlib import Path
 
     from core.jxl_cpu import conversion_threads
+    from core.jxl_progress import eta_seconds, observe
+    from core.jxl_resources import plan
     from core.jxl_service import ENCODE_EXTENSIONS, commit_replacement
     converted = None
     try:
@@ -965,7 +972,12 @@ def _auto_jxl_convert_one(path, effort):
         if not jxl_service.available():
             log_msg("jxl-auto", "JPEG XL codec missing (install requirements-jxl.txt); keeping original")
             return
-        shared.notify_convert_start(os.path.abspath(path))
+        try:
+            _cost, pixels, kind = plan(source, 'auto')
+        except Exception:
+            pixels, kind = 0, 'lossless'
+        started = time.monotonic()
+        shared.notify_convert_start(os.path.abspath(path), eta_seconds(pixels, kind, effort))
         work = tempfile.TemporaryDirectory(prefix='rems-auto-jxl-')
         try:
             request_path = Path(work.name) / 'request.json'
@@ -974,7 +986,12 @@ def _auto_jxl_convert_one(path, effort):
                 'quality': 90, 'effort': effort, 'threads': conversion_threads()}), encoding='utf-8')
             process = _auto_jxl_spawn_worker(str(request_path), str(response_path))
             try:
-                process.wait(timeout=600)
+                deadline = time.monotonic() + 600
+                while process.poll() is None and time.monotonic() < deadline:
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        shared.notify_convert_tick(os.path.abspath(path))
             finally:
                 if process.poll() is None:  # hung encoder — kill it, original kept
                     process.terminate()
@@ -994,6 +1011,7 @@ def _auto_jxl_convert_one(path, effort):
                 value.get('output_name') or source.with_suffix('.jxl').name,
                 value['source_sha256'], str(work.name), relocate=_jxl_replace_index)
             converted = str(new_target)
+            observe(kind, effort, time.monotonic() - started, pixels)
             log_msg("jxl-auto", f"{source.name} → {source.with_suffix('.jxl').name} (tags, dates kept)")
             # history rows were written with the pre-conversion name — the rename
             # moved them in the store too; the open UI must refetch to follow it
@@ -1054,6 +1072,7 @@ def set_clipboard():
             return jsonify({"error": "empty"}), 400
 
         base = os.path.realpath(MASTER_FOLDER)
+        fallback_index = None
         for rel in lines:
             full = os.path.realpath(os.path.join(base, rel))
             # .gallery_roots/<key>/... paths resolve to the real HDD root —
@@ -1071,18 +1090,21 @@ def set_clipboard():
             if not os.path.isfile(full):
                 name = os.path.basename(rel)
                 stem = os.path.splitext(name)[0]
-                found = ""
-                if name:
+                if fallback_index is None:
+                    # one tree walk per request, not one per unresolved path
+                    fallback_index = {}
                     for root, _, files in os.walk(base):
-                        hit = name if name in files else (
-                            stem + ".jxl" if stem and stem + ".jxl" in files else "")
-                        if hit:
-                            cand = os.path.realpath(os.path.join(root, hit))
-                            if not cand.startswith(base + os.sep):
-                                continue
-                            if os.path.isfile(cand):
-                                found = cand
-                                break
+                        for f in files:
+                            fallback_index.setdefault(f, root)
+                found = ""
+                for hit in (name, (stem + ".jxl") if stem else ""):
+                    root = fallback_index.get(hit) if hit else None
+                    if not root:
+                        continue
+                    cand = os.path.realpath(os.path.join(root, hit))
+                    if cand.startswith(base + os.sep) and os.path.isfile(cand):
+                        found = cand
+                        break
                 if not found:
                     return jsonify({"error": "not found"}), 404
                 full = found
@@ -2757,19 +2779,21 @@ def _delete_gallery_item(img_id=None, filename=None, filepath=None):
         # newer external paths resolve through the master .gallery_roots link.
         if os.path.isabs(stored_path):
             full_path = os.path.realpath(stored_path)
-            lexical_master_path = None
         else:
-            lexical_master_path = os.path.abspath(os.path.join(MASTER_FOLDER, stored_path))
-            full_path = os.path.realpath(lexical_master_path)
+            full_path = os.path.realpath(os.path.join(MASTER_FOLDER, stored_path))
 
         exists = os.path.exists(full_path)
-        allowed = _allowed_image_dir(full_path) if exists else False
-        if not exists and lexical_master_path:
+        allowed = _allowed_image_dir(full_path)
+        if not exists and not allowed:
+            # a row whose file (or whole external root) is gone is still
+            # deletable; the missing-file branch below touches no disk
             try:
-                master_abs = os.path.abspath(MASTER_FOLDER)
-                allowed = os.path.commonpath((master_abs, lexical_master_path)) == master_abs
-            except (OSError, ValueError):
-                allowed = False
+                roots = [os.path.realpath(os.path.expanduser(str(r)))
+                         for r in (DatabaseManager.load_ui_config().get("gallery_roots") or [])
+                         if isinstance(r, str) and r.strip()]
+            except Exception:
+                roots = []
+            allowed = any(full_path.startswith(r + os.sep) for r in roots)
         if not allowed:
             return jsonify({"success": False, "error": "Invalid gallery path"}), 403
 
@@ -3570,11 +3594,10 @@ shared.history_delete_hook = DatabaseManager.remove_image_history_by_filepath
 
 
 def _thumb_alpha_hint(full):
-    """Cheap alpha probe: 'A' band or palette transparency. The plugin decodes
-    the whole file on open, so every hint probe quietly repeated a full decode
-    — results are now memoized per stat-version in-process, and the .json
-    sidecar persists them across restarts. False on unreadable files — a
-    broken header also defeats generation and falls through to the error path."""
+    """Cheap alpha probe from the stream header (ffprobe, no pixel decode).
+    Memoized per stat-version in-process; the .json sidecar persists it across
+    restarts. False on unreadable files — a broken header also defeats
+    generation and falls through to the error path."""
     try:
         st = os.stat(full)
         memo_key = (full, st.st_mtime_ns, st.st_size)
@@ -3582,14 +3605,15 @@ def _thumb_alpha_hint(full):
         return False
     cached = _alpha_hint_cache.get(memo_key)
     if cached is None:
-        # the plugin decodes the whole file at open, so an unprobed file here
-        # costs a full decode — HOLD while the mute is cleared (viewer session
-        # or a load owning the box); this file's own probe skips it
-        if not _foreground_muted.is_set() and full not in _open_priority_files:
-            _background_mute_hold()
         try:
-            with Image.open(full) as im:
-                cached = "A" in im.getbands() or "transparency" in im.info
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=pix_fmt", "-of", "csv=p=0", full],
+                capture_output=True, text=True, timeout=20, check=False)
+            fmt = (proc.stdout or "").strip().lower()
+            # pal8 carries GIF/PNG-8 transparency through the palette
+            cached = fmt.startswith(
+                ("rgba", "bgra", "argb", "abgr", "ya", "yuva", "gbrap", "pal8"))
         except Exception:
             cached = False
         if len(_alpha_hint_cache) >= _ALPHA_HINT_MAX:
@@ -3701,9 +3725,10 @@ def _preserve_converted_thumb(before, after):
 
 
 def _generate_thumb_bytes(full):
-    """(bytes, cache_ext, mime): THUMB_PX thumb. PNG (alpha kept) for transparent
-    sources — the RGB-conversion path exposed palette/RGBA hidden background
-    colors (the green thumbnails); JPEG otherwise, exact old pipeline."""
+    """(bytes, cache_ext, mime): THUMB_PX thumb. Everything goes through one
+    ffmpeg pass — no in-process decode, so a huge source costs a bounded child
+    instead of a resident frame. PNG (alpha kept, palette transparency
+    included) for transparent sources; JPEG otherwise."""
     ext = os.path.splitext(full)[1].lower()
     if ext in EXTENSIONS_VIDEO:
         # VA-API decode + GPU scale measured ~45% faster than software for
@@ -3728,53 +3753,27 @@ def _generate_thumb_bytes(full):
         if proc.returncode == 0 and proc.stdout:
             return proc.stdout, ".jpg", "image/jpeg"
         raise RuntimeError("ffmpeg frame extraction failed")
-    if ext == ".jxl" and (_giant_source(full) or _jbrd_source(full)):
-        # two wins over decoding in-process: JPEG-reconstructed sources are
-        # 2-4x faster in ffmpeg (0.4-1.1s vs 0.8-1.8s measured), and >40MP
-        # sources cost ~13 bytes/px in the app (a 70MP scan ratcheted it to
-        # 1.4GB) while ffmpeg's child dies after writing the thumb
-        with _thumb_child_slot:
-            proc = subprocess.run(
-                ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", full, "-vframes", "1",
-                 "-vf", f"scale={THUMB_PX}:{THUMB_PX}:force_original_aspect_ratio=decrease,pad={THUMB_PX}:{THUMB_PX}:(ow-iw)/2:(oh-ih)/2",
-                 "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
-                capture_output=True, timeout=300, check=False)
-        if proc.returncode == 0 and proc.stdout:
-            return proc.stdout, ".png", "image/png"
-    # big JXL sources decode to ~700MB peak (raw frame is held twice by
-    # pillow_jxl + PIL); one at a time keeps the process under 1GB while small
-    # thumbs keep both warm workers busy
-    with _decode_gate(full):
-        try:
-            with Image.open(full) as source:
-                return _thumb_bytes_from_source(source)
-        finally:
-            _trim_decode_heap()
+    # image: one ffmpeg pass (alpha sources keep PNG), no in-process decode
+    vf = (f"scale={THUMB_PX}:{THUMB_PX}:force_original_aspect_ratio=decrease"
+          ":flags=lanczos")
+    if _thumb_alpha_hint(full):
+        codec, thumb_ext, mime = (["-f", "image2pipe", "-vcodec", "png", "pipe:1"],
+                                  ".png", "image/png")
+    else:
+        codec, thumb_ext, mime = (["-f", "image2pipe", "-vcodec", "mjpeg",
+                                   "-q:v", "4", "pipe:1"], ".jpg", "image/jpeg")
+    with _thumb_child_slot:
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", full, "-vframes", "1",
+             "-vf", vf, *codec], capture_output=True, timeout=120, check=False)
+    if proc.returncode == 0 and proc.stdout:
+        return proc.stdout, thumb_ext, mime
+    raise RuntimeError("ffmpeg thumbnail failed")
 
 
 _BIG_SOURCE_BYTES = 12 * 1024 * 1024
 _big_decode_slot = threading.Semaphore(1)
 _thumb_child_slot = threading.Semaphore(2)
-
-
-def _jbrd_source(full):
-    """True when the JXL carries a JPEG-reconstruction box (ffmpeg decodes these 2-4x faster)."""
-    try:
-        with open(full, "rb") as fh:
-            return b"jbrd" in fh.read(65536)
-    except OSError:
-        return False
-
-
-def _giant_source(full):
-    """True for the >40MP JXLs the resident gallery index knows about."""
-    try:
-        entry = shared._gallery_cache.get("by_fn", {}).get(os.path.basename(full))
-        if entry and entry.get("width") and entry.get("height"):
-            return entry["width"] * entry["height"] > 40_000_000
-    except Exception:
-        pass
-    return False
 
 
 def _decode_gate(full):
@@ -3806,41 +3805,6 @@ def _cap_malloc_arenas():
         pass
 
 
-def _thumb_bytes_from_source(source):
-    """(bytes, cache_ext, mime) from an ALREADY-DECODED source — shared by the
-    per-file path and the dedup-backfill hook so one decode can serve both."""
-    img = source
-    # EXIF rotate before framing; orientation check is a lazy header read so
-    # JPEG's draft() fast path below survives for unrotated files
-    try:
-        orientation = img.getexif().get(0x0112)
-    except Exception:
-        orientation = None
-    if orientation:
-        try:
-            img = ImageOps.exif_transpose(img)
-        except Exception:
-            pass
-    alpha = "A" in img.getbands() or "transparency" in img.info
-    if alpha:
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        # thumbnail() keeps the source aspect ratio
-        img.thumbnail((THUMB_PX, THUMB_PX), Image.Resampling.BILINEAR)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue(), ".png", "image/png"
-    # ponytail: cap memory usage for very large images; decompress bomb protection
-    img.draft('RGB', (THUMB_PX, THUMB_PX))
-    if img.mode not in ('RGB', 'L'):
-        img = img.convert('RGB')
-    # BILINEAR: ~2x faster than LANCZOS at this size, invisible at thumbnail size
-    img.thumbnail((THUMB_PX, THUMB_PX), Image.Resampling.BILINEAR)
-    buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=80)
-    return buf.getvalue(), ".jpg", "image/jpeg"
-
-
 def _thumb_cache_write(data, thumb_ext, full):
     """Atomic disk write + versioned hint for a freshly generated thumb."""
     cache_path = _thumb_cache_path(full, thumb_ext)
@@ -3859,15 +3823,16 @@ def _thumb_cache_write(data, thumb_ext, full):
 
 
 def _dedup_shared_decode_thumb(path, source):
-    """Rescan-decode hook: the dedup signature job just decoded `path` —
-    generate + persist the thumbnail from the SAME decode if none exists."""
+    """Rescan hook: the dedup job just decoded `path` — persist a thumbnail for
+    it if none exists. Generation is one ffmpeg pass (no second in-process
+    decode), so the caller's decode is not reused."""
     try:
         for ext in (".png", ".jpg"):
             if os.path.isfile(_thumb_cache_path(path, ext)):
                 return
     except OSError:
         pass
-    data, thumb_ext, _mime = _thumb_bytes_from_source(source)
+    data, thumb_ext, _mime = _generate_thumb_bytes(path)
     _thumb_cache_write(data, thumb_ext, path)
 
 
@@ -4649,15 +4614,19 @@ NOTIF_STATUS = {
 
 @app.route("/api/notifications", methods=["GET"])
 def notifications_get():
+    # "all" = the general tab: every source mixed, newest first
     source = request.args.get("source") or None
-    items, unread, by = notifications.summary(source)
+    items, unread, by = notifications.summary(None if source == "all" else source)
+    # the general tab has one status row: the only scheduled checker (pixiv)
+    status_fn = NOTIF_STATUS.get(source) or (NOTIF_STATUS["pixiv"] if source == "all" else None)
     return jsonify({
         # items only when a page asks for them — the startup dot fetch
         # just wants the counts
         "items": items if source else [],
         "unread": unread,
         "unread_by_source": by,
-        "status": (NOTIF_STATUS.get(source) or (dict))(),
+        # the startup dot fetch must not consume the pixiv pending toast
+        "status": (status_fn or dict)() if source else {},
     })
 
 
@@ -5023,6 +4992,9 @@ def handle_start_worker(data):
                     if k in data:
                         job[k] = data[k]
         if ACTIVE_JOBS.get(site) is None:
+            # a batch that never reported (queue cleared/stopped mid-run)
+            # must not inflate this run's task count
+            shared.reset_batch(site)
             q = DOWNLOAD_QUEUES.get(site)
             if q:
                 # START with jobs already waiting runs the head of the queue;

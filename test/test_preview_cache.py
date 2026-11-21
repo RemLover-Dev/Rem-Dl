@@ -178,3 +178,36 @@ def test_preview_route_traversal_blocked(client, tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "PREVIEW_CACHE_DIR", str(tmp_path / "pcache"))
     r = client.get("/api/gallery/preview/..%2F..%2Fetc%2Fpasswd", headers=H)
     assert r.status_code in (403, 404)
+
+
+def _make_image(path, pix_fmt):
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi",
+         "-i", "testsrc=size=96x64", "-frames:v", "1", "-pix_fmt", pix_fmt,
+         str(path)], check=True, timeout=60)
+
+
+@requires_ffmpeg
+def test_thumbnails_use_ffmpeg_not_pil(tmp_path, monkeypatch):
+    """Alpha probe and thumbnail generation are ffmpeg/ffprobe only — no
+    in-process decode (the old path decoded every source with PIL)."""
+    png = tmp_path / "alpha.png"
+    _make_image(png, "rgba")
+
+    def no_pil(*_a, **_k):
+        raise AssertionError("PIL must not decode thumbnails")
+
+    monkeypatch.setattr(Rems_Dl.Image, "open", no_pil)
+    assert Rems_Dl._thumb_alpha_hint(str(png)) is True
+    data, ext, mime = Rems_Dl._generate_thumb_bytes(str(png))
+    assert (ext, mime) == (".png", "image/png")
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@requires_ffmpeg
+def test_opaque_thumbnail_is_jpeg(tmp_path):
+    jpg = tmp_path / "plain.jpg"
+    _make_image(jpg, "yuvj420p")
+    data, ext, mime = Rems_Dl._generate_thumb_bytes(str(jpg))
+    assert (ext, mime) == (".jpg", "image/jpeg")
+    assert data[:2] == b"\xff\xd8"

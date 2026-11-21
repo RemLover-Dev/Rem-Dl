@@ -329,8 +329,11 @@ class GalleryStore:
         try:
             with open(self.history_json, "r", encoding="utf-8") as f:
                 hist = json.load(f)
-        except Exception:
-            return
+        except Exception as e:
+            # never retire a corrupt source: raising keeps the JSON in place
+            # (and refuses the connection) so the import can be retried
+            raise MigrationError(
+                f"corrupt history source {self.history_json}: {e}") from e
         rows = [(h.get("site"), h.get("filename"), h.get("filepath"),
                  json.dumps(h.get("tags") or {}), h.get("downloaded_at"))
                 for h in hist if isinstance(h, dict)]
@@ -754,9 +757,8 @@ class GalleryStore:
         Returns (rows, total_matched) — total covers the whole filter so the
         client knows when to stop paging.
         """
-        with self._lock:
-            conn = self._connect()
-            terms = [t for t in (terms or []) if t]
+        terms = [t for t in (terms or []) if t]
+        with self._reader() as conn:
             if not terms and from_ts is None and to_ts is None:
                 # fast path: one indexed page straight from SQL — the full
                 # scan below re-parses every row's tags JSON per page view
@@ -764,13 +766,15 @@ class GalleryStore:
                     "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
                     "FROM image_history ORDER BY seq DESC LIMIT ? OFFSET ?",
                     (limit, offset))]
+                total = conn.execute("SELECT COUNT(*) FROM image_history").fetchone()[0]
                 for d in rows:
                     try:
                         d["tags"] = json.loads(d.get("tags") or "{}")
                     except Exception:
                         d["tags"] = {}
-                total = conn.execute("SELECT COUNT(*) FROM image_history").fetchone()[0]
                 return rows, total
+            # shortcut: filtered search still decodes every row; move to FTS5
+            # if history grows past ~50k rows
             rows = []
             for row in conn.execute(
                     "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "

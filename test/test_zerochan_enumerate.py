@@ -463,6 +463,27 @@ def test_gallery_dl_lists_the_tag_once_for_all_pages(tmp_path, monkeypatch):
     assert limits == [200]
 
 
+def test_gallery_dl_range_follows_the_requested_amount(tmp_path, monkeypatch):
+    """A run asking for 500 posts must list 500, not stop at the old 200 cap."""
+    w, logs = _worker(tmp_path, monkeypatch)
+    _creds(monkeypatch, w)
+    w.amount = 500
+    limits = []
+    posts = [{"id": 1, "file_url": "https://static.zerochan.net/Touhou.full.1.png"}]
+    monkeypatch.setattr(w, "_gallery_dl_list",
+                        lambda tag, limit: (limits.append(limit) or posts, True))
+
+    async def fake_json(page=1, per_page=200):
+        raise AssertionError("gallery-dl works; the API must not run")
+
+    _wire_scraper(monkeypatch, w, fake_json, fake_gdl=w._gallery_dl_enumerate)
+    asyncio.run(w.scraper_task())
+
+    assert limits == [500]
+    assert w._gdl_limit == 500
+    assert "lists at most" not in "\n".join(logs)
+
+
 def test_known_posts_do_not_starve_a_small_amount(tmp_path, monkeypatch):
     """5 already-downloaded images + amount=1 must fetch the 6th, not report
     the tag empty."""

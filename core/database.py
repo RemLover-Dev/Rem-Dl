@@ -468,7 +468,6 @@ class DatabaseManager:
             "theme_mode": "dark",
             "performance_mode": "lite",
             "mute_auth_warnings": False,
-            "pixiv_watch_minutes": 90,
             "gallery_roots": [],
             "wallpapers": {
                 "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"},

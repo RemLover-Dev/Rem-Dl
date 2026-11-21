@@ -12,7 +12,6 @@ from urllib.parse import parse_qs, unquote
 import requests
 
 from core import notifications
-from core.database import DatabaseManager
 
 FOLLOW_ENDPOINT = "/v2/illust/follow"
 
@@ -127,12 +126,8 @@ def mark_read(ids=None):
 
 
 def interval_minutes():
-    """Watch cadence: 1-2 h (rate limits). Wall-clock, persisted."""
-    try:
-        v = int(DatabaseManager.load_ui_config().get("pixiv_watch_minutes", 90))
-    except (TypeError, ValueError):
-        v = 90
-    return max(60, min(120, v))
+    """Follows cadence: fixed 30 min (app-API rate limits)."""
+    return 30
 
 
 def _build_api(cfg):

@@ -143,7 +143,7 @@ def test_eshuushuu_fields_prefixes_host():
 class _FakePost:
     def __init__(self):
         self.id = 123
-        self.preview = "prev"
+        self.thumbnail = "prev"  # rule34Py's real attribute name
         self.sample = "samp"
         self.image = "full"
         self.change = 1700000000
@@ -167,3 +167,48 @@ def test_rule34_fetch_converts_post_objects(monkeypatch):
     posts = r34.fetch(["rem -comic"], 2)
     assert posts == [{"id": 123, "preview_url": "prev", "sample_url": "samp",
                       "file_url": "full", "created_at": 1700000000}]
+
+
+# ---------- shared transport ----------
+
+def test_net_get_sends_the_downloader_user_agent(monkeypatch):
+    # danbooru's Cloudflare 403s python-requests' default UA
+    from core.watchers import net
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+
+    def fake_get(url, **kw):
+        seen["url"], seen["headers"] = url, kw.get("headers")
+        return _Resp()
+
+    monkeypatch.setattr(net.requests, "get", fake_get)
+    net.get("https://example.test/x")
+    assert seen["headers"]["User-Agent"].startswith("Rems_Dl/")
+    assert seen["headers"]["Accept"] == "application/json"
+
+    # caller headers win, the defaults stay
+    net.get("https://example.test/x", headers={"Referer": "r"})
+    assert seen["headers"] == {"User-Agent": "Rems_Dl/5.0 (by RemLover on GitHub)",
+                               "Accept": "application/json", "Referer": "r"}
+
+
+def test_safebooru_fetch_accepts_bare_list(monkeypatch):
+    # safebooru answers a JSON list, not gelbooru's {"post": [...]}
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return [{"id": 1}, {"id": 2}]
+
+    monkeypatch.setattr(watchers.safebooru, "get", lambda *a, **k: _Resp())
+    assert watchers.safebooru.fetch("rem", 0) == [{"id": 1}, {"id": 2}]
+
+
+def test_every_adapter_has_a_display_name():
+    for src, mod in watchers._ADAPTERS.items():
+        assert getattr(mod, "NAME", ""), src
+        assert mod.NAME[0].isupper(), src

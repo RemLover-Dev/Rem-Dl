@@ -843,24 +843,35 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
                         <div style="display: flex; gap: 12px; align-items: center;">
                             <h2>Notifications</h2>
-                            <select id="notifSource" onchange="onNotifSourceChange(this)" style="width: 160px;"></select>
                         </div>
                         <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-                            <span id="notifPixivControls" style="display: none; gap: 12px; align-items: center; flex-wrap: wrap;">
-                                <label style="font-size: 13px;">Check every <input type="number" id="notifInterval" min="60" max="120" step="1" style="width: 64px;" onchange="saveNotifInterval(this)"> min</label>
-                                <button class="action-btn" onclick="checkPixivNow()">Check now</button>
-                            </span>
                             <button class="action-btn stop-btn" onclick="clearNotifications()">Clear</button>
                         </div>
                     </div>
                     <div id="notifStatus" style="font-size: 12px; opacity: 0.7; margin-bottom: 12px;"></div>
-                    <div id="gelWatcherPanel" style="display:none; margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border-color);">
+                    <div id="gelWatcherPanel" style="margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border-color);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <h3 id="watcherPanelTitle" style="font-size: 15px; margin-bottom: 0;">Gelbooru Tag Watcher</h3>
+                            <h3 id="watcherPanelTitle" style="font-size: 15px; margin-bottom: 0;">Tag Watchers</h3>
                             <button class="action-btn" onclick="checkGelWatchersNow()">Check now</button>
                         </div>
-                        <div class="input-group" style="align-items: flex-start; margin-bottom: 6px;">
-                            <label style="padding-top: 9px;">Watch tags:</label>
+                        <div class="input-group" style="align-items: flex-start; margin-bottom: 6px; flex-wrap: wrap;">
+                            <label style="padding-top: 9px;">Site:</label>
+                            <select id="watcherSource" onchange="onWatcherSourceChange(this)" style="width: 140px; margin-right: 6px;">
+                                <option value="gelbooru">Gelbooru</option>
+                                <option value="danbooru">Danbooru</option>
+                                <option value="safebooru">Safebooru</option>
+                                <option value="rule34">Rule34</option>
+                                <option value="konachan">Konachan</option>
+                                <option value="yande">Yande.re</option>
+                                <option value="sankaku">Sankaku</option>
+                                <option value="gsbooru">Gsbooru</option>
+                                <option value="zerochan">Zerochan</option>
+                                <option value="eshuushuu">E-shuushuu</option>
+                                <option value="anime_dl">Anime DL</option>
+                                <option value="pixiv">Pixiv (tag)</option>
+                                <option value="x">X (account)</option>
+                            </select>
+                            <label style="padding-top: 9px;" id="watcherTagLabel">Watch tags:</label>
                             <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
                                 <div style="display:flex; gap:6px; position: relative;">
                                     <input style="flex:1;" autocomplete="off" type="text" id="watcherTag" placeholder="e.g. rem_blue_hair, 1girl" onkeydown="if(event.key==='Enter') addWatcherTag()">

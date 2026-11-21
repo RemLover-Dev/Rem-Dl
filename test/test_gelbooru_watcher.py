@@ -412,7 +412,7 @@ def test_notifications_endpoints(store):
 def test_watchers_endpoints(store):
     c = _client()
     assert c.get("/api/watchers?source=gelbooru").get_json()["watchers"] == []
-    assert c.post("/api/watchers", json={"source": "x", "tags": ["a"]}
+    assert c.post("/api/watchers", json={"source": "nope", "tags": ["a"]}
                   ).status_code == 400
     assert c.post("/api/watchers", json={"source": "gelbooru", "tags": []}
                   ).status_code == 400

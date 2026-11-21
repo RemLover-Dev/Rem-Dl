@@ -44,8 +44,9 @@ def memory_budget():
     return max(64 * MIB, min(8 * 1024 * MIB, available_memory() // 2))
 
 
-def estimate_memory(path, mode, budget):
-    """Estimate native buffers; legacy JXLs without dimensions run alone."""
+def plan(path, mode, budget=0):
+    """Header-only (memory cost, pixels, kind); legacy JXLs without dimensions
+    run alone with no pixel estimate."""
     path = Path(path)
     size = path.stat().st_size
     if size > 512 * MIB:
@@ -56,11 +57,11 @@ def estimate_memory(path, mode, budget):
         record = read_record(path)
         if record is None:
             if mode == 'display':
-                return budget
+                return budget, 0, 'lossless'
             raise ValueError('This JXL has no Rems conversion record')
         width, height = record.get('width'), record.get('height')
         if type(width) is not int or type(height) is not int:
-            return budget
+            return budget, 0, 'lossless'
         highbit = record.get('bit_depth') == 16
         pixels = width * height
         reversible = mode != 'display' and record.get('encoding') == 'jpeg'
@@ -81,4 +82,10 @@ def estimate_memory(path, mode, budget):
                 reversible = mode == 'auto' and image.format == 'JPEG'
     if not 0 < pixels <= MAX_PIXELS:
         raise ValueError('Image exceeds the 160 megapixel limit')
-    return 128 * MIB + pixels * (64 if highbit else (12 if reversible else 32)) + size * 3
+    cost = 128 * MIB + pixels * (64 if highbit else (12 if reversible else 32)) + size * 3
+    kind = 'jpeg' if reversible else ('highbit' if highbit else 'lossless')
+    return cost, pixels, kind
+
+
+def estimate_memory(path, mode, budget):
+    return plan(path, mode, budget)[0]

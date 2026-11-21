@@ -145,6 +145,22 @@ def test_broken_migration_leaves_json_alone(tmp_path, monkeypatch):
     assert os.path.exists(s.gallery_json), "json must survive a failed migration"
 
 
+def test_corrupt_history_blocks_migration_and_keeps_json(tmp_path):
+    """A corrupt history source must not be silently retired (data loss)."""
+    import os
+    _seed_gallery(tmp_path)
+    (tmp_path / "image_history.json").write_text("{not json", encoding="utf-8")
+    s = GalleryStore(
+        db_path=str(tmp_path / "gallery.db"),
+        gallery_json=str(tmp_path / "gallery.json"),
+        history_json=str(tmp_path / "image_history.json"),
+    )
+    with pytest.raises(MigrationError):
+        s.count()
+    assert os.path.exists(s.history_json), "corrupt history must survive"
+    assert not os.path.exists(s.history_json + ".migrated")
+
+
 def test_save_with_tagless_entries_leaves_stored_tags_alone(store):
     """The cutover's central rule: a stripped entry must not clear tags.
 
