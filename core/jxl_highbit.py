@@ -4,12 +4,11 @@ Pillow is used only for header metadata and 8-bit display copies. It never
 encodes the high-bit-depth master. No extra Python imaging dependency is used.
 """
 import hashlib
-import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 from core.jxl_resources import MAX_PIXELS
 
@@ -173,6 +172,7 @@ def restore(source, directory, record, threads):
 def display_image(source):
     """An 8-bit copy for browsers only; never modifies the high-bit-depth master."""
     from PIL import Image
+
     from core.jxl_codec import THREADS
     with tempfile.TemporaryDirectory(prefix='rems-16-display-') as d:
         target = Path(d) / 'display.png'

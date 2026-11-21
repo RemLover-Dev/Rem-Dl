@@ -7,6 +7,7 @@
     const savedFields = new Set(['r34Key','r34Uid','danLogin','danApiKey','gelKey','gelUid','gsApiKey',
         'konaLogin','konaPassword','sankaLogin','sankaPassword','zeroLogin','zeroPassword',
         'pinterestCookies','pinterestEmail','pinterestPassword','pixivToken','pixivCookie',
+        'xCookies','xUsername','xPassword','xEmail','xEmailPassword',
         'verifyTls','apiTimeout','retryWait','antiBanPause','downloadRetries','reqRateLimit','dedupEnabled']);
     function setDirty(value) {
         dirty = value;
@@ -74,6 +75,6 @@
     retry.onclick = () => { lastAuthCheck = 0; socket.disconnect(); socket.connect(); };
     signIn.onclick = async () => {
         if (dirty && !await customConfirm('Sign in again? Unsaved settings on this page will be lost.', 'Sign in')) return;
-        dirty = false; window.location.assign('/');
+        dirty = false; window.location.assign(withBase('/'));
     };
 })();

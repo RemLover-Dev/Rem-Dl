@@ -5,8 +5,8 @@ from pathlib import Path
 
 def run(request_path, response_path):
     try:
-        from core import shared
         from core import jxl_codec as codec
+        from core import shared
         from core.jxl_cpu import conversion_threads
         from core.jxl_metadata import read_record, write_record
         request = json.loads(Path(request_path).read_text(encoding='utf-8'))

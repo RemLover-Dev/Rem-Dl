@@ -696,7 +696,8 @@ class TestAdapters:
         w.log = lambda m: None
         w.download_queue = asyncio.Queue()
 
-        async def fake_download(url, filepath, filename, tags_list, artists, file_size=0):
+        async def fake_download(url, filepath, filename, tags_list, artists, file_size=0,
+                                characters=None, copyrights=None, metadata_tags=None):
             # claim must still be held while the (immediate) download runs
             assert store.claimed_source_md5(filepath) is not None
             return True
@@ -722,7 +723,8 @@ class TestAdapters:
         monkeypatch.setattr(adm, "save_history", lambda *a, **k: None)
         from workers.anime_dl import AnimeDlWorker
         w = AnimeDlWorker("rem", 10, {})
-        w.log = lambda m: None
+        wlog = []
+        w.log = wlog.append
         w.download_queue = asyncio.Queue()
 
         payload = _img_bytes(30)
@@ -733,6 +735,7 @@ class TestAdapters:
             def iter_content(self):
                 yield payload[:mid]
                 yield payload[mid:]
+            def close(self): pass
         w.curl_session = type("CS", (), {"get": lambda self, *a, **k: Resp()})()
 
         md5 = "a1b2c3d4" + "0" * 24
@@ -774,19 +777,33 @@ class TestAdapters:
         w.log = lambda m: None
 
         payload = _img_bytes(31)
+        mid = len(payload) // 2
+
         class Resp:
             status_code = 200
-            content = payload
-            headers = {"content-type": "image/png"}
+            headers = {"content-type": "image/png",
+                       "Content-Length": str(len(payload))}
+
+            def iter_content(self, *a, **k):
+                yield payload[:mid]
+                yield payload[mid:]
+
+            def close(self):
+                pass
 
         class CS:
             def get(self, *a, **k): return Resp()
         monkeypatch.setattr(w, "_ensure_curl_session", lambda: CS())
         monkeypatch.setattr(w, "_verify_flag", lambda: True)
 
+        seen = []
+        w._emit_progress = lambda: seen.append(dict(w._inflight))
+
         fp = os.path.join(w.site_root, "Tag", "shot.png")
         assert asyncio.run(w._async_download_file(
             "http://example.com/x.png", fp, "shot.png", [], [])) is True
+        # the bar must move while bytes stream, not only when the file lands
+        assert any(k == fp and 0 < v <= 1 for snap in seen for k, v in snap.items())
         served = hash_bytes(payload)
         pairs = _pairs(store, fp)
         for algo in ("md5", "sha1", "sha256"):

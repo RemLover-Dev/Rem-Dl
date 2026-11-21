@@ -7,6 +7,22 @@ import pytest
 
 import core.shared
 
+# Snapshot the process env BEFORE any test module is imported (collection
+# order makes some module import Rems_Dl, whose load_dotenv() spills .env
+# values into os.environ and breaks test_settings' env-derived defaults).
+# Every test starts and ends with this pristine env.
+_ENV_SNAPSHOT = dict(os.environ)
+
+
+@pytest.fixture(autouse=True)
+def _restore_env():
+    yield
+    # diff-restore: clear() would also drop pytest's own runtime env vars
+    for k in [k for k in os.environ
+              if k not in _ENV_SNAPSHOT and not k.startswith("PYTEST")]:
+        os.environ.pop(k, None)
+    os.environ.update(_ENV_SNAPSHOT)
+
 
 @pytest.fixture(autouse=True)
 def _reset_rate_pace():
@@ -63,11 +79,13 @@ def _isolate_data_files():
     yield tmp
 
 
-@pytest.fixture(autouse=True)
-def _bypass_access_guard(monkeypatch):
-    """Route tests were written before AccessGuard wrapped app.wsgi_app and
-    now all 401. Lift the WSGI gate for the whole suite so tests exercise the
-    routes; guard behaviour itself is reviewed, not regression-tested here."""
+@pytest.fixture
+def bypass_access_guard(monkeypatch):
+    """Opt-in bypass for legacy route tests that target Flask handlers.
+
+    Security tests deliberately do not request this fixture, so the WSGI
+    boundary remains covered by the real AccessGuard implementation.
+    """
     from core.web_security import AccessGuard
 
     def _permissive(ga, environ, start_response):

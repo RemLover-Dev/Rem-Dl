@@ -163,6 +163,7 @@ class EShuushuuWorker(BaseDownloader):
         req_session = self._http_session()
 
         consecutive_errors = 0
+        retried_rate_limit = False
         while not self.stop_event.is_set() and (self.amount == 0 or collected < self.amount):
             try:
                 params = []
@@ -173,6 +174,13 @@ class EShuushuuWorker(BaseDownloader):
 
                 resp = await asyncio.to_thread(req_session.get, search_url, timeout=15)
                 if resp.status_code in (403, 429):
+                    # one transient block should not kill a long run — pause
+                    # once, refetch the same page
+                    if not retried_rate_limit:
+                        retried_rate_limit = True
+                        self.log(f"HTTP {resp.status_code} — waiting 30s, then retrying page {page}")
+                        await asyncio.sleep(30)
+                        continue
                     self.log(f"Blocked ({resp.status_code}).")
                     break
                 resp.raise_for_status()
@@ -201,6 +209,7 @@ class EShuushuuWorker(BaseDownloader):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             # batch the per-image page GETs — one gather per page, up to 4
             # concurrent (the global ISP pace still applies inside to_thread)
             if self.stop_event.is_set():

@@ -10,6 +10,8 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # Rems_Dl's load_dotenv() pollutes os.environ, which SettingsManager reads for
 # its defaults — snapshot and restore so test_settings stays isolated (same
 # dance as test_gallery_select, needed because this file imports Rems_Dl first).
@@ -215,6 +217,57 @@ DatabaseManager.add_image_history("gelbooru", "a.jpg", ["blue_hair"], ["artist_x
     assert "blue_hair" in tags, "gallery record lost on exit"
     assert hist, "history record lost on exit"
     assert json.loads(hist[0])["tag"] == ["blue_hair"]
+
+
+def test_rescan_reattributes_site_for_legacy_rows(lib):
+    """A row tagged before folder names stopped being sites can carry rich
+    tags and site='' forever: its embedded site was read but never written,
+    so the row stayed invisible under every site filter (external HDD
+    archives). One metadata re-read repairs attribution; a file that names
+    no site marks itself attempted instead of being re-read every rescan."""
+    d = lib / "M (1n910)" / "NSFW" / "Images"
+    d.mkdir(parents=True)
+    p = d / "abc.jpg"
+    p.write_bytes(b"\xff\xd8\xff\xd9")
+    shared.write_image_metadata(str(p), ["1girl"], ["m_(1n910)"], "gelbooru")
+    shared.load_gallery()["images"].append({
+        "id": "legacy", "filename": "abc.jpg",
+        "filepath": "M (1n910)/NSFW/Images/abc.jpg", "site": "",
+        "tags": {"artist": ["m_(1n910)"], "tag": ["1girl"]},
+        "favourite": False, "downloaded_at": "2026-08-22T00:00:00",
+        "meta_mtime": p.stat().st_mtime})
+    shared._gallery_cache["filenames"].add("abc.jpg")
+
+    gallery, _added, fixed, _checked = Rems_Dl._scan_and_merge_gallery()
+    row = next(i for i in gallery["images"] if i["filename"] == "abc.jpg")
+    assert row["site"] == "gelbooru" and fixed >= 1
+
+    nosite = d / "none.jpg"
+    nosite.write_bytes(b"\xff\xd8\xff\xd9")
+    shared.load_gallery()["images"].append({
+        "id": "nosite", "filename": "none.jpg",
+        "filepath": "M (1n910)/NSFW/Images/none.jpg", "site": "",
+        "tags": {"artist": ["who"], "tag": ["1girl", "smile"]},
+        "favourite": False, "downloaded_at": "2026-08-22T00:00:00",
+        "meta_mtime": nosite.stat().st_mtime})
+    shared._gallery_cache["filenames"].add("none.jpg")
+
+    calls = []
+    real = Rems_Dl._tags_from_file
+
+    def counting(full):
+        calls.append(full)
+        return ([], {"tag": []})
+
+    Rems_Dl._tags_from_file = counting
+    try:
+        Rems_Dl._scan_and_merge_gallery()
+        assert calls, "no-site row never attempted"
+        first = len(calls)
+        Rems_Dl._scan_and_merge_gallery()
+        assert len(calls) == first, "no-site row re-read on every rescan"
+    finally:
+        Rems_Dl._tags_from_file = real
 
 
 def test_sigterm_flushes_before_dying():

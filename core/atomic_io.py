@@ -45,9 +45,10 @@ def _write(path, writer):
                     pass
 
 
-def write_json(path, data):
+def write_json(path, data, backup=True):
     _write(path, lambda stream: json.dump(data, stream))
-    _backup(path)
+    if backup:
+        _backup(path)
 
 
 def write_lines(path, lines):

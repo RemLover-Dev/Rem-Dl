@@ -12,9 +12,11 @@ from urllib.parse import parse_qs, unquote
 import requests
 
 from core import notifications
-from core.database import DatabaseManager
 
 FOLLOW_ENDPOINT = "/v2/illust/follow"
+
+# pixiv's own accounts (campaign/news posts in the following feed) — never notify
+SKIP_ARTIST_NAMES = {"pixiv", "pixiv事務局"}
 
 STATE = {
     "watching": False,
@@ -101,6 +103,9 @@ def ingest(works):
     """works: raw illust dicts, newest first. Returns the new entries."""
     entries = []
     for w in works:
+        u = w.get("user") or {}
+        if (u.get("name") or "").strip().lower() in SKIP_ARTIST_NAMES:
+            continue
         e = entry_from_work(w)
         if e["work_id"]:
             e["external_id"] = e["work_id"]
@@ -121,12 +126,8 @@ def mark_read(ids=None):
 
 
 def interval_minutes():
-    """Watch cadence: 1-2 h (rate limits). Wall-clock, persisted."""
-    try:
-        v = int(DatabaseManager.load_ui_config().get("pixiv_watch_minutes", 90))
-    except (TypeError, ValueError):
-        v = 90
-    return max(60, min(120, v))
+    """Follows cadence: fixed 30 min (app-API rate limits)."""
+    return 30
 
 
 def _build_api(cfg):

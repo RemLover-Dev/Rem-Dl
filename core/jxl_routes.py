@@ -1,12 +1,13 @@
 """Authenticated JXL tools and browser-compatible comparison/gallery images."""
 import hashlib
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 from flask import jsonify, request, send_file
+
 from core.jxl_service import JxlService
 
 _view_lock = threading.Lock()
@@ -33,8 +34,9 @@ def browser_png(path, cache, difference_with=None):
             cost += estimate_memory(difference_with, 'display', budget)
         if cost > budget:
             raise ValueError('Comparison exceeds the current available-memory budget; converted image is unchanged')
-        from core.jxl_codec import normalize
         from PIL import Image, ImageChops
+
+        from core.jxl_codec import normalize
         image = normalize(source)
         if difference_with:
             other = normalize(difference_with)
@@ -86,6 +88,8 @@ def register(app, master, folder_picker, image_picker, changed, cache, replaced=
 
     @app.route('/api/jxl/browse', methods=['POST'])
     def jxl_browse():
+        if request.remote_addr not in ('127.0.0.1', '::1'):
+            return jsonify(error='The file picker runs on the server machine — paste the path instead'), 501
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict) or data.get('kind') not in ('file', 'folder'):
             return jsonify(error='Choose file or folder'), 400
@@ -102,8 +106,13 @@ def register(app, master, folder_picker, image_picker, changed, cache, replaced=
 
     @app.route('/api/jxl/reveal', methods=['POST'])
     def jxl_reveal():
-        path = Path(service.snapshot().get('output', ''))
-        if not path.is_dir() or not service.snapshot().get('output'):
+        # xdg-open fires on the SERVER's desktop — a remote client gets
+        # nothing visible, so tell them to copy the path instead
+        if request.remote_addr not in ('127.0.0.1', '::1'):
+            return jsonify(error='Reveal runs on the server machine — copy the folder path instead'), 501
+        snapshot = service.snapshot()
+        path = Path(snapshot.get('output', ''))
+        if not path.is_dir() or not snapshot.get('output'):
             return jsonify(error='No completed replacement yet'), 404
         try:
             if sys.platform == 'win32':

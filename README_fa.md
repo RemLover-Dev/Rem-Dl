@@ -26,6 +26,7 @@
 - **نصب آسان و یکپارچه‌سازی:** فایل نصاب خودکار ویندوز، قرارگیری `vc_redist.x64.exe` در بسته پرتابل و اسکریپت `install-desktop.sh` برای افزودن خودکار آیکون و لانچر در لینوکس.
 - **امنیت تغییر نام پوشه‌ها:** محافظت از پاک شدن اطلاعات در تغییر نام‌های فقط-حروف‌بزرگ/کوچک در ویندوز و مک.
 - **امنیت و کلیپ‌بورد بومی:** کدگذاری ایمن مسیرها در کلیپ‌بورد سیستم و پراکسی امن تامبنیل‌ها در برابر حملات SSRF.
+- **دانلود ضدتکرار و کارت‌های هم‌گام با تبدیل JXL:** داپلیکیت تصاویر بین سایت‌ها با هش ادراکی تشخیص داده می‌شود؛ کپی بزرگ‌تر نگه داشته می‌شود و تگ‌های نسخه تکراری ادغام می‌شوند. کارت‌های دانلود (لاگ، تاریخچه و گالری) فقط وقتی نمایش داده می‌شوند که نسخه دانلود واقعاً ماندگار باشد — بعد از یک پنجره‌ی کوتاه برای سواپ‌های داپلیکیت، و در حالت تبدیل خودکار به JXL، فقط بعد از اتمام تبدیل خودِ همان تصویر. اگر تبدیل ناموفق باشد، تصویر اصلی به‌طور عادی نمایش داده می‌شود.
 
 ## ✨ قابلیت‌های جدید در نسخه 5.3 (Rem 5.3)
 - **رفع خطای متادیتای PyInstaller (`rule34Py`):** رفع قطعی خطای باز نشدن بیلد پورتابل و نصبی با باندل متادیتا و لایه‌های ایمنی در اجرا.
@@ -82,11 +83,13 @@ RULE34_API_KEY=your_api_key_here
 RULE34_USER_ID=your_user_id_here
 USE_PROXY=false
 PROXY_URL=http://127.0.0.1:10808
-VERIFY_TLS=false
+VERIFY_TLS=true
 API_TIMEOUT=10
 RETRY_WAIT=5
 ANTI_BAN_PAUSE=3.0
 ```
+
+اعتبارسنجی گواهی TLS را در حالت عادی روشن نگه دارید. اگر پراکسی محلی HTTPS را رهگیری می‌کند، گواهی CA همان پراکسی را به سیستم اضافه کنید؛ غیرفعال‌کردن `VERIFY_TLS` فقط باید برای عیب‌یابی موقت باشد.
 
 ### ۴. اجرا
 
@@ -143,6 +146,7 @@ python Rems_Dl.py
 - **پشتیبانی پروکسی** -- تنظیمات کامل پروکسی از رابط کاربری (v2rayN، Clash و غیره)
 - **مدیریت کلید API** -- مدیریت اعتبارنامه‌ها مستقیماً از رابط وب
 - **پیشنهاد خودکار تگ** -- autocomplete زنده برای همه پلتفرم‌ها با دیتابیس آفلاین
+- **دانلود ضدتکرار** -- داپلیکیت بین سایت‌ها با هش ادراکی + هش سورس: تصویر تکراری فقط یک بار دانلود می‌شود، کپی بزرگ‌تر نگه داشته می‌شود و تگ‌های نسخه تکراری در رکورد نگه‌داشته‌شده ادغام می‌شوند
 - **فایل‌های جانبی Hydrus** -- ساخت خودکار فایل `.filename.txt` با تگ و هنرمند برای ایمپورت در Hydrus Network
 - **ذخیره تنظیمات** -- پروکسی، کلیدها و تنظیمات دانلود در فایل `.env` ذخیره می‌شوند
 
@@ -294,20 +298,83 @@ update-desktop-database ~/.local/share/applications/
 - **اگر WebKitGTK نصب نبود چه می‌شود؟** برنامه کرش نمی‌کند! Rems Dl به صورت خودکار پیام راهنمایی را نمایش داده و رابط کاربری را در مرورگر پیش‌فرض سیستم با آدرس `http://127.0.0.1:<port>` باز می‌کند.
 - **اجرا روی سرور راه دور یا بدون مانیتور:**
   ```bash
-  REMS_HEADLESS=1 python Rems_Dl.py
+  REMS_HEADLESS=1 PORT=5000 python Rems_Dl.py
   # یا
-  python Rems_Dl.py --headless
+  PORT=5000 python Rems_Dl.py --headless
   ```
-  در این حالت برنامه روی `0.0.0.0:5000` اجرا شده و با بستن تب مرورگر سرور متوقف **نمی‌شود**.
+  به‌صورت پیش‌فرض برنامه فقط روی `127.0.0.1:5000` گوش می‌دهد. برای دسترسی از راه دور، تونل SSH بسازید:
+  ```bash
+  ssh -L 5000:127.0.0.1:5000 user@server
+  ```
+  سپس در مرورگر محلی `http://127.0.0.1:5000` را باز کنید. با بستن تب مرورگر سرور متوقف **نمی‌شود**.
+
+  اتصال مستقیم شبکه فقط با تنظیم صریح `REMS_HOST=0.0.0.0`، توکن ۳۲ کاراکتری یا بیشتر در `REMS_ACCESS_TOKEN` و فهرست میزبان‌های مجاز در `REMS_ALLOWED_HOSTS` فعال می‌شود. اگر برنامه پشت یک ریورس پروکسی باشد، پروکسی باید هدر `Host` اصلی را منتقل کند (nginx: `proxy_set_header Host $host;`) — نمونهٔ کامل nginx در بخش داکر آمده است. توکن در لاگ چاپ نمی‌شود؛ اگر توکن را تنظیم نکرده باشید، توکن خودکار در `database/rems_access_token` با مجوز `0600` ذخیره می‌شود. برای ورود، آن را به‌صورت محلی با `cat database/rems_access_token` بخوانید.
 
 ### ۵. اجرا با داکر (Docker)
 ```bash
 docker pull ghcr.io/remlover-dev/rems-dl:latest
-docker run -d -p 5000:5000 \
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_HOST=0.0.0.0 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
   -v "$(pwd)/Rems Dl:/app/Rems Dl" \
   -v "$(pwd)/database:/app/database" \
   --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
 ```
+کانتینر داخل شبکهٔ خودش روی همهٔ رابط‌ها گوش می‌دهد، اما پورت میزبان فقط روی loopback منتشر می‌شود. برای دسترسی از راه دور از تونل SSH استفاده کنید: `ssh -L 5000:127.0.0.1:5000 user@server`؛ سپس `http://localhost:5000` را باز کنید. برای انتشار مستقیم روی LAN یا اینترنت، توکن قوی، فهرست دقیق میزبان‌های مجاز و فایروال الزامی است.
+
+#### وب‌سایت عمومی پشت ریورس پروکسی
+
+انتشار روی loopback را نگه دارید و nginx را جلو بگذارید؛ میزبان عمومی را در allowlist بنویسید و هدر `Host` اصلی را منتقل کنید:
+
+```bash
+docker run -d -p 127.0.0.1:5000:5000 \
+  -e REMS_ACCESS_TOKEN="$(openssl rand -hex 32)" \
+  -e REMS_ALLOWED_HOSTS=rems.example.com \
+  -v "$(pwd)/Rems Dl:/app/Rems Dl" \
+  -v "$(pwd)/database:/app/database" \
+  --name rems-dl-app ghcr.io/remlover-dev/rems-dl:latest
+```
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name rems.example.com;
+  # ssl_certificate     /etc/letsencrypt/live/rems.example.com/fullchain.pem;
+  # ssl_certificate_key /etc/letsencrypt/live/rems.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;              # اپلیکیشن همین هاست را allowlist می‌کند
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;   # وب‌سوکت socket.io
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 60s;
+  }
+}
+```
+
+`https://rems.example.com` را باز کنید و یک بار مقدار `REMS_ACCESS_TOKEN` را در صفحهٔ ورود وارد کنید. کوکی نشست `HttpOnly` و `SameSite=Strict` است و روی HTTPS پرچم `Secure` می‌گیرد. پورت 5000 را مستقیم روی `0.0.0.0` منتشر نکنید و برای خارج کردن توکن از تاریخچهٔ شل، به‌جای دستور مستقیم از `--env-file` استفاده کنید.
+
+#### سرو کردن زیر یک زیرمسیر URL
+
+برای میزبانی در `https://example.com/remdl/` به‌جای دامنهٔ جداگانه، `REMS_BASE_PATH=/remdl` را تنظیم کنید و nginx پیشوند را حذف کند:
+
+```nginx
+location = /remdl { return 301 /remdl/; }
+location /remdl/ {
+  proxy_pass http://127.0.0.1:5000/;        # اسلش پایانی پیشوند /remdl/ را حذف می‌کند
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Upgrade $http_upgrade;   # وب‌سوکت socket.io
+  proxy_set_header Connection "upgrade";
+  proxy_read_timeout 60s;
+}
+```
+
+برنامه سپس همهٔ URLهایی که به مرورگر می‌فرستد (لینک‌ها، fetch، socket.io، کوکی) را با `/remdl` پیشوند می‌دهد، در حالی که مسیرهای Flask بدون تغییر می‌مانند. برای استقرار در ریشه، `REMS_BASE_PATH` را تنظیم نکنید.
 
 ---
 

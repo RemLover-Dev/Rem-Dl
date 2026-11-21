@@ -26,9 +26,15 @@ class _TextResp:
     async def text(self):
         return XML
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class _Session:
-    async def get(self, *a, **k):
+    def get(self, *a, **k):
         return _TextResp()
 
 
@@ -47,8 +53,14 @@ def test_konachan_persists(tmp_path, monkeypatch):
         async def json(self):
             return [{"name": "mika_pikazo", "type": 1}]
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
     class _Session:
-        async def get(self, *a, **k):
+        def get(self, *a, **k):
             return _Resp()
 
     w.session = _Session()

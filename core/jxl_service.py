@@ -1,20 +1,21 @@
 """Bounded parallel conversion queue; cancellation owns staging and native process."""
 import atexit
 import copy
+import hashlib
 import importlib.util
 import json
-import hashlib
-import shutil
 import os
-from pathlib import Path
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
+from core import jxl_progress
 from core.runtime_paths import resource_root
 
 ENCODE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
@@ -186,6 +187,7 @@ class JxlService:
     def allowed_path(self, value):
         if not isinstance(value, str) or not value.strip() or '\x00' in value:
             raise ValueError('Choose an image or folder first')
+        # codeql[py/path-injection] resolved then immediately constrained to home / master / picker grants before return
         path = Path(value).expanduser().resolve(strict=True)
         roots = [Path.home().resolve(), Path(self.master_folder()).resolve()]
         with self.lock:
@@ -196,7 +198,13 @@ class JxlService:
 
     def snapshot(self):
         with self.lock:
-            return copy.deepcopy(self.job) if self.job else {'state': 'idle', 'results': []}
+            if not self.job:
+                return {'state': 'idle', 'results': []}
+            job = copy.deepcopy(self.job)
+        now = time.monotonic()
+        job['progress'] = sum(jxl_progress.fraction(item['started'], item['eta'], now)
+                              for item in job.get('active_progress', []))
+        return job
 
     def start(self, data):
         with self.lock:
@@ -260,6 +268,8 @@ class JxlService:
         with self.lock:
             self.job['active'] = [str(item['path']) for item in active]
             self.job['current'] = self.job['active'][0] if active else ''
+            self.job['active_progress'] = [{'started': item['started'], 'eta': item['eta']}
+                                           for item in active]
 
     def record_result(self, path, result):
         with self.lock:
@@ -271,7 +281,7 @@ class JxlService:
                 self.job['input_bytes'] += row['input_bytes']
                 self.job['output_bytes'] += row['output_bytes']
 
-    def launch(self, path, mode, quality, effort, threads, cost, slot):
+    def launch(self, path, mode, quality, effort, threads, cost, slot, pixels=0, kind='lossless'):
         work = tempfile.TemporaryDirectory(prefix='rems-jxl-')
         try:
             directory = Path(work.name)
@@ -282,7 +292,9 @@ class JxlService:
                                        stderr=subprocess.DEVNULL, start_new_session=os.name != 'nt',
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             return {'path': path, 'work': work, 'response': response, 'process': process,
-                    'started': time.monotonic(), 'cost': cost, 'threads': threads, 'slot': slot}
+                    'started': time.monotonic(), 'cost': cost, 'threads': threads, 'slot': slot,
+                    'pixels': pixels, 'kind': kind, 'effort': effort,
+                    'eta': jxl_progress.eta_seconds(pixels, kind, effort)}
         except BaseException:
             work.cleanup()
             raise
@@ -316,6 +328,8 @@ class JxlService:
                     value.update(comparison_source=str(snapshot), comparison_available=True,
                                  replaced=True, output=str(target), token=secrets.token_hex(12))
                     value.pop('source_sha256', None)
+                jxl_progress.observe(item.get('kind', 'lossless'), item.get('effort', 5),
+                                     time.monotonic() - item['started'], item.get('pixels', 0))
             if not self.cancel_event.is_set() or (result['ok'] and result['value'].get('replaced')):
                 self.record_result(path, result)
         except Exception as exc:
@@ -361,7 +375,7 @@ class JxlService:
 
     def run(self, source, mode, quality, effort, recursive):
         from core.jxl_cpu import parallel_threads
-        from core.jxl_resources import memory_budget, estimate_memory, MIB
+        from core.jxl_resources import MIB, memory_budget, plan
         active = []
         try:
             files = self.discover(source, mode, recursive)
@@ -380,8 +394,8 @@ class JxlService:
                     path = files[index]
                     try:
                         if waiting is None:
-                            waiting = estimate_memory(path, mode, budget)
-                        cost = waiting
+                            waiting = plan(path, mode, budget)
+                        cost, pixels, kind = waiting
                         if cost > budget:
                             raise ValueError(f'Image estimated to need {cost // MIB} MiB exceeds the {budget // MIB} MiB batch memory budget; original kept')
                         # Big rasters, and legacy JXLs with no stored dimensions,
@@ -394,7 +408,7 @@ class JxlService:
                             break
                         slot = None if exclusive else next(slot for slot in range(len(allocations)) if slot not in used)
                         threads = cpu_total if exclusive else allocations[slot]
-                        active.append(self.launch(path, mode, quality, effort, threads, cost, slot))
+                        active.append(self.launch(path, mode, quality, effort, threads, cost, slot, pixels, kind))
                         self.update_active(active)
                     except Exception as exc:
                         self.record_result(path, {'ok': False, 'error': str(exc)})

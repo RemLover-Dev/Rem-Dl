@@ -8,24 +8,30 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Headless server mode: no pywebview window, serve on 0.0.0.0:$PORT, and
-# never auto-shutdown when a browser tab disconnects (see Rems_Dl.py).
+# Docker needs an interface listener inside the container. Publish the host
+# port on 127.0.0.1 for SSH-tunnel use; a strong token and host allowlist are
+# mandatory before the app will start in this non-loopback container mode.
 ENV REMS_HEADLESS=1 \
     PORT=5000 \
+    REMS_HOST=0.0.0.0 \
     PYTHONUNBUFFERED=1
 
 COPY requirements.docker.txt .
 RUN pip install --no-cache-dir -r requirements.docker.txt
 
-# Copy everything (app code, web UI, icon/icon.ico + icon/icon.png, databases)
+# Copy application code, web UI and icons. Runtime databases are volume-mounted; see .dockerignore.
 COPY . .
 
 # Expose port 5000 for Flask
 EXPOSE 5000
 
 # Persist downloads + user data outside the container:
-#   docker run -d -p 5000:5000 \
-#     -v "$(pwd)/Rems Dl:/app/Rems Dl" \
-#     -v "$(pwd)/database:/app/database" \
+#   docker run -d -p 127.0.0.1:5000:5000 -e REMS_ACCESS_TOKEN=<32+ chars> \
+#     -e REMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
+#     -v "$(pwd)/Rems Dl:/app/Rems Dl" -v "$(pwd)/database:/app/database" \
 #     ghcr.io/remlover-dev/rems-dl:latest
+# Public site: keep the loopback publish, front it with a reverse proxy that
+# passes the original Host header (nginx: proxy_set_header Host $host), and
+# set REMS_ALLOWED_HOSTS to the public hostname. See README "Running with
+# Docker" for a full nginx example.
 CMD ["python", "Rems_Dl.py"]

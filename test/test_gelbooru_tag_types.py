@@ -11,6 +11,12 @@ class _Resp:
     async def json(self):
         return self._payload
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class _Session:
     """Fake gelbooru tag index: exact-name echo with a type, plus failure injection."""
@@ -19,7 +25,7 @@ class _Session:
         self.calls = []
         self.fail_first = dict(fail_first or {})
 
-    async def get(self, url, params=None):
+    def get(self, url, params=None):
         name = (params or {}).get("name", "")
         self.calls.append(name)
         if self.fail_first.get(name, 0) > 0:

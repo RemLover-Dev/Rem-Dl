@@ -21,7 +21,7 @@ EMBEDDABLE = shared.EMBEDDABLE
 
 def parse_meta(text):
     tags = {cat: [] for cat in shared.TAG_CATEGORIES}
-    site = ""
+    sites = []
     for line in text.splitlines():
         if ":" not in line:
             continue
@@ -30,10 +30,11 @@ def parse_meta(text):
         if not val:
             continue
         if key == "site":
-            site = val
+            if val not in sites:
+                sites.append(val)
         elif key in tags and val not in tags[key]:
             tags[key].append(val)
-    return site, tags
+    return sites, tags
 
 
 def item_count(tags):
@@ -59,12 +60,12 @@ def main(argv):
             skipped += 1
             continue
         meta = shared.read_image_metadata(path)
-        site, file_tags = parse_meta(meta) if meta else ("", {})
+        sites, file_tags = parse_meta(meta) if meta else ([], {})
         if meta and item_count(file_tags) > item_count(gal_tags):
             img["tags"] = gal_tags = file_tags
             restored += 1
-        if site:
-            canon = shared.normalize_site(site)
+        if sites:
+            canon = shared.normalize_site(sites[0])
             if canon != img.get("site"):
                 img["site"] = canon
                 site_fixed += 1
@@ -88,6 +89,7 @@ def main(argv):
                         path, t.get("tag", []), t.get("artist", []), img.get("site", ""),
                         t.get("character"), t.get("copyright"), t.get("metadata"),
                         t.get("outfit"), t.get("group"), t.get("hair"), t.get("eyes"),
+                        extra_sites=sites[1:],  # keep the post's own site tags
                     )
                     if shared.read_image_metadata(path):
                         embedded += 1

@@ -5,22 +5,25 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import urllib.parse
 from html.parser import HTMLParser
 
 import urllib3
+import xml.etree.ElementTree as ET
 from curl_cffi import requests as curl_requests
 
 from core import shared
 from core.dedup_store import hash_bytes
-from core.gallery_dl_interop import ensure_zerochan_page_html
 from core.shared import (
     BaseDownloader,
     absorb_duplicate,
     add_to_gallery,
     build_tagd,
     check_duplicate,
+    dims_log_token,
     folder_component,
     pace_session,
     safe_ensure_dir,
@@ -222,27 +225,12 @@ class _DummyAsyncSession:
         return None
 
 
-def _ensure_gallery_dl_patch(log=None):
-    """Enable ``page-html`` on the user's installed gallery-dl copy.
-
-    Implemented in :mod:`core.gallery_dl_interop` as a runtime patch of the
-    user's own install (never ships GPL code, never touches frozen builds).
-    Best-effort: never raises. Returns True when page-html is supported.
-    """
-    try:
-        return bool(ensure_zerochan_page_html(log=log))
-    except Exception:
-        return False
-
-
 class ZerochanWorker(BaseDownloader):
-    """Zerochan downloader: gallery-dl primary + curl_cffi fallback.
+    """Zerochan downloader built entirely on curl_cffi (no gallery-dl).
 
-    Enumeration engine 1 is gallery-dl (with ``-u``/``-p`` login using the
-    Zerochan credentials from Settings, plus automatic runtime enablement of
-    ``page-html``/``?json`` support via :mod:`core.gallery_dl_interop`).
-    Engine 2 is the built-in Zerochan ``?json`` API over curl_cffi
-    (chrome131). File downloads always use curl_cffi.
+    Enumeration uses Zerochan's own ``?json`` listing (XML feed as fallback);
+    one post-page GET then supplies the categorized tags and the exact
+    full-image URL. File downloads always use curl_cffi.
 
     NOTE: intentionally does NOT use aiohttp anywhere in this worker —
     Cloudflare's "Under Attack" mode fingerprints TLS/JA3, which aiohttp
@@ -282,8 +270,6 @@ class ZerochanWorker(BaseDownloader):
         if not (self._zerochan_user and self._zerochan_pass):
             self.log("For more access, please set your Zerochan Login in the Settings tab.")
 
-        self.log(f"Configured: tag='{self.original_tag}' encoded='{self.encoded_tag}' "
-                 f"amount={amount} (curl_cffi/chrome131)")
 
     # --- session factory (overrides aiohttp) ---
     def _ensure_curl_session(self):
@@ -341,7 +327,7 @@ class ZerochanWorker(BaseDownloader):
             return False
         try:
             self.log("Authenticating with Zerochan...")
-            status, text, resp = await self._curl_get_text(
+            _status, text, _resp = await self._curl_get_text(
                 "https://www.zerochan.net/login", timeout=30)
             token = None
             try:
@@ -379,15 +365,11 @@ class ZerochanWorker(BaseDownloader):
             self.log(f"Zerochan login failed ({e}) — continuing anonymously.")
             return False
 
-    # --- ENGINE 1: gallery-dl subprocess (proven with -u/-p login) ---
+    # --- ENGINE 1: gallery-dl with the user's login (more images than anon) ---
     _gallery_dl_cmd = None  # cached launcher: [python, -m, gallery_dl] or [binary]
 
     def _gallery_dl_launcher(self):
-        """Resolve how to invoke gallery-dl, preferring the current interpreter.
-
-        ``sys.executable -m gallery_dl`` guarantees the extractor copy we
-        patched (venv vs system interpreter mixes break the bare binary).
-        """
+        """Resolve how to invoke gallery-dl, preferring the current interpreter."""
         if ZerochanWorker._gallery_dl_cmd is not None:
             return ZerochanWorker._gallery_dl_cmd
         launcher = None
@@ -408,14 +390,30 @@ class ZerochanWorker(BaseDownloader):
         return launcher
 
     def _gallery_dl_enumerate(self, tag, page=1, page_size=10):
-        """Fetch one page of posts via gallery-dl. Returns (posts, engine_ok).
+        """One page of posts via gallery-dl using the Settings login.
 
-        posts: list of dicts (id, file_url, page_html, tags, ...).
-        engine_ok: False when gallery-dl itself is broken/missing (caller
-        should switch engines); True when it ran (even with 0 posts = EOD).
+        gallery-dl lists the whole tag (up to the run's cap) in a single
+        process, so the listing is fetched once and later pages are sliced
+        from it. Returns (posts, engine_ok); engine_ok False means
+        gallery-dl itself failed and the caller must switch engines.
         """
+        if getattr(self, "_gdl_listing", None) is None:
+            # always list the full cap: already-downloaded posts are filtered
+            # out below, so a smaller listing would starve a small amount
+            posts, engine_ok = self._gallery_dl_list(
+                tag, getattr(self, "_gdl_limit", 200))
+            if not engine_ok:
+                return [], False
+            self._gdl_listing = posts
+        start = (page - 1) * page_size
+        return self._gdl_listing[start:start + page_size], True
+
+    def _gallery_dl_list(self, tag, limit):
+        """Run gallery-dl once for `limit` posts of the tag."""
         username = self._zerochan_user
         password = self._zerochan_pass
+        if not (username and password):
+            return [], False
 
         launcher = self._gallery_dl_launcher()
         if launcher is None:
@@ -423,26 +421,37 @@ class ZerochanWorker(BaseDownloader):
             return [], False
 
         base_cmd = list(launcher)
-        if username and password:
-            base_cmd.extend(["-u", username, "-p", password])
-        else:
-            # No creds: best-effort browser cookies. If Chrome is absent
-            # gallery-dl errors out and we fall back to the built-in API.
-            base_cmd.extend(["--cookies-from-browser", "chrome"])
+        gdl_configs = []
+        # Credentials go through a temp gallery-dl config file, never argv —
+        # process arguments are readable by any local user via ps.
+        cfg = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", prefix="rems-gdl-", delete=False)
+        try:
+            _json.dump({"extractor": {"zerochan": {
+                "username": username, "password": password}}}, cfg)
+            cfg.close()
+            base_cmd.extend(["--config", cfg.name])
+            gdl_configs.append(cfg.name)
+        except Exception:
+            cfg.close()
+            try:
+                os.unlink(cfg.name)
+            except OSError:
+                pass
+            raise
 
         if self.net_config.get("use_proxy"):
             base_cmd.extend(["--proxy", self.net_config["proxy_url"]])
 
-        base_cmd.extend([
-            "-j",
-            "-o", "extractor.zerochan.metadata=true",
-            "-o", "extractor.zerochan.page-html=true",
-        ])
+        # Listing only: the whole tag in one request. The per-post page fetch
+        # done by the caller then supplies the exact URL and categorized tags,
+        # which keeps gallery-dl's access while skipping its per-post passes.
+        base_cmd.append("-j")
 
-        start = (page - 1) * page_size + 1
-        end = page * page_size
+        self.log(f"Listing '{self.original_tag}' with gallery-dl "
+                 f"(up to {limit} posts)...")
         cmd = base_cmd + [
-            "--range", f"{start}-{end}",
+            "--range", f"1-{limit}",
             f"https://www.zerochan.net/{tag}",
         ]
 
@@ -457,10 +466,15 @@ class ZerochanWorker(BaseDownloader):
                 stdout, stderr = proc.communicate(timeout=580)
             finally:
                 watchdog.cancel()
+                for cfg_path in gdl_configs:
+                    try:
+                        os.unlink(cfg_path)
+                    except OSError:
+                        pass
 
             if proc.returncode != 0:
                 err_tail = (stderr or "").strip().splitlines()[-1:] or [""]
-                self.log(f"gallery-dl page {page} exited ({proc.returncode}): "
+                self.log(f"gallery-dl listing exited ({proc.returncode}): "
                          f"{err_tail[0][:220]}")
                 fatal_markers = ("no such option", "not recognized", "no module",
                                  "cookies-from-browser", "authentication", "cloudflare",
@@ -472,8 +486,17 @@ class ZerochanWorker(BaseDownloader):
             try:
                 data = _json.loads(stdout or "[]")
             except Exception as e:
-                self.log(f"gallery-dl page {page}: bad JSON ({e}).")
+                self.log(f"gallery-dl listing: bad JSON ({e}).")
                 return [], True
+
+            # gallery-dl -j reports failures as [-1, {error...}] and still
+            # exits 0 — that is an engine failure, not "no posts found".
+            for msg in data:
+                if isinstance(msg, list) and msg and msg[0] == -1:
+                    info = msg[1] if len(msg) > 1 and isinstance(msg[1], dict) else {}
+                    detail = info.get("message") or info.get("error") or "unknown error"
+                    self.log(f"gallery-dl listing error: {str(detail)[:220]}")
+                    return [], False
 
             posts = []
             seen = set()
@@ -504,14 +527,65 @@ class ZerochanWorker(BaseDownloader):
                     proc.kill()
                 except Exception:
                     pass
-            self.log(f"gallery-dl page {page} failed: {e}")
+            self.log(f"gallery-dl listing failed: {e}")
             return [], False
+
+    # --- per-post page: categorized tags + the real full-image URL ---
+    @staticmethod
+    def _extract_jsonld(html):
+        """JSON-LD block carrying ``contentUrl`` (the exact full-image URL)."""
+        for block in re.findall(
+                r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                html or "", re.S):
+            try:
+                data = _json.loads(block)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("contentUrl"):
+                return data
+        return None
+
+    async def _fetch_post_page(self, pid):
+        """One GET of the post page: categorized tags + exact full URL.
+
+        Replaces the gallery-dl dependency (which spent two requests per post
+        and needed a patched site-packages extractor). Returns ("", "") on
+        failure so the caller can fall back to the static-URL probe.
+        """
+        url = f"https://www.zerochan.net/{pid}"
+        try:
+            session = self._ensure_curl_session()
+
+            def _do():
+                return session.get(url, timeout=30, allow_redirects=True,
+                                   headers={"Referer": "https://www.zerochan.net/",
+                                            "User-Agent": self._api_user_agent()},
+                                   verify=self._verify_flag())
+
+            resp = await asyncio.to_thread(_do)
+            status = int(getattr(resp, "status_code", 0) or 0)
+            try:
+                html = resp.text or ""
+            except Exception:
+                html = (getattr(resp, "content", b"") or b"").decode("utf-8", "ignore")
+            if status != 200 or not html:
+                self.log(f"Post {pid}: page fetch failed (HTTP {status}).")
+                return "", ""
+            jsonld = self._extract_jsonld(html)
+            return html, ((jsonld or {}).get("contentUrl") or "")
+        except Exception as e:
+            self.log(f"Post {pid}: page fetch failed ({e}).")
+            return "", ""
+
+    def _api_user_agent(self):
+        # Zerochan asks API clients to identify themselves: "app - username"
+        return f"Rems-Dl - {self._zerochan_user or 'anonymous'}"
 
     # --- ENGINE 2: built-in Zerochan ?json API via curl_cffi ---
     async def _curl_json_enumerate(self, page=1, per_page=200):
         """List posts via https://www.zerochan.net/{tag}?json=1&l=N&p=M.
 
-        Same endpoint family the patched gallery-dl extractor uses.
+        Zerochan's own listing API (the same one its pages use).
         Returns (posts, engine_ok): engine_ok False means CF/HTTP/parse
         failure — the caller must NOT treat that as end-of-data. The API
         exposes no `next` flag, so an empty list with engine_ok True is
@@ -527,10 +601,10 @@ class ZerochanWorker(BaseDownloader):
                 return session.get(url, timeout=30, allow_redirects=True,
                                    headers={"Referer": "https://www.zerochan.net/",
                                             "Accept": "application/json",
-                                            # zerochan allows gallery-dl clients
-                                            # through; a browser UA gets the
-                                            # "Checking browser..." interstitial
-                                            "User-Agent": "gallery-dl"},
+                                            # zerochan lets API clients through;
+                                            # a browser UA gets the "Checking
+                                            # browser..." interstitial instead
+                                            "User-Agent": self._api_user_agent()},
                                    verify=self._verify_flag())
 
             resp = await asyncio.to_thread(_do)
@@ -539,15 +613,22 @@ class ZerochanWorker(BaseDownloader):
             if _looks_like_cf_challenge(status, raw.decode("utf-8", "ignore")):
                 self.log(f"Cloudflare challenge on JSON page {page} (HTTP {status}).")
                 return [], False
-            if status != 200 or not raw:
+            # zerochan's template sometimes breaks: HTTP 500 carrying the
+            # real object wrapped in junk ("{\r\n{...items...}\r\n</ul>\r\n}")
+            if not raw or (status != 200 and b'"items"' not in raw):
                 self.log(f"JSON listing page {page} failed: HTTP {status}.")
                 return [], False
             try:
                 text = raw.decode("utf-8", "ignore")
-                # Strip ad-script inserts like the patched extractor does
-                if "window.adsbygoogle" in text:
-                    text = "{" + text[text.find('"items":'):]
-                data = _json.loads(text)
+                try:
+                    data = _json.loads(text)
+                except Exception:
+                    # re-anchor on the payload and stop at the object's end,
+                    # ignoring the ad script / broken-markup wrapper
+                    pos = text.find('"items"')
+                    if pos < 0:
+                        raise
+                    data = _json.JSONDecoder().raw_decode("{" + text[pos:])[0]
             except Exception as e:
                 self.log(f"JSON listing page {page}: bad JSON ({e}).")
                 return [], False
@@ -555,6 +636,65 @@ class ZerochanWorker(BaseDownloader):
             return items, True
         except Exception as e:
             self.log(f"JSON listing page {page} failed: {e}")
+            return [], False
+
+    # --- ENGINE 3: RSS/XML feed (when the ?json listing is broken) ---
+    async def _curl_xml_enumerate(self, page=1):
+        """List posts via https://www.zerochan.net/{tag}?xml=1&p=N.
+
+        Fixed at 100 posts per page, no md5, and an empty page is the real
+        end of the tag. Returns (posts, engine_ok): engine_ok False means
+        CF/HTTP/parse failure, never end-of-data.
+        """
+        url = f"https://www.zerochan.net/{self.encoded_tag}?xml=1&p={page}"
+        media = "{http://search.yahoo.com/mrss/}"
+        try:
+            session = self._ensure_curl_session()
+            ua = self._api_user_agent()
+
+            def _do():
+                return session.get(url, timeout=30, allow_redirects=True,
+                                   headers={"Referer": "https://www.zerochan.net/",
+                                            "Accept": "application/xml",
+                                            "User-Agent": ua},
+                                   verify=self._verify_flag())
+
+            resp = await asyncio.to_thread(_do)
+            status = int(getattr(resp, "status_code", 0) or 0)
+            raw = getattr(resp, "content", b"") or b""
+            if _looks_like_cf_challenge(status, raw.decode("utf-8", "ignore")):
+                self.log(f"Cloudflare challenge on XML page {page} (HTTP {status}).")
+                return [], False
+            if status != 200 or not raw:
+                self.log(f"XML listing page {page} failed: HTTP {status}.")
+                return [], False
+            try:
+                root = ET.fromstring(raw)
+            except Exception as e:
+                self.log(f"XML listing page {page}: bad XML ({e}).")
+                return [], False
+
+            posts = []
+            for item in root.iter("item"):
+                src = (item.findtext("guid") or item.findtext("link") or "").rstrip("/")
+                pid = src.rsplit("/", 1)[-1]
+                if not pid.isdigit():
+                    continue
+                post = {"id": int(pid)}
+                content = item.find(media + "content")
+                if content is not None:
+                    for key in ("width", "height"):
+                        try:
+                            post[key] = int(content.get(key) or 0)
+                        except (TypeError, ValueError):
+                            pass
+                kw = (item.findtext(media + "keywords") or "")
+                tags = [" ".join(t.split()) for t in kw.split(",")]
+                post["tags"] = [t for t in tags if t][:60]
+                posts.append(post)
+            return posts, True
+        except Exception as e:
+            self.log(f"XML listing page {page} failed: {e}")
             return [], False
 
     async def _probe_static_url(self, pid):
@@ -627,8 +767,26 @@ class ZerochanWorker(BaseDownloader):
                 continue
         return general, artists, characters, copyrights, metadata_tags, outfits
 
+    def _already_have(self, post):
+        """True when the listing alone proves this post is already on disk.
+
+        Checking before the post-page fetch keeps a tag the user already
+        downloaded from spending one request per known post.
+        """
+        url = post.get("file_url") or post.get("full") or ""
+        name = urllib.parse.unquote(str(url).split("?")[0].split("/")[-1]).lstrip(".")
+        if not name:
+            name = str(post.get("filename") or "").strip()
+        if not name:
+            return False
+        try:
+            return (name in self.dl_history or name in self.queued_items
+                    or os.path.exists(os.path.join(self.tag_dir, name)))
+        except Exception:
+            return False
+
     async def _enqueue_post_dict(self, post):
-        """Normalize a gallery-dl OR ?json post dict and enqueue. Returns bool."""
+        """Normalize a listing post (JSON or XML) and enqueue. Returns bool."""
         try:
             pid = post.get("id")
             img_url = post.get("file_url") or post.get("full")
@@ -679,7 +837,7 @@ class ZerochanWorker(BaseDownloader):
                 img_url, filepath, filename, tags_list,
                 artists=artists, characters=characters,
                 copyrights=copyrights, metadata_tags=metadata_tags,
-                outfits=outfits)
+                outfits=outfits, source_md5=post.get("md5"))
         except Exception as e:
             self.log(f"Error processing post {post.get('id', '?')}: {e}")
             return False
@@ -687,7 +845,7 @@ class ZerochanWorker(BaseDownloader):
     # --- queue (overrides aiohttp HEAD size lookup) ---
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None,
                                characters=None, copyrights=None, metadata_tags=None,
-                               outfits=None):
+                               outfits=None, source_md5=None):
         if artists is None:
             artists = []
         if outfits is None:
@@ -696,21 +854,31 @@ class ZerochanWorker(BaseDownloader):
             if filename in self.dl_history or filename in self.queued_items \
                     or os.path.exists(filepath):
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"Pre-download dedup check failed for {filename}: {e}")
+        # Same bytes under a different filename ("Name.full.ID.ext" from the
+        # page vs ".full.ID.ext" from the probe) are dropped before transfer.
+        if not await asyncio.to_thread(
+                self._claim_source_md5, filepath, source_md5, tags_list, artists,
+                characters, copyrights, metadata_tags, outfits):
+            return False
         # Skip HEAD entirely: Zerochan + Cloudflare often blocks HEAD, and the
         # size is only used for progress stats. Record 0 and continue.
         file_size = 0
-        try:
-            self.queued_items.add(filename)
-            self.download_queue.put_nowait(
-                (url, filepath, filename, tags_list, artists, file_size,
-                 characters, copyrights, metadata_tags, outfits))
-            self.enqueued_count += 1
-            return True
-        except Exception as e:
-            self.log(f"Enqueue failed for {filename}: {e}")
-            return False
+        self.queued_items.add(filename)
+        # base's backpressure: a full queue must stay responsive to Stop,
+        # and a dropped item must not stay in queued_items forever
+        item = (url, filepath, filename, tags_list, artists, file_size,
+                characters, copyrights, metadata_tags, outfits)
+        while not self.stop_event.is_set():
+            try:
+                await asyncio.wait_for(self.download_queue.put(item), 0.25)
+                self.enqueued_count += 1
+                return True
+            except asyncio.TimeoutError:
+                continue
+        self.queued_items.discard(filename)
+        return False
 
     # --- downloader (overrides aiohttp streaming) ---
     async def _async_download_file(self, url, filepath, filename, tags_list, artists,
@@ -725,6 +893,8 @@ class ZerochanWorker(BaseDownloader):
             return False
 
         part_path = filepath + ".part"
+        safe_ensure_dir(os.path.dirname(filepath))
+        loop = asyncio.get_running_loop()
         for attempt in range(self.dl_retries):
             try:
                 if self.stop_event.is_set():
@@ -736,29 +906,52 @@ class ZerochanWorker(BaseDownloader):
 
                 def _do_download():
                     session = self._ensure_curl_session()
-                    return session.get(
-                        url, timeout=600, allow_redirects=True,
+                    # stream to .part so the bar moves while bytes arrive;
+                    # curl_cffi maps the tuple's second value to the LOW_SPEED
+                    # stall bound, so a dead transfer can't hang for minutes
+                    resp = session.get(
+                        url, timeout=(10, 30), allow_redirects=True, stream=True,
                         headers={"Referer": "https://www.zerochan.net/"},
                         verify=self._verify_flag())
-
-                resp = await asyncio.to_thread(_do_download)
-                status = int(getattr(resp, "status_code", 0) or 0)
-                content = getattr(resp, "content", b"") or b""
-                if status != 200 or len(content) <= 1000:
-                    raise Exception(f"HTTP {status} or file too small ({len(content)} bytes)")
-                # Cloudflare sometimes returns an HTML challenge with 200
-                ctype = ""
-                try:
-                    ctype = str(resp.headers.get("content-type", "")).lower()
-                except Exception:
+                    status = int(getattr(resp, "status_code", 0) or 0)
+                    if status != 200:
+                        resp.close()
+                        raise Exception(f"HTTP {status}")
+                    try:
+                        total = int(resp.headers.get("Content-Length", 0) or 0)
+                    except Exception:
+                        total = 0
                     ctype = ""
+                    try:
+                        ctype = str(resp.headers.get("content-type", "")).lower()
+                    except Exception:
+                        ctype = ""
+                    chunks, got = [], 0
+                    try:
+                        with open(part_path, "wb") as f:
+                            for chunk in resp.iter_content(65536):
+                                if not chunk:
+                                    continue
+                                if self.stop_event.is_set():
+                                    break
+                                f.write(chunk)
+                                chunks.append(chunk)
+                                got += len(chunk)
+                                now = time.monotonic()
+                                if total and now - self._last_progress_emit >= 0.2:
+                                    self._last_progress_emit = now
+                                    self._inflight[filepath] = got / total
+                                    loop.call_soon_threadsafe(self._emit_progress)
+                    finally:
+                        resp.close()
+                    return ctype, b"".join(chunks)
+
+                ctype, content = await asyncio.to_thread(_do_download)
+                if len(content) <= 1000:
+                    raise Exception(f"file too small ({len(content)} bytes)")
+                # Cloudflare sometimes returns an HTML challenge with 200
                 if "text/html" in ctype and b"Just a moment" in content[:8192]:
                     raise Exception("Cloudflare challenge (HTTP 200 with JS check) — retrying")
-
-                safe_ensure_dir(os.path.dirname(filepath))
-                with open(part_path, 'wb') as f:
-                    f.write(content)
-                downloaded = len(content)
 
                 if self.stop_event.is_set():
                     if os.path.exists(part_path):
@@ -781,13 +974,23 @@ class ZerochanWorker(BaseDownloader):
                         pass
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
-                    self._remember_filename(filename)
+                    await asyncio.to_thread(self._remember_filename, filename)
                     await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
                                             artists, characters, copyrights,
                                             metadata_tags, outfits)
                     return False
 
                 self.downloaded_count += 1
+                # the post that produced this file is no longer "new" — drop
+                # its watcher notification (URL/filename carry the site's
+                # hash or the post id, so no post_id plumbing is needed)
+                try:
+                    from core import notifications as _notif
+                    await asyncio.to_thread(_notif.drop_downloaded,
+                                            _notif.source_for_worker(self.name),
+                                            url, filename, generated["md5"])
+                except Exception as e:
+                    self.log(f"Notification prune skipped: {e}")
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 
@@ -813,7 +1016,7 @@ class ZerochanWorker(BaseDownloader):
                                      characters, copyrights, metadata_tags, outfits)
                 await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists,
                                characters, copyrights, metadata_tags, outfits)
-                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}{dims_log_token(filepath)}")
                 return True
 
             except Exception as e:
@@ -843,15 +1046,45 @@ class ZerochanWorker(BaseDownloader):
         self.log(f"Initializing worker for tag: '{self.original_tag}'")
         self._ensure_curl_session()
         await self._try_login()
-        await asyncio.to_thread(_ensure_gallery_dl_patch, self.log)
 
         collected_count = 0
         page = 1
         MAX_PAGES = 50
         PAGE_SIZE = 10
-        use_gallery_dl = True
+        # One gallery-dl process covers the whole run: its listing is sliced
+        # locally, so the range follows the requested amount (200 is the floor
+        # — known posts are filtered out after listing and must not starve it).
+        # 2000 caps one listing walk (~20 requests) for absurd amounts.
+        self._gdl_limit = min(max(200, self.amount or 200), 2000)
+        if self.amount <= 0 or self.amount > self._gdl_limit:
+            self.log(f"gallery-dl lists at most {self._gdl_limit} posts per run; "
+                     f"re-run to continue past that.")
+        # gallery-dl first only when it can actually log in: with the user's
+        # Zerochan credentials it sees posts the anonymous API hides, and that
+        # is the whole reason it stays the preferred engine.
+        use_gallery_dl = bool(self._zerochan_user and self._zerochan_pass)
+        self._gdl_listing = None
+        use_xml = False
         # Fixed JSON page size so ?p= pagination never overlaps/skips.
         json_per_page = max(24, min(200, self.amount if self.amount > 0 else 200))
+
+        async def _with_metadata(post):
+            # the listing carries no full URL and only flat tags: one page
+            # fetch supplies both (categorized tags + JSON-LD contentUrl)
+            html, full_url = await self._fetch_post_page(post.get("id"))
+            if full_url:
+                post["file_url"] = full_url
+            if html:
+                post["page_html"] = html
+            return post
+
+        # 4 at a time: one request per post, well inside the 60 req/min
+        # allowance while keeping a 100-post page ~10s
+        sem = asyncio.Semaphore(4)
+
+        async def _guarded(post):
+            async with sem:
+                return await _with_metadata(post)
 
         while page <= MAX_PAGES:
             if self.stop_event.is_set():
@@ -859,33 +1092,52 @@ class ZerochanWorker(BaseDownloader):
             if self.amount > 0 and collected_count >= self.amount:
                 break
 
-            posts = []
             if use_gallery_dl:
+                # the whole tag is listed once; later pages are local slices
+                self.log(f"Scanning gallery-dl... (Page {page})")
                 posts, engine_ok = await asyncio.to_thread(
                     self._gallery_dl_enumerate, self.encoded_tag, page, PAGE_SIZE)
-                if not engine_ok or not posts:
-                    if not engine_ok:
-                        if page == 1:
-                            self.log("gallery-dl engine unavailable — "
-                                     "switching to built-in Zerochan JSON API.")
-                        else:
-                            self.log("gallery-dl engine failed — "
-                                     "switching to built-in Zerochan JSON API.")
-                    else:
-                        self.log("gallery-dl returned no posts — cross-checking "
-                                 "with the built-in Zerochan JSON API.")
-                    use_gallery_dl = False
-                    # gallery-dl re-reads the full listing on every call and
-                    # never advances p past its l=200 cap, so an empty page
-                    # from it is NOT proof of end-of-data. Resume JSON at the
-                    # listing slot gallery-dl reached; the filename dedupe
-                    # absorbs the overlap.
-                    page = (page - 1) * PAGE_SIZE // json_per_page + 1
-
-            if not use_gallery_dl:
-                items, engine_ok = await self._curl_json_enumerate(page=page, per_page=json_per_page)
                 if not engine_ok:
-                    self.log("Zerochan JSON API failed (Cloudflare/network) — "
+                    self.log("gallery-dl engine unavailable — switching "
+                             "to the built-in Zerochan API.")
+                    use_gallery_dl = False
+                    page = (page - 1) * PAGE_SIZE // json_per_page + 1
+                    continue
+                if not posts:
+                    if page == 1:
+                        # an empty first page is ambiguous (bad login / silent
+                        # extractor failure), not proof the tag is empty
+                        self.log("gallery-dl returned nothing — switching "
+                                 "to the built-in Zerochan API.")
+                        use_gallery_dl = False
+                        page = 1
+                        continue
+                    # before the 200 cap an empty range is the real end of the
+                    # tag, not an engine failure
+                    self.log("No more posts available.")
+                    break
+                # a page of already-downloaded posts costs no requests and
+                # must not stop the run short of its amount
+                posts = [p for p in posts if not self._already_have(p)]
+                if not posts:
+                    page += 1
+                    continue
+                if self.amount > 0:
+                    posts = posts[:max(1, self.amount - collected_count)]
+                posts = await asyncio.gather(*(_guarded(p) for p in posts))
+            else:
+                if use_xml:
+                    self.log(f"Scanning XML feed... (Page {page})")
+                    items, engine_ok = await self._curl_xml_enumerate(page=page)
+                else:
+                    self.log(f"Scanning API... (Page {page})")
+                    items, engine_ok = await self._curl_json_enumerate(page=page, per_page=json_per_page)
+                    if not engine_ok and page == 1:
+                        self.log("JSON API unavailable — falling back to the XML feed.")
+                        use_xml = True
+                        items, engine_ok = await self._curl_xml_enumerate(page=1)
+                if not engine_ok:
+                    self.log("Zerochan API failed (Cloudflare/network) — "
                              "stopping enumeration; this is NOT the end of the tag.")
                     break
                 if not items:
@@ -895,14 +1147,13 @@ class ZerochanWorker(BaseDownloader):
                     else:
                         self.log("No more posts available.")
                     break
-                # listing tags are identical to the ?json detail response and
-                # only "full" differs — the enqueue path probes the real URL,
-                # so no per-post detail fetch (200 requests + sleeps/tag)
-                posts = items
-
-            if not posts:
-                self.log("No more posts available.")
-                break
+                items = [p for p in items if not self._already_have(p)]
+                if not items:
+                    page += 1
+                    continue
+                if self.amount > 0:
+                    items = items[:max(1, self.amount - collected_count)]
+                posts = await asyncio.gather(*(_guarded(p) for p in items))
 
             for post in posts:
                 if self.stop_event.is_set():

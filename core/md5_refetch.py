@@ -283,10 +283,16 @@ def _embed(path, tags, site):
     ext = os.path.splitext(path)[1].lower()
     if ext not in shared.EMBEDDABLE or not os.path.isfile(path):
         return False
+    old_sites = []
+    old = shared.read_image_metadata(path)
+    if old:
+        from backfill_tags import parse_meta
+        old_sites, _t = parse_meta(old)
     shared.write_image_metadata(
         path, tags.get("tag", []), tags.get("artist", []), site,
         tags.get("character"), tags.get("copyright"), tags.get("metadata"),
-        tags.get("outfit"), tags.get("group"), tags.get("hair"), tags.get("eyes"))
+        tags.get("outfit"), tags.get("group"), tags.get("hair"), tags.get("eyes"),
+        extra_sites=old_sites[1:])
     return True
 
 

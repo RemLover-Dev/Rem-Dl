@@ -34,8 +34,14 @@ def test_fetch_persists_verified_types(tmp_path, monkeypatch):
         async def json(self):
             return {"tag": [{"name": "mika_pikazo", "type": 1}]}
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
     class _Session:
-        async def get(self, *a, **k):
+        def get(self, *a, **k):
             return _Resp()
 
     w.session = _Session()
@@ -67,11 +73,17 @@ def test_failed_fetch_is_retried(tmp_path, monkeypatch):
         async def json(self):
             return {"tag": [{"name": "mika_pikazo", "type": 1}]}
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
     class _Session:
         def __init__(self):
             self.calls = 0
 
-        async def get(self, *a, **k):
+        def get(self, *a, **k):
             self.calls += 1
             if self.calls < 3:
                 raise RuntimeError("flaky network")
@@ -93,11 +105,17 @@ def test_gives_up_after_three_attempts(tmp_path, monkeypatch):
         async def json(self):
             return {}
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
     class _Session:
         def __init__(self):
             self.calls = 0
 
-        async def get(self, *a, **k):
+        def get(self, *a, **k):
             self.calls += 1
             return _Resp()
 

@@ -101,3 +101,4 @@ def test_dup_killed_name_survives_for_the_next_run(tmp_path, monkeypatch):
         )
     )
     assert enqueued is False
+    assert dl2.skipped_count == 1

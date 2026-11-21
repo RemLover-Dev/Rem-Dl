@@ -1,4 +1,7 @@
 """POST /api/tags/nekosapi serves the whole harvested vocabulary for the dropdown."""
+import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 import json
 import os
 import time
