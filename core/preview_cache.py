@@ -68,12 +68,19 @@ def _touch(path: str) -> None:
         pass
 
 
-def prune_older_than(cache_dir: str, days: int = 30) -> int:
-    """Delete remux copies not served for `days` (mtime = last touch below).
+def touch(src: str, cache_dir: str) -> None:
+    """Refresh the remux's last-use stamp when the original is played."""
+    try:
+        _touch(_cache_path(src, cache_dir))
+    except OSError:
+        pass
 
-    The cache name is a one-way hash of source path+mtime+size, so files whose
-    source was deleted outside the app cannot be mapped back; age is the cheap
-    bound. A pruned preview regenerates on its next hover.
+
+def prune_older_than(cache_dir: str, days: int = 30) -> int:
+    """Delete remux copies not served for `days`.
+
+    Last use is max(mtime, atime): serving stamps mtime, and where utime
+    cannot write it the read still bumps atime, so a viewed preview survives.
     """
     cutoff = time.time() - days * 86400
     try:
@@ -86,7 +93,7 @@ def prune_older_than(cache_dir: str, days: int = 30) -> int:
             continue
         path = os.path.join(cache_dir, name)
         try:
-            if os.path.getmtime(path) < cutoff:
+            if max(os.path.getmtime(path), os.path.getatime(path)) < cutoff:
                 os.remove(path)
                 removed += 1
         except OSError:

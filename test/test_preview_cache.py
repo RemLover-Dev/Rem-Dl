@@ -92,6 +92,35 @@ def test_serving_a_preview_touches_its_cache(tmp_path):
     assert time.time() - os.path.getmtime(cached) < 60
 
 
+def test_prune_keeps_previews_read_recently(tmp_path):
+    from core.preview_cache import prune_older_than
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    seen = cache / "seen.mp4"
+    seen.write_bytes(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(str(seen), (time.time(), old))  # read now, mtime cold
+    assert prune_older_than(str(cache), days=30) == 0
+    assert seen.exists()
+
+
+def test_viewing_the_original_touches_the_remux(client, tmp_path, monkeypatch):
+    from core.preview_cache import _cache_path
+    src = tmp_path / "v.mp4"
+    src.write_bytes(b"v")
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
+    monkeypatch.setattr(Rems_Dl, "PREVIEW_CACHE_DIR", str(tmp_path / "pcache"))
+    cached = _cache_path(str(src), str(tmp_path / "pcache"))
+    os.makedirs(os.path.dirname(cached), exist_ok=True)
+    with open(cached, "wb") as f:
+        f.write(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(cached, (old, old))
+    r = client.get("/api/gallery/file/v.mp4", headers=H)
+    assert r.status_code == 200
+    assert time.time() - os.path.getmtime(cached) < 60
+
+
 @requires_ffmpeg
 def test_evict_removes_cached_preview(tmp_path):
     from core.preview_cache import evict, preview_path

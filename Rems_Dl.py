@@ -115,6 +115,7 @@ from core.preview_cache import evict as evict_preview
 from core.preview_cache import preview_path
 from core.preview_cache import prune_older_than as prune_preview
 from core.preview_cache import ready_for as preview_ready_for
+from core.preview_cache import touch as touch_preview
 
 # Respect administrator/user WebView2 flags. Heap/process limits and disabled
 # throttling were not a memory guarantee and could break large-image views.
@@ -3021,6 +3022,9 @@ def gallery_file(filepath):
     # the process can read (e.g. /etc/shadow through a linked root).
     if os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO):
         return "Forbidden", 403
+    if os.path.splitext(full)[1].lower() in EXTENSIONS_VIDEO:
+        # the viewer plays the original (audio kept) — keep its remux warm too
+        touch_preview(full, PREVIEW_CACHE_DIR)
     # no-cache: stored but revalidated — a deleted file must 404 instead of
     # serving the day-old cached copy, and revalidation is a cheap 304
     if full.lower().endswith('.jxl') and request.args.get('download') != '1':
