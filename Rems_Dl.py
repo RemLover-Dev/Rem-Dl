@@ -1086,7 +1086,9 @@ def set_clipboard():
             if not os.path.isfile(full):
                 # auto-JXL renames the file after the log card was made
                 sib = os.path.splitext(full)[0] + ".jxl"
-                if os.path.isfile(sib) and _allowed_image_dir(sib):
+                sib_root = _allowed_image_base(sib)
+                # bare startswith is CodeQL's containment barrier (a helper call is not)
+                if sib_root is not None and sib.startswith(sib_root + os.sep) and os.path.isfile(sib):
                     full = sib
             # bare startswith is CodeQL's containment barrier (a helper call is not)
             root = _allowed_image_base(full)
@@ -4012,6 +4014,9 @@ def gallery_thumb(filepath):
             full = converted
         else:
             full = _recover_abs_filepath(full, filepath)
+            root = _allowed_image_base(full)
+            if root is None or not full.startswith(root + os.sep):
+                return "Forbidden", 403
             if not os.path.isfile(full):
                 return _serve_stale_thumb(full)
     root = _allowed_image_base(full)
