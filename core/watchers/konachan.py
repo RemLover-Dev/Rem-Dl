@@ -17,6 +17,8 @@ def fetch(api_tag, pid):
     if u and p:
         # same sha1 salt trick as the konachan downloader
         params["login"] = u
+        # the moebooru API mandates sha1(salt+password) for auth; this is a
+        # protocol signature, not local password storage, so sha1 cannot change
         params["password_hash"] = hashlib.sha1(
             f"So-I-Heard-You-Like-Mupkids-?--{p}--".encode()).hexdigest()
     resp = get("https://konachan.com/post.json", params=params)

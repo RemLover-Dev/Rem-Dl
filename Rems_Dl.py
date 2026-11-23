@@ -13,7 +13,7 @@ try:
     # ponytail: must run before GTK initializes (i.e. before import webview)
     import gi
     gi.require_version('GLib', '2.0')
-    from gi.repository import GLib
+    from gi.repository import GLib  # type: ignore[import-not-found]
     GLib.set_prgname('Rems_Dl')  # must match Icon= / desktop file id
 except Exception:
     pass
@@ -232,7 +232,7 @@ def _api_json_500(e):
 
 from core.web_security import AccessGuard
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.utils import safe_join
+from werkzeug.security import safe_join
 
 access_guard = AccessGuard(app.wsgi_app)
 # Honor X-Forwarded-Proto/Host/Prefix from the reverse proxy before the access
@@ -500,7 +500,7 @@ def upload_wallpaper():
         if len(content) > 32 * 1024 * 1024:
             return jsonify({"success": False, "error": "Wallpaper exceeds 32 MiB"}), 413
         with Image.open(io.BytesIO(content)) as image:
-            suffix = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}.get(image.format)
+            suffix = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}.get(image.format or "")
             if not suffix:
                 raise ValueError("Unsupported image format")
             image.verify()
@@ -1088,6 +1088,10 @@ def set_clipboard():
                 sib = os.path.splitext(full)[0] + ".jxl"
                 if os.path.isfile(sib) and _allowed_image_dir(sib):
                     full = sib
+            # bare startswith is CodeQL's containment barrier (a helper call is not)
+            root = _allowed_image_base(full)
+            if root is None or not full.startswith(root + os.sep):
+                return jsonify({"error": "forbidden"}), 403
             if not os.path.isfile(full):
                 name = os.path.basename(rel)
                 stem = os.path.splitext(name)[0]
@@ -1155,6 +1159,7 @@ def set_clipboard():
 
     try:
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        assert p.stdin is not None
         p.stdin.write(data)
         p.stdin.close()
         try:
@@ -1533,7 +1538,7 @@ def get_anime_dl_subtags():
         r2 = s.get(f"https://api.anime-pictures.net/api/v3/tags/{hits[0]['id']}/children", params={"lang": "en"}, timeout=20)
         if r2.status_code != 200:
             return jsonify([])
-        kind = {1: "character", 4: "artist", 5: "copyright", 7: "metadata"}
+        kind: dict = {1: "character", 4: "artist", 5: "copyright", 7: "metadata"}
         out = []
         for t in r2.json().get("tags", []):
             if not isinstance(t, dict) or not t.get("tag"):
@@ -1652,7 +1657,7 @@ def get_sankaku_suggestions():
             items = payload if isinstance(payload, list) else payload.get("tags", [])
             names = [t.get("tagName") or t.get("name") for t in items
                      if isinstance(t, dict) and (t.get("tagName") or t.get("name"))]
-            names = [n for n in dict.fromkeys(names) if not n.endswith(",")]
+            names = [n for n in dict.fromkeys(names) if n and not n.endswith(",")]
     except Exception: pass
     if not names:
         try:
@@ -1683,7 +1688,7 @@ def get_gelbooru_suggestions():
         if resp.status_code == 200:
             data = resp.json()
             tags = data.get("tag", data) if isinstance(data, dict) else data
-            names = [html.unescape(t.get("name")) for t in tags if isinstance(t, dict) and t.get("name")]
+            names = [html.unescape(t["name"]) for t in tags if isinstance(t, dict) and t.get("name")]
     except Exception: pass
     return jsonify(_merge_learned_and_online("gelbooru", query, names))
 
@@ -2029,7 +2034,7 @@ def import_planning_rows():
 
 @app.route("/api/image_history", methods=["GET"])
 def get_image_history():
-    def _num(v, cast=int):
+    def _num(v, cast: type = int):
         try:
             return cast(v)
         except (TypeError, ValueError):
@@ -2177,7 +2182,8 @@ def _walk_filepaths():
                         _ROOTS_LINK_DIR, _root_key(walk_root),
                         os.path.relpath(full, walk_root).replace("\\", "/")]))
                 key = shared.gallery_path_key(full)
-                cache["__path__:" + key] = stored
+                if key:
+                    cache["__path__:" + key] = stored
                 paths.add(stored)
                 by_name.setdefault(fn, []).append(stored)
                 cache.setdefault(fn, stored)
@@ -2368,7 +2374,7 @@ def _apply_gallery_filters(images, keep_ids, site_filters, fav_only, type_filter
             if is_inherently_safe and "safe" in rating_filters:
                 if not any(exp in fpl or any(exp in t for t in all_tags_l) for exp in ("explicit", "nsfw", "rating:e", "r18")):
                     return True
-            supported = SUPPORTED_RATINGS.get(site)
+            supported = SUPPORTED_RATINGS.get(site or "")
             if supported is None:
                 return False
             for rf in rating_filters:
@@ -2902,14 +2908,22 @@ def _gallery_roots():
     return roots
 
 
+def _allowed_image_base(full):
+    """The master/extra root containing `full`, or None. The containment test
+    is a bare startswith because CodeQL's path-injection query only recognises
+    that shape as a barrier: callers repeat it inline (see the sinks)."""
+    for b in [os.path.realpath(MASTER_FOLDER)] + _gallery_roots():
+        if full.startswith(b + os.sep):
+            return b
+    return None
+
+
 def _allowed_image_dir(full):
     """realpath prefix check against master + pairs of extra gallery roots
     (sep-suffixed so a sibling whose name prefixes the root fails the check:
     foo vs foobar). Extra-root files resolve through .gallery_roots links to
     their true path, so this covers them too."""
-    base = [os.path.realpath(MASTER_FOLDER)]
-    base.extend(_gallery_roots())
-    return any(full.startswith(b + os.sep) for b in base)
+    return _allowed_image_base(full) is not None
 
 
 def _safe_gallery_path(filepath):
@@ -3003,7 +3017,9 @@ def gallery_file(filepath):
     # root's name prefixes another directory (foo vs foobar) — the guard is
     # sep-suffixed and covers master + extra gallery roots
     full = _safe_gallery_path(filepath)
-    if full is None or not _allowed_image_dir(full):
+    root = None if full is None else _allowed_image_base(full)
+    # bare startswith is CodeQL's containment barrier (a helper call is not)
+    if full is None or root is None or not full.startswith(root + os.sep):
         return "Forbidden", 403
     if not os.path.isfile(full):
         # downloads convert to JXL after the history row was already written
@@ -3014,7 +3030,9 @@ def gallery_file(filepath):
         if converted != full and os.path.isfile(converted):
             full = converted
     full = _recover_abs_filepath(full, filepath)
-    # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
+    root = _allowed_image_base(full)
+    if root is None or not full.startswith(root + os.sep):
+        return "Forbidden", 403
     if not os.path.isfile(full):
         return "Image was deleted", 404
     # Only media leaves the library — extra gallery roots can live anywhere
@@ -3051,12 +3069,15 @@ def gallery_preview(filepath):
     # the first hover after launch — that hover gets an empty reply instead and
     # the warm pool has the copy ready for the next one
     full = _safe_gallery_path(filepath)
-    if full is None or not _allowed_image_dir(full):
+    root = None if full is None else _allowed_image_base(full)
+    # bare startswith is CodeQL's containment barrier (a helper call is not)
+    if full is None or root is None or not full.startswith(root + os.sep):
         return "Forbidden", 403
-    # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
     if not os.path.isfile(full):
         full = _recover_abs_filepath(full, filepath)
-        # codeql[py/path-injection] safe_join rejects traversal/absolute; _allowed_image_dir + extension allowlist guard what is served
+        root = _allowed_image_base(full)
+        if root is None or not full.startswith(root + os.sep):
+            return "Image was deleted", 404
         if not os.path.isfile(full):
             return "Image was deleted", 404
     try:
@@ -3112,7 +3133,9 @@ def gallery_display(filepath):
     # separate request threads, so several originals decode across cores in
     # parallel. Cached on disk under display_cache (evicted with the file).
     full = _safe_gallery_path(filepath)
-    if full is None or not _allowed_image_dir(full):
+    root = None if full is None else _allowed_image_base(full)
+    # bare startswith is CodeQL's containment barrier (a helper call is not)
+    if full is None or root is None or not full.startswith(root + os.sep):
         return "Forbidden", 403
     if not os.path.isfile(full):
         # same converted-sibling fallback as gallery_file: the viewer's first
@@ -3122,6 +3145,9 @@ def gallery_display(filepath):
         if converted != full and os.path.isfile(converted):
             full = converted
     full = _recover_abs_filepath(full, filepath)
+    root = _allowed_image_base(full)
+    if root is None or not full.startswith(root + os.sep):
+        return "Forbidden", 403
     if not os.path.isfile(full):
         return "Image was deleted", 404
     _open_priority_enter(full)  # from the first byte of handling: probes,
@@ -3305,7 +3331,7 @@ def _generate_display_full(full):
                 pass  # fall through to the queued job / None below
             finally:
                 _inline_display_slot.release()
-        return fut.result()  # registry lock is released before waiting
+        return fut.result() if fut is not None else None  # registry lock is released before waiting
     except Exception:
         return None
     finally:
@@ -3326,6 +3352,7 @@ def _jxl_display_image(data, long_edge):
     full JXL decode). Native stream decodes through the same Decoder call
     with the viewer's thread budget; bytes map to PIL exactly like
     JpegXLImagePlugin._open does."""
+    assert pillow_jxl is not None
     jpeg, info, payload, icc_profile, jxl_boxes = pillow_jxl.Decoder(
         num_threads=_JXL_DISPLAY_DECODE_THREADS)(data)
     if info.mode == "F;16":          # float16 pixels -> float32, like the plugin
@@ -3357,7 +3384,9 @@ def _open_display_source(full, long_edge):
     if os.path.splitext(full)[1].lower() == ".jxl" and pillow_jxl is not None:
         try:
             with open(full, "rb") as f:
-                return _jxl_display_image(f.read(), long_edge)
+                im = _jxl_display_image(f.read(), long_edge)
+            if im is not None:
+                return im
         except Exception:
             pass  # numeric/pixel surprises fall back to the ordinary decode
     return Image.open(full)
@@ -3793,6 +3822,8 @@ def _trim_decode_heap():
     PIL, ~9 bytes/px); glibc keeps that arena resident so the RSS ratchets
     toward GBs over a browsing session. Hand freed blocks back to the OS after
     each decode (Linux-only; no-op elsewhere)."""
+    if _libc is None:
+        return
     try:
         _libc.malloc_trim(0)
     except Exception:
@@ -3803,6 +3834,8 @@ def _cap_malloc_arenas():
     """Python threads each get their own 64MB glibc arena, so a few concurrent
     decodes fragment the heap and RSS never comes back down. Two arenas keep
     the post-decode floor near the idle baseline."""
+    if _libc is None:
+        return
     try:
         _libc.mallopt(-8, 2)  # M_ARENA_MAX
     except Exception:
@@ -3920,7 +3953,7 @@ def warm_page_thumbs(images):
             # Video conversion starts on hover, not for every search result.
 
 
-def _send_thumb(cache_path, mimetype="image/jpeg"):
+def _send_thumb(cache_path, mimetype: str | None = "image/jpeg"):
     """Serve the disk-cached THUMB_PX thumb. no-cache: the browser keeps the copy
     but revalidates, so a deleted source 404s instead of showing a ghost."""
     resp = send_file(cache_path, mimetype=mimetype, conditional=True)
@@ -3965,7 +3998,9 @@ def redirect_to_thumb(full_path):
 @app.route("/api/gallery/thumb/<path:filepath>")
 def gallery_thumb(filepath):
     full = _safe_gallery_path(filepath)
-    if full is None or not _allowed_image_dir(full):
+    root = None if full is None else _allowed_image_base(full)
+    # bare startswith is CodeQL's containment barrier (a helper call is not)
+    if full is None or root is None or not full.startswith(root + os.sep):
         return "Forbidden", 403
     # ponytail: cached thumb still beats a broken icon when the source was
     # deleted outside the app, so the stale fallback runs before isfile
@@ -3979,6 +4014,9 @@ def gallery_thumb(filepath):
             full = _recover_abs_filepath(full, filepath)
             if not os.path.isfile(full):
                 return _serve_stale_thumb(full)
+    root = _allowed_image_base(full)
+    if root is None or not full.startswith(root + os.sep):
+        return "Forbidden", 403
     hit = _thumb_want_fast(full)  # no decode on the serving path
     if hit and os.path.exists(hit[0]):
         return _send_thumb(hit[0], hit[1])
@@ -4001,7 +4039,9 @@ def gallery_thumb(filepath):
         # that single job instead of decoding the same PNG again on this
         # request thread (a missing entry is impossible in practice, but the
         # fallback submits so a stray request still generates)
-        _queue_thumb_warm(full).result()
+        job = _queue_thumb_warm(full)
+        if job is not None:
+            job.result()
         # generation may have produced a different suffix (.png for alpha)
         # than the pre-hint want — re-derive rather than trust the stale path
         want, mime = _thumb_want(full)
@@ -4014,7 +4054,6 @@ def gallery_thumb(filepath):
         print("Thumb generation error:", e)
         # اگه ارور داد، همون عکس اصلی رو بفرست تا والپیپر سیاه نشون نده!
         # non-media (planted .html/.svg) must not render inline on our origin
-        # codeql[py/path-injection] full came through safe_join + _allowed_image_dir earlier in the route
         resp = send_file(full, as_attachment=(
             os.path.splitext(full)[1].lower() not in (EXTENSIONS_IMAGE | EXTENSIONS_VIDEO)))
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -4034,8 +4073,11 @@ def warm_thumbs():
         if not isinstance(fp, str) or not fp:
             continue
         full = _safe_gallery_path(fp)
-        # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
-        if full is None or not _allowed_image_dir(full) or not os.path.isfile(full):
+        root = None if full is None else _allowed_image_base(full)
+        # bare startswith is CodeQL's containment barrier (a helper call is not)
+        if full is None or root is None or not full.startswith(root + os.sep):
+            continue
+        if not os.path.isfile(full):
             continue
         if _thumb_want_fast(full):
             continue  # already cached — the retry refetch answers instantly
@@ -4067,8 +4109,11 @@ def gallery_embedded_site():
     if not rel:
         return jsonify({"sites": [], "site": ""})
     full = _safe_gallery_path(rel)
-    # codeql[py/path-injection] safe_join rejects traversal/absolute; guard verifies the realpath stays in an allowed root
-    if not full or not _allowed_image_dir(full) or not os.path.isfile(full):
+    root = None if full is None else _allowed_image_base(full)
+    # bare startswith is CodeQL's containment barrier (a helper call is not)
+    if full is None or root is None or not full.startswith(root + os.sep):
+        return jsonify({"sites": [], "site": ""})
+    if not os.path.isfile(full):
         return jsonify({"sites": [], "site": ""})
     ext = os.path.splitext(full)[1].lower()
     if ext not in EXTENSIONS_IMAGE:
@@ -4476,7 +4521,8 @@ def rescan_gallery():
             # was never added". Persist first, refresh the UI, hash after.
             shared.save_gallery(gallery)
             try:
-                get_store().checkpoint()
+                from core.gallery_store import get_store as get_gallery_store
+                get_gallery_store().checkpoint()
             except Exception:
                 pass
             socketio.emit("gallery_rescan_done", {
@@ -4622,7 +4668,7 @@ def notifications_get():
     source = request.args.get("source") or None
     items, unread, by = notifications.summary(None if source == "all" else source)
     # the general tab has one status row: the only scheduled checker (pixiv)
-    status_fn = NOTIF_STATUS.get(source) or (NOTIF_STATUS["pixiv"] if source == "all" else None)
+    status_fn = NOTIF_STATUS.get(source or "") or (NOTIF_STATUS["pixiv"] if source == "all" else None)
     return jsonify({
         # items only when a page asks for them — the startup dot fetch
         # just wants the counts
@@ -4998,7 +5044,7 @@ def handle_start_worker(data):
         if ACTIVE_JOBS.get(site) is None:
             # a batch that never reported (queue cleared/stopped mid-run)
             # must not inflate this run's task count
-            shared.reset_batch(site)
+            shared.reset_batch(site or "")
             q = DOWNLOAD_QUEUES.get(site)
             if q:
                 # START with jobs already waiting runs the head of the queue;
@@ -5536,8 +5582,9 @@ if __name__ == "__main__":
         # Screen dimensions are logical pixels, like create_window sizes.
         # Apply explicit GUI choice before querying screens: that property can
         # initialize the renderer on some pywebview versions.
-        if webview_gui():
-            os.environ['PYWEBVIEW_GUI'] = webview_gui()
+        _gui = webview_gui()  # env override; pywebview's gui param is a literal union
+        if _gui:
+            os.environ['PYWEBVIEW_GUI'] = _gui
         try:
             _screen = _pywebview.screens[0]
             _window_size = initial_window_size(_screen.width, _screen.height)
@@ -5550,6 +5597,7 @@ if __name__ == "__main__":
             height=_window_size[1],
             js_api=_DesktopApi()
         )
+        assert _win is not None
         try:
             _win.events.closed += _teardown
         except Exception:
@@ -5566,14 +5614,14 @@ if __name__ == "__main__":
         try:
             _pywebview.start(
                 user_agent="RemsDlDesktopApp/1.0",
-                gui=webview_gui(),
+                gui=_gui,  # type: ignore[arg-type]
                 icon=icon_path
             )
         except Exception:
             # If the OS windowing system rejects the icon format, start cleanly without the custom icon
             _pywebview.start(
                 user_agent="RemsDlDesktopApp/1.0",
-                gui=webview_gui()
+                gui=_gui  # type: ignore[arg-type]
             )
         # start() returns once the Gtk window is destroyed; WebKit terminates
         # its WebProcess asynchronously — exiting immediately (as before) kills
