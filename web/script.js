@@ -3789,6 +3789,8 @@ async function removeFromHistory(site, tag, rating) { await fetch("/api/history/
 async function clearHistory() { if(await customConfirm("Are you sure you want to delete all search history?", "Delete")) { await fetch("/api/history/clear", { method: "POST" }); await loadTagsData(); } }
 
 function jumpToSite(site, tag, rating, excludeAI, filters) {
+    // leaving the grid for a worker tab: the viewer must not stay on top
+    closeGalleryViewer();
     let f = {};
     try { f = JSON.parse(filters || "{}") || {}; } catch (e) {}
     // the "videos" format appends " video" to the stored tag — put it back in the dropdown
@@ -4016,7 +4018,7 @@ function historyRowHtml(img) {
     let safeFp = (img.filepath || "").replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/'/g, "%27");
     let siteBadge = `<span style="background: #ff9ff3; color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${escapeHtml(siteLabel(img.site))}</span>`;
     let artistName = (img.tags?.artist || [])[0] || "";
-    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(artistName))}</span>` : "";
+    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" oncontextmenu="tagContextMenu(event,'${escJs(artistName)}','${escJs(img.site || "")}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(artistName))}</span>` : "";
 
     const hExt = (img.filename || '').split('.').pop().toLowerCase();
     const hHoverKind = ['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(hExt) ? 'video' : (hExt === 'gif' ? 'gif' : '');
@@ -6268,7 +6270,7 @@ function viewerMetaHtml(img, tagsClickable) {
         siteBadge = `<span style="background: var(--accent-color); color: #000; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase;">${escapeHtml(_srcLabels[0] || siteLabel(img.site))}</span>`;
     }
     let artistName = (img.tags?.artist || [])[0] || "";
-    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(artistName))}</span>` : "";
+    let artistHtml = artistName ? `<span onclick="searchGalleryTag('${escJs(artistName)}')" oncontextmenu="tagContextMenu(event,'${escJs(artistName)}','${escJs(img.site || "")}')" style="background:rgba(255,140,0,0.15); color:#e67e00; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; cursor: pointer; border: 1px solid transparent; box-shadow: 0 0 0 1px rgba(255,140,0,0.4);">${escapeHtml(cleanTagDisplay(artistName))}</span>` : "";
 
     return `
     <div class="g-meta-header">

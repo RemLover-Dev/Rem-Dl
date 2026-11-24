@@ -1852,6 +1852,12 @@ input[type="number"]:focus::-webkit-outer-spin-button {
 }
 :root:not([data-effects="full"]) .g-expand-hint,
 :root:not([data-effects="full"]) .image-card-log { animation: none !important; }
+/* JS pins these at 0,0 then moves them to the anchor: with the blanket
+   duration below the move animates and the popup slides in from the panel
+   corner. They are placed, not animated. */
+:root:not([data-effects="full"]) .cs-menu,
+:root:not([data-effects="full"]) .ctx-menu,
+:root:not([data-effects="full"]) .gv-snapshot { transition: none !important; }
 :root:not([data-effects="full"]) .glass-panel { --panel-bg: rgba(15, 15, 20, 0.93); }
 :root[data-theme="light"]:not([data-effects="full"]) .glass-panel { --panel-bg: rgba(255, 255, 255, 0.93); }
 @media (prefers-reduced-motion: reduce) {
