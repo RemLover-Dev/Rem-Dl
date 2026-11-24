@@ -34,7 +34,7 @@ class BaseWorker(BaseDownloader, ABC):
       - scraper_task()     : async – core scraping logic (inherited from BaseDownloader pattern)
 
     run() is concrete — every worker shares the same sync entry point.
-    Override only if the worker needs setup/teardown (e.g. pinterest proxy env).
+    Override only if the worker needs setup/teardown (e.g. proxy env save/restore).
     """
 
     def __init__(self, name, site_folder, amount, net_config):

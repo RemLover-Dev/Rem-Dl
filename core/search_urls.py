@@ -31,7 +31,6 @@ _BASE = {
     "zero": "https://www.zerochan.net",
     "anime_dl": "https://anime-pictures.net/posts",
     "pixiv": "https://www.pixiv.net",
-    "pinterest": "https://www.pinterest.com/search/pins",
     "eshuushuu": "https://e-shuushuu.net/search",
     "neko": "https://nekos.best",
     "nekos_life": "https://nekos.life",
@@ -134,8 +133,6 @@ def build_search_url(site, tags, rating="", timeout=15, esh_resolver=None):
         if neg:
             warnings.append("anime-pictures.net has no '-' negation operator — the excluded tags were dropped")
         return (f"{_BASE['anime_dl']}?page=0&search_tag={enc(' '.join(pos))}&order_by=date&lang=en", warnings)
-    elif site == "pinterest":
-        return (f"{_BASE['pinterest']}/?q={_quote_q(pos + neg)}", warnings)
     elif site == "x":
         return (f"{_BASE['x']}?q={_quote_q(pos + neg)}", warnings)
     elif site == "eshuushuu":

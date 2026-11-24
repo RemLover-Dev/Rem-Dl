@@ -17,7 +17,7 @@ added_files = [
 # Collect package distribution metadata so importlib.metadata finds them in frozen bundles
 try:
     from PyInstaller.utils.hooks import copy_metadata
-    for pkg in ['rule34Py', 'gallery-dl', 'pinterest-dl', 'curl_cffi']:
+    for pkg in ['rule34Py', 'gallery-dl', 'curl_cffi']:
         try:
             added_files.extend(copy_metadata(pkg))
         except Exception:
@@ -41,7 +41,6 @@ hidden_imports = [
     'socks',
     'gallery_dl',
     'rule34Py',
-    'pinterest_dl',
     'twscrape',
     'loguru',
     'webview',

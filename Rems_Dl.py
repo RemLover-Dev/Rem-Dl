@@ -148,7 +148,7 @@ try:
             return _orig_meta_version(distribution_name)
         except Exception:
             if distribution_name and str(distribution_name).lower() in (
-                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+                "rule34py", "gallery-dl", "gallery_dl"
             ):
                 return "4.2.0"
             raise
@@ -158,7 +158,7 @@ try:
             return _orig_meta_distribution(distribution_name)
         except Exception:
             if distribution_name and str(distribution_name).lower() in (
-                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+                "rule34py", "gallery-dl", "gallery_dl"
             ):
                 return _SafeDistribution(str(distribution_name))
             raise
@@ -176,7 +176,6 @@ from workers.gsbooru import worker_gsbooru
 from workers.konachan import worker_konachan
 from workers.nekos_best import worker_nekos_best
 from workers.nekos_life import worker_nekos_life
-from workers.pinterest_worker import worker_pinterest
 from workers.pixiv import worker_pixiv
 from workers.rule34 import worker_rule34
 from workers.safebooru import worker_safebooru
@@ -1176,11 +1175,11 @@ def set_clipboard():
         return jsonify({"error": "internal clipboard error"}), 500
 
 # Secrets GET /api/api-settings must not return in plaintext; logins and the
-# two cookie-file PATH fields (pinterest_cookies, x_cookies) stay readable
+# cookie-file PATH field (x_cookies) stay readable
 _SECRET_SETTING_KEYS = frozenset({
     "rule34_api_key", "gelbooru_api_key", "danbooru_api_key", "gsbooru_api_key",
     "konachan_password", "sanka_password", "zerochan_password",
-    "pinterest_password", "pixiv_refresh_token", "pixiv_cookie",
+    "pixiv_refresh_token", "pixiv_cookie",
 })
 _SETTINGS_MASK = "\u2022\u2022\u2022\u2022"
 
@@ -2340,7 +2339,6 @@ def _apply_gallery_filters(images, keep_ids, site_filters, fav_only, type_filter
             "nekos_life": {"safe"},
             "anime_dl": {"safe"},
             "eshuushuu": {"safe"},
-            "pinterest": {"safe"},
         }
         rating_aliases = {
             "safe": ["safe", "rating:safe", "general", "rating:general", "rating:g"],
@@ -2372,7 +2370,7 @@ def _apply_gallery_filters(images, keep_ids, site_filters, fav_only, type_filter
                 return canon in rating_filters
             all_tags_l = [t.lower() for t in _get_all_tags(img)]
             # Safe-only / SFW imageboards and sources:
-            is_inherently_safe = site in ("pinterest", "zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
+            is_inherently_safe = site in ("zerochan", "nekos.best", "nekos_best", "nekos.life", "nekos_life", "anime_dl", "eshuushuu", "safebooru")
             if is_inherently_safe and "safe" in rating_filters:
                 if not any(exp in fpl or any(exp in t for t in all_tags_l) for exp in ("explicit", "nsfw", "rating:e", "r18")):
                     return True
@@ -4992,11 +4990,6 @@ def _dispatch_worker(data):
     elif worker == "dan": worker_danbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
     elif worker == "sankaku": worker_sankaku(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
     elif worker == "anime_dl": worker_anime_dl(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
-    elif worker == "pinterest":
-        net_config["pinterest_cookies"] = os.getenv("PINTEREST_COOKIES", "")
-        net_config["pinterest_email"] = os.getenv("PINTEREST_EMAIL", "")
-        net_config["pinterest_password"] = os.getenv("PINTEREST_PASSWORD", "")
-        worker_pinterest(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("is_search", False), net_config, _safe_int(data.get("min_w", 0), 0), _safe_int(data.get("min_h", 0), 0))
     elif worker == "pixiv":
         net_config["pixiv_refresh_token"] = os.getenv("PIXIV_REFRESH_TOKEN", "")
         worker_pixiv(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False))

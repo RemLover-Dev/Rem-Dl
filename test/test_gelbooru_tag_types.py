@@ -104,7 +104,7 @@ def test_pace_spaces_request_starts_under_isp_limit(monkeypatch):
 
 
 def test_pace_session_paces_request_funnel(monkeypatch):
-    """Sync workers (rule34 lib, eshuushuu, pixiv, pinterest-dl) pace via
+    """Sync workers (rule34 lib, eshuushuu, pixiv) pace via
     session.request — every verb funnels through it, once."""
     from core import shared
 

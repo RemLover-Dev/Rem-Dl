@@ -148,9 +148,7 @@ def test_pixiv_negation_dropped_plain_words():
 
 
 # --- other ---
-def test_pinterest_and_x():
-    assert "https://www.pinterest.com/search/pins/?q=girl+art" == \
-        build_search_url("pinterest", "girl art", "")[0]
+def test_x():
     assert "https://x.com/search?q=touhou+pixiv" == build_search_url("x", "touhou pixiv", "")[0]
 
 

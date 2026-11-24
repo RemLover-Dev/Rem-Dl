@@ -180,10 +180,10 @@ const _ROMAN_RE = /^m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})
 // leading "-" (exclude markers) must not block the first-letter cap: -kafka -> -Kafka
 function cleanTagDisplay(t) { let s = String(t || "").replace(/\\[uU]([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16))); if (/\p{L}/u.test(s)) s = s.replace(/_/g, ' '); const s2 = s.replace(/\b([ivxlcdm]+)\b/g, m => (m === m.toLowerCase() && m.length > 0 && _ROMAN_RE.test(m)) ? m.toUpperCase() : m); return s2.replace(/^([^\p{L}]*)(\p{L})/u, (_, pre, c) => pre + c.toUpperCase()).replace(/\.([a-z])/g, (_, c) => '.' + c.toUpperCase()).replace(/\(([a-z])/g, (_, c) => '(' + c.toUpperCase()).replace(/:([ ]*)([a-z])/g, (_, sp, c) => ':' + sp + c.toUpperCase()); }
 // history rows & queue pills: zero is comma-joined; free-text/pick sites
-// (anime_dl, eshuushuu, pixiv, pinterest, nekosapi) keep spaces INSIDE one tag
+// (anime_dl, eshuushuu, pixiv, nekosapi) keep spaces INSIDE one tag
 // — only comma-split them; underscore-joined boorus are space-joined, split on
 // spaces and commas. Each tag gets its own first-letter cap.
-const NOSPACE_SPLIT_SITES = ["anime_dl", "eshuushuu", "pixiv", "pinterest", "nekosapi", "zero"];
+const NOSPACE_SPLIT_SITES = ["anime_dl", "eshuushuu", "pixiv", "nekosapi", "zero"];
 function displayTagList(raw, site) {
     const s = String(raw || "").trim();
     if (!s) return "";
@@ -191,7 +191,7 @@ function displayTagList(raw, site) {
     return parts.filter(Boolean).map(cleanTagDisplay).join(", ");
 }
 // canonical keys -> the exact names the worker tab buttons use (index.html)
-const SITE_DISPLAY_NAMES = { anime_dl: "Anime DL", dan: "Danbooru", eshuushuu: "E-Shuushuu", gelbooru: "Gelbooru", gsbooru: "Gsbooru", kona: "Konachan", neko: "Nekos", nekos_life: "Nekos.life", nekosapi: "NekosAPI", nekosia: "Nekosia", pinterest: "Pinterest", pixiv: "Pixiv", rule34: "Rule34", safe: "Safebooru", sankaku: "Sankaku", x: "X (Twitter)", yande: "Yande.re", zero: "Zerochan" };
+const SITE_DISPLAY_NAMES = { anime_dl: "Anime DL", dan: "Danbooru", eshuushuu: "E-Shuushuu", gelbooru: "Gelbooru", gsbooru: "Gsbooru", kona: "Konachan", neko: "Nekos", nekos_life: "Nekos.life", nekosapi: "NekosAPI", nekosia: "Nekosia", pixiv: "Pixiv", rule34: "Rule34", safe: "Safebooru", sankaku: "Sankaku", x: "X (Twitter)", yande: "Yande.re", zero: "Zerochan" };
 function siteLabel(site) {
     const s = site || "unknown";
     if (SITE_DISPLAY_NAMES[s]) return SITE_DISPLAY_NAMES[s];
@@ -443,7 +443,8 @@ function renderWallpaperGrid() {
     let ui = document.getElementById("wpGridUI");
     if (!ui) return;
     ui.innerHTML = "";
-    Object.keys(uiConfig.wallpapers).forEach(tab => {
+    // saved configs can name a tab that no longer exists (removed worker)
+    Object.keys(uiConfig.wallpapers).filter(tab => document.getElementById(tab)).forEach(tab => {
         let boxIdDark = `file_${tab}_dark`;
         let boxIdLight = `file_${tab}_light`;
 
@@ -504,7 +505,7 @@ async function pickWpBox(tabName, mode) {
 const _wpReady = {};
 const _wpWaiters = {};
 // ponytail: shipped defaults live in web/wallpaper/, user uploads in user_wallpapers/
-const _wpDefaults = new Set(["Rem_main_d.png", "Rem_main_l.png", "Rem_Gallery_d.jpg", "Rem_Gallery_l.jpg", "Rem_history_d.png", "Rem_history_l.png", "Rem_AnimeDl_d.jpg", "Rem_AnimeDl_l.jpg", "Rem_danbooru_d.jpg", "Rem_danbooru_l.jpg", "Rem_EShuushuu_d.jpg", "Rem_EShuushuu_l.jpg", "Rem_gelbooru_d.png", "Rem_gelbooru_l.png", "Rem_Gsbooru_d.jpg", "Rem_Gsbooru_l.jpg", "Rem_Kona_d.jpg", "Rem_Kona_l.jpg", "Rem_neko_d.png", "Rem_neko_l.png", "Rem_nekolife_d.png", "Rem_nekolife_l.png", "Rem_NekosAPI_d.jpg", "Rem_NekosAPI_l.jpg", "Rem_Nekosia_d.jpg", "Rem_Nekosia_l.jpg", "Rem_pinterest_d.jpg", "Rem_pinterest_l.jpg", "Rem_Pixiv_d.jpg", "Rem_Pixiv_l.jpg", "Rem_rule34_d.png", "Rem_rule34_l.png", "Rem_safe_d.png", "Rem_safe_l.png", "Rem_Sankaku_d.jpg", "Rem_Sankaku_l.jpg", "Rem_waifu_d.png", "Rem_waifu_l.png", "Rem_yande_d.png", "Rem_yande_l.png", "Rem_zero_d.jpg", "Rem_zero_l.jpg", "Rem_zero_d.png", "Rem_zero_l.png", "Rem_custom_d.png", "Rem_custom_l.png", "Rem_option_d.png", "Rem_option_l.png"]);
+const _wpDefaults = new Set(["Rem_main_d.png", "Rem_main_l.png", "Rem_Gallery_d.jpg", "Rem_Gallery_l.jpg", "Rem_history_d.png", "Rem_history_l.png", "Rem_AnimeDl_d.jpg", "Rem_AnimeDl_l.jpg", "Rem_danbooru_d.jpg", "Rem_danbooru_l.jpg", "Rem_EShuushuu_d.jpg", "Rem_EShuushuu_l.jpg", "Rem_gelbooru_d.png", "Rem_gelbooru_l.png", "Rem_Gsbooru_d.jpg", "Rem_Gsbooru_l.jpg", "Rem_Kona_d.jpg", "Rem_Kona_l.jpg", "Rem_neko_d.png", "Rem_neko_l.png", "Rem_nekolife_d.png", "Rem_nekolife_l.png", "Rem_NekosAPI_d.jpg", "Rem_NekosAPI_l.jpg", "Rem_Nekosia_d.jpg", "Rem_Nekosia_l.jpg", "Rem_Pixiv_d.jpg", "Rem_Pixiv_l.jpg", "Rem_rule34_d.png", "Rem_rule34_l.png", "Rem_safe_d.png", "Rem_safe_l.png", "Rem_Sankaku_d.jpg", "Rem_Sankaku_l.jpg", "Rem_waifu_d.png", "Rem_waifu_l.png", "Rem_yande_d.png", "Rem_yande_l.png", "Rem_zero_d.jpg", "Rem_zero_l.jpg", "Rem_zero_d.png", "Rem_zero_l.png", "Rem_custom_d.png", "Rem_custom_l.png", "Rem_option_d.png", "Rem_option_l.png"]);
 function _wpUrl(filename) {
     return (_wpDefaults.has(filename) ? "wallpaper/" : "user_wallpapers/") + filename;
 }
@@ -641,7 +642,7 @@ async function saveWallpapersUI() {
 async function resetWallpapersUI() {
     if (!await customConfirm("Are you sure you want to reset all WALLPAPERS to default? Colors will not be changed.", "Reset")) return;
     uiConfig.wallpapers = {
-        "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"}, "Gallery": {"dark": "Rem_Gallery_d.jpg", "light": "Rem_Gallery_l.jpg"}, "History": {"dark": "Rem_history_d.png", "light": "Rem_history_l.png"}, "AnimeDL": {"dark": "Rem_AnimeDl_d.jpg", "light": "Rem_AnimeDl_l.jpg"}, "Danbooru": {"dark": "Rem_danbooru_d.jpg", "light": "Rem_danbooru_l.jpg"}, "EShuushuu": {"dark": "Rem_EShuushuu_d.jpg", "light": "Rem_EShuushuu_l.jpg"}, "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"}, "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"}, "Kona": {"dark": "Rem_Kona_d.jpg", "light": "Rem_Kona_l.jpg"}, "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"}, "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"}, "NekosAPI": {"dark": "Rem_NekosAPI_d.jpg", "light": "Rem_NekosAPI_l.jpg"}, "Nekosia": {"dark": "Rem_Nekosia_d.jpg", "light": "Rem_Nekosia_l.jpg"}, "Pinterest": {"dark": "Rem_pinterest_d.jpg", "light": "Rem_pinterest_l.jpg"}, "Pixiv": {"dark": "Rem_Pixiv_d.jpg", "light": "Rem_Pixiv_l.jpg"}, "Rule34": {"dark": "Rem_rule34_d.png", "light": "Rem_rule34_l.png"}, "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"}, "Sankaku": {"dark": "Rem_Sankaku_d.jpg", "light": "Rem_Sankaku_l.jpg"}, "Yande": {"dark": "Rem_yande_d.png", "light": "Rem_yande_l.png"}, "Zero": {"dark": "Rem_zero_d.jpg", "light": "Rem_zero_l.jpg"}, "Options": {"dark": "Rem_option_d.png", "light": "Rem_option_l.png"}, "Customize": {"dark": "Rem_custom_d.png", "light": "Rem_custom_l.png"}
+        "Main": {"dark": "Rem_main_d.png", "light": "Rem_main_l.png"}, "Gallery": {"dark": "Rem_Gallery_d.jpg", "light": "Rem_Gallery_l.jpg"}, "History": {"dark": "Rem_history_d.png", "light": "Rem_history_l.png"}, "AnimeDL": {"dark": "Rem_AnimeDl_d.jpg", "light": "Rem_AnimeDl_l.jpg"}, "Danbooru": {"dark": "Rem_danbooru_d.jpg", "light": "Rem_danbooru_l.jpg"}, "EShuushuu": {"dark": "Rem_EShuushuu_d.jpg", "light": "Rem_EShuushuu_l.jpg"}, "Gelbooru": {"dark": "Rem_gelbooru_d.png", "light": "Rem_gelbooru_l.png"}, "Gsbooru": {"dark": "Rem_Gsbooru_d.jpg", "light": "Rem_Gsbooru_l.jpg"}, "Kona": {"dark": "Rem_Kona_d.jpg", "light": "Rem_Kona_l.jpg"}, "Neko": {"dark": "Rem_neko_d.png", "light": "Rem_neko_l.png"}, "NekosLife": {"dark": "Rem_nekolife_d.png", "light": "Rem_nekolife_l.png"}, "NekosAPI": {"dark": "Rem_NekosAPI_d.jpg", "light": "Rem_NekosAPI_l.jpg"}, "Nekosia": {"dark": "Rem_Nekosia_d.jpg", "light": "Rem_Nekosia_l.jpg"}, "Pixiv": {"dark": "Rem_Pixiv_d.jpg", "light": "Rem_Pixiv_l.jpg"}, "Rule34": {"dark": "Rem_rule34_d.png", "light": "Rem_rule34_l.png"}, "Safe": {"dark": "Rem_safe_d.png", "light": "Rem_safe_l.png"}, "Sankaku": {"dark": "Rem_Sankaku_d.jpg", "light": "Rem_Sankaku_l.jpg"}, "Yande": {"dark": "Rem_yande_d.png", "light": "Rem_yande_l.png"}, "Zero": {"dark": "Rem_zero_d.jpg", "light": "Rem_zero_l.jpg"}, "Options": {"dark": "Rem_option_d.png", "light": "Rem_option_l.png"}, "Customize": {"dark": "Rem_custom_d.png", "light": "Rem_custom_l.png"}
     };
     renderWallpaperGrid();
     await saveWallpapersUI();
@@ -657,11 +658,11 @@ const WORKER_TO_TAB = {
     "neko": "neko", "nekos_life": "nekos_life", "zero": "zero",
     "safe": "safe", "gelbooru": "gelbooru", "gsbooru": "gsbooru", "rule34": "rule34", "yande": "yande",
     "kona": "kona", "dan": "dan", "sankaku": "sankaku", "anime_dl": "anime_dl",
-    "pinterest": "pinterest", "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia", "x": "x"
+    "pixiv": "pixiv", "eshuushuu": "eshuushuu", "nekosapi": "nekosapi", "nekosia": "nekosia", "x": "x"
 };
 
 // worker name -> sidebar tab target + primary tag input (history jumps, nav icons)
-const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pinterest": { tab: "Pinterest", input: "pinterestTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" }, "x": { tab: "X", input: "xTag" } };
+const siteMap = { "zero": { tab: "Zero", input: "zeroTag" }, "neko": { tab: "Neko", input: null }, "nekos_life":{ tab: "NekosLife", input: null }, "safe": { tab: "Safe", input: "safeTag" }, "gelbooru": { tab: "Gelbooru", input: "gelbooruTag" }, "gsbooru": { tab: "Gsbooru", input: "gsbooruTag" }, "yande": { tab: "Yande", input: "yandeTag" }, "kona": { tab: "Kona", input: "konaTag" }, "dan": { tab: "Danbooru", input: "danTag" }, "rule34": { tab: "Rule34", input: "rule34Tag" }, "sankaku": { tab: "Sankaku", input: "sankakuTag" }, "anime_dl": { tab: "AnimeDL", input: "animeDlTag" }, "pixiv": { tab: "Pixiv", input: "pixivTag" }, "eshuushuu": { tab: "EShuushuu", input: "eshuushuuTag" }, "nekosapi": { tab: "NekosAPI", input: "nekosapiTag" }, "nekosia": { tab: "Nekosia", input: "nekosiaTag" }, "x": { tab: "X", input: "xTag" } };
 
 // ponytail: one green check for every end-of-run box — SVG, not an emoji
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7.96405.431215c-.10711-.328136-.45996-.5073077-.78809-.4001899-.32814.1071179-.50731.4599609-.40019.7880979.30408.931507.26406 1.941167-.11279 2.845677-.13275.31863.01793.68455.33656.8173.31863.13275.68455-.01793.8173-.33656.49188-1.18062.54412-2.49848.14721-3.714325ZM10.1206 2.56112c.3419-.04754.6575.19109.7051.53298.0915.65842-.0608 1.32759-.4282 1.88155-.1908.28764-.57871.36615-.86636.17534-.28764-.1908-.36615-.57866-.17534-.86631.1989-.29985.28133-.66206.23178-1.01845-.04753-.34189.19109-.65758.53302-.70511Zm.2309 3.74936c.6464-.14677 1.3242-.04928 1.903.27371.3014.16821.4094.54892.2412.85034s-.5489.40941-.8504.24121c-.3093-.17263-.6715-.22473-1.017-.14629-.3366.07643-.67144-.13448-.74788-.47109-.07643-.33661.13448-.67144.47108-.74788Zm1.6484-3.06049c0-.55229.4477-1 1-1s1 .44771 1 1c0 .55228-.4477 1-1 1s-1-.44772-1-1Zm-8.20286.66477c.28698-.07383.58794-.07401.875-.00053s.55092.21826.76712.42089l.01163.01126 4.19 4.19.00498.00498-.00004.00004c.20465.2105.35306.4691.43157.75199.0785.2829.0845.581.0176.86681-.0669.2859-.2047.5503-.40063.769-.19488.2174-.44106.3827-.7161.4806l-6.6763 2.4886-.00761.0029-.00003-.0001c-.3018.107-.62746.1275-.94032.0594s-.600501-.2222-.830541-.4449C.293328 13.293.130021 13.0105.0518304 12.7s-.0681611-.6366.0289612-.9417c.0023914-.0075.0049602-.015.0077042-.0224L2.5652 5.0648c.09213-.27758.25201-.52787.46524-.72821.21595-.2029.47963-.348.7666-.42183Z"/></svg>`;
@@ -799,7 +800,7 @@ function capConsole(cb, max) {
     while (cb.children.length > max) cb.removeChild(cb.firstChild);
 }
 // ponytail: single source of truth — logToConsole and clearLog shared this map verbatim
-const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pinterest": "consoleLog_pinterest", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia", "x": "consoleLog_x" };
+const CONSOLE_BOX_MAP = { "main": "consoleLog_main", "neko": "consoleLog_neko", "nekos_life": "consoleLog_nekos_life", "zero": "consoleLog_zero", "safe": "consoleLog_safe", "rule34": "consoleLog_rule34", "gelbooru": "consoleLog_gelbooru", "gsbooru": "consoleLog_gsbooru", "yande": "consoleLog_yande", "kona": "consoleLog_kona", "dan": "consoleLog_dan", "sankaku": "consoleLog_sankaku", "anime_dl": "consoleLog_anime_dl", "pixiv": "consoleLog_pixiv", "eshuushuu": "consoleLog_eshuushuu", "nekosapi": "consoleLog_nekosapi", "nekosia": "consoleLog_nekosia", "x": "consoleLog_x" };
 // ponytail: hide image filenames in log/toast text — names still drive thumbs & actions
 function hideFileNames(s) {
     return String(s).replace(/\b[\w\-.]+(?:[/\\][\w\-.]+)*\.(?:jpe?g|png|gif|webp|avif|bmp|tiff?|mp4|webm|mov|avi|mkv)\b/gi, "image").replace(/\s{2,}/g, " ").trim();
@@ -2138,16 +2139,6 @@ socket.on("image_deleted", function (data) {
     });
 });
 
-socket.on("pinterest_progress", function (data) {
-    let pct = Math.min(100, Math.round((data.index / data.total) * 100));
-    let fill = document.getElementById("dlBar_pinterest");
-    let txt = document.getElementById("dlText_pinterest");
-    let container = document.getElementById("dualProgress_pinterest");
-    if (container) container.style.display = "flex";
-    if (fill) fill.style.width = pct + "%";
-    if (txt) txt.textContent = pct + "%";
-});
-
 // live byte-level progress while files stream (throttled server-side ~5/s)
 socket.on("dl_progress", function (data) {
     let key = WORKER_TO_TAB[data.worker];
@@ -3010,7 +3001,6 @@ function buildWorkerPayload(workerName, allowEmpty) {
     else if (workerName === 'rule34') { payload.tag = currentRule34Tags.join(' '); payload.limit = document.getElementById('rule34Limit').value; payload.method = document.getElementById('rule34Method').value; payload.sort_type = document.getElementById('rule34SortType').value; payload.sort_order = document.getElementById('rule34SortOrder').value; let format = document.getElementById('rule34Format').value; let ex = []; if (format === 'images') ex.push('-video'); else if (format === 'gifs') { ex.push('-video'); ex.push('-image'); } else if (format === 'videos') { ex.push('-image'); payload.tag += " video"; } if (document.getElementById('exGif').checked) ex.push('-gif'); if (document.getElementById('exComic').checked) ex.push('-comic'); if (document.getElementById('ex3D').checked) ex.push('-3d'); payload.exclusions = ex; payload.exclude_ai = document.getElementById('rule34-exclude-ai').checked; }
     else if (workerName === 'sankaku') { payload.tag = sankakuChips.tags.join(' '); payload.limit = document.getElementById('sankakuLimit').value; payload.rating = document.getElementById('sankakuRating').value; payload.exclusions = []; payload.net_config.hide_pools = document.getElementById('sankakuHideBooks').checked; if (document.getElementById('sankakuExcludeAi').checked && !sankakuChips.tags.includes('-ai-created')) payload.tag += " -ai-created"; }
     else if (workerName === 'anime_dl') { payload.tag = currentAnimeDlTags.join(' '); payload.limit = document.getElementById('animeDlLimit').value; }
-    else if (workerName === 'pinterest') { payload.tag = document.getElementById('pinterestTag').value; payload.limit = document.getElementById('pinterestLimit').value; payload.is_search = document.getElementById('pinterestMode').value === 'search'; payload.min_w = parseInt(document.getElementById('pinterestMinW').value) || 0; payload.min_h = parseInt(document.getElementById('pinterestMinH').value) || 0; }
     else if (workerName === 'pixiv') {
         let mode = document.getElementById('pixivMode').value;
         let ranking = document.getElementById('pixivRankingMode').value;
@@ -3050,7 +3040,7 @@ function buildWorkerPayload(workerName, allowEmpty) {
     // the empty limit box (now possible) already defaults server-side
     // (allowEmpty = settings-only START with a waiting queue: the chips were
     // cleared at enqueue, only limit/rating/... travel with this payload)
-    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'pinterest', 'nekosapi', 'nekosia', 'x'];
+    const TAG_REQUIRED = ['zero', 'safe', 'gelbooru', 'gsbooru', 'yande', 'dan', 'kona', 'rule34', 'sankaku', 'anime_dl', 'nekosapi', 'nekosia', 'x'];
     if (!allowEmpty && TAG_REQUIRED.includes(workerName) && !(payload.tag || '').trim()) {
         showToast("Enter a tag first");
         logToConsole(workerName, "Error: tag is empty - nothing to search");
@@ -3081,7 +3071,6 @@ function clearSubmittedTags(workerName) {
     if (workerName === 'yande') { yandeChips.tags = []; yandeChips.subTags.clear(); yandeChips.render(); document.getElementById('yandeTag').value = ''; }
     // plain-text boxes (no tag-chip state): empty the field that was queued
     if (workerName === 'pixiv') document.getElementById('pixivTag').value = '';
-    if (workerName === 'pinterest') document.getElementById('pinterestTag').value = '';
     if (workerName === 'x') document.getElementById('xTag').value = '';
 }
 
@@ -3161,9 +3150,6 @@ async function loadApiSettings() {
     document.getElementById("sankaPassword").value = settings.sanka_password || "";
     document.getElementById("zeroLogin").value = settings.zerochan_login || "";
     document.getElementById("zeroPassword").value = settings.zerochan_password || "";
-    document.getElementById("pinterestCookies").value = settings.pinterest_cookies || "";
-    document.getElementById("pinterestEmail").value = settings.pinterest_email || "";
-    document.getElementById("pinterestPassword").value = settings.pinterest_password || "";
     document.getElementById("pixivToken").value = settings.pixiv_refresh_token || "";
     document.getElementById("pixivCookie").value = settings.pixiv_cookie || "";
     document.getElementById("xCookies").value = settings.x_cookies || "";
@@ -3185,11 +3171,8 @@ async function saveApiSettings() {
         sanka_password: document.getElementById("sankaPassword").value.trim(),
         zerochan_login: document.getElementById("zeroLogin").value.trim(),
         zerochan_password: document.getElementById("zeroPassword").value.trim(),
-        pinterest_cookies: document.getElementById("pinterestCookies").value.trim(),
-        pinterest_email: document.getElementById("pinterestEmail").value.trim(),
         pixiv_refresh_token: document.getElementById("pixivToken").value.trim(),
         pixiv_cookie: document.getElementById("pixivCookie").value.trim(),
-        pinterest_password: document.getElementById("pinterestPassword").value.trim(),
         x_cookies: document.getElementById("xCookies").value.trim(),
         x_username: document.getElementById("xUsername").value.trim()
     };
@@ -4263,7 +4246,6 @@ const SOURCE_RATINGS = {
     rule34: ['explicit'],
     nekosapi: ['safe', 'sensitive', 'questionable', 'explicit'],
     nekosia: ['safe', 'sensitive'],
-        pinterest: ['safe'],
     pixiv: ['safe', 'questionable', 'explicit'],
     zerochan: ['safe'],
     'nekos.best': ['safe'],
@@ -7355,7 +7337,7 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
         // onkeydown already runs, so mapping them here would do both)
         const ENTER_TO_WORKER = {
             zeroTag: 'zero', danTag: 'dan',
-            animeDlTag: 'anime_dl', pinterestTag: 'pinterest', pixivTag: 'pixiv',
+            animeDlTag: 'anime_dl', pixivTag: 'pixiv',
             eshuushuuUser: 'eshuushuu',
             nekosapiTag: 'nekosapi', xTag: 'x'
         };

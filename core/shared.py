@@ -289,7 +289,7 @@ SITE_CANONICAL = {
     "gelbooru": "gelbooru", "gsbooru": "gsbooru",
     "konachan": "konachan", "kona": "konachan", "yande": "yande", "yande.re": "yande",
     "sankaku": "sankaku", "safebooru": "safebooru", "safe": "safebooru", "rule34": "rule34",
-    "pinterest": "pinterest", "pixiv": "pixiv",
+    "pixiv": "pixiv",
     "zero": "zerochan", "zerochan": "zerochan",
     "neko": "nekos.life", "nekos.life": "nekos.life", "nekos_life": "nekos.life",
     "nekos.best": "nekos.best", "nekos_best": "nekos.best", "nekosapi": "nekosapi", "nekosia": "nekosia",
@@ -2383,7 +2383,7 @@ class BaseDownloader:
         """Synchronous entry point shared by every worker.
 
         Override only when the worker needs setup/teardown around the loop
-        (e.g. pinterest's proxy env save/restore).
+        (e.g. a proxy env save/restore).
         """
         asyncio.run(self.run_async_loop(self.scraper_task))
 

@@ -6,7 +6,7 @@
 
 Rems Dl is a **native desktop application** (powered by `pywebview`): it opens as a real app window, not a hosted website. The Python backend only listens on the `127.0.0.1` loopback with an ephemeral port -- nothing is exposed to your network and no browser setup is needed.
 
-Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Nekos.best, Nekos.life, Yande.re, Konachan, Danbooru, Sankaku, e-shuushuu, NekosAPI, Nekosia, AnimePictures, Pixiv, and Pinterest.
+Supports Rule34, Safebooru, Gelbooru, Gsbooru, Zerochan, Nekos.best, Nekos.life, Yande.re, Konachan, Danbooru, Sankaku, e-shuushuu, NekosAPI, Nekosia, AnimePictures and Pixiv.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-yellow.svg)](https://python.org)
@@ -135,15 +135,11 @@ Entering credentials in the **Settings** tab unlocks higher API limits and restr
 **4. Zerochan**
 * Some images are restricted to guests. Use your standard Zerochan **Username** and **Password** in the UI to let the `gallery-dl` engine fetch everything.
 
-**5. Pinterest**
-* Standard method: Enter your Pinterest **Email** and **Password**.
-* Alternative (If blocked): Use a browser extension (like *EditThisCookie*) to export your Pinterest cookies as a `.json` file. Provide the absolute file path in the `Cookies` field.
-
 ---
 
 ## Features
 
-- **Multi-Platform** -- Built-in modules for 18 imageboard/API sources (including Danbooru, Sankaku, Pixiv, and Gsbooru)
+- **Multi-Platform** -- Built-in modules for 17 imageboard/API sources (including Danbooru, Sankaku, Pixiv, and Gsbooru)
 - **Modern UI** -- Glass-morphism dark & light themes in a native desktop window
 - **Discovery Engine & Archives** -- Live extraction of tags and artists from downloaded media, displayed in a dedicated Image Archive tab.
 - **Favorites & Search History** -- Add tags to your favorites list for one-click search automation, and maintain a log of your search history.
@@ -157,7 +153,6 @@ Entering credentials in the **Settings** tab unlocks higher API limits and restr
 - **API Key Management** -- Manage Rule34 credentials directly from the Web UI
 - **Tag Auto-Suggest** -- Live autocomplete for all platforms including offline Konachan tag DB
 - **Duplicate-Proof Downloads** -- Perceptual-hash + source-hash dedup across sites: duplicated images are downloaded once, the larger copy survives, and the duplicate's tags are merged into the kept entry
-- **Hydrus Sidecar Files** -- Auto-generates `.filename.txt` sidecar files with tags, artists, and source for Hydrus Network import
 - **Persistent Settings** -- Proxy, API keys, and download settings saved in `.env`
 
 
@@ -230,7 +225,6 @@ Rems Dl/
 | **NekosAPI** | Tag search with rating filter, local tag DB | Mixed | Sorts into Safe/Sensitive/Questionable/NSFW folders |
 | **Nekosia** | Tag search with rating filter, local tag DB | Mixed | Sorts into rating subdirectories |
 | **Pixiv** | Tag search, ugoira-to-GIF conversion | Mixed | Requires Pixiv refresh token in Settings |
-| **Pinterest** | Search + board download, resolution filter | No | Email/password or cookies file |
 
 ---
 

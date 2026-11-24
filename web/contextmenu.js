@@ -3,7 +3,7 @@
 // and {sep:true}, so nested menus come free
 const CTX_CATEGORY_LABELS = {artist:"Artist", character:"Character", copyright:"Copyright", metadata:"Other tags", outfit:"Outfit", group:"Group", hair:"Hair", eyes:"Eyes", mangaka:"Mangaka", game:"Game", theme:"Theme", source:"Source", meta:"Meta", vtuber:"VTuber", series:"Series", studio:"Studio", tag:"General tags"};
 // preset-only workers (neko/nekosapi/nekos_life) take no free-text tag
-const QUEUE_SITE_KEYS = ["dan", "gelbooru", "gsbooru", "kona", "yande", "safe", "sankaku", "rule34", "zero", "pixiv", "pinterest", "x", "anime_dl", "eshuushuu", "nekosia"];
+const QUEUE_SITE_KEYS = ["dan", "gelbooru", "gsbooru", "kona", "yande", "safe", "sankaku", "rule34", "zero", "pixiv", "x", "anime_dl", "eshuushuu", "nekosia"];
 
 let _ctxMenus = [];
 let _ctxCloseTimer = 0;

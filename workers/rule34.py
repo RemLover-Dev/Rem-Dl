@@ -21,7 +21,7 @@ try:
             return _orig_meta_version(distribution_name)
         except Exception:
             if distribution_name and str(distribution_name).lower() in (
-                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+                "rule34py", "gallery-dl", "gallery_dl"
             ):
                 return "4.2.0"
             raise
@@ -31,7 +31,7 @@ try:
             return _orig_meta_distribution(distribution_name)
         except Exception:
             if distribution_name and str(distribution_name).lower() in (
-                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+                "rule34py", "gallery-dl", "gallery_dl"
             ):
                 return _SafeDistribution(str(distribution_name))
             raise

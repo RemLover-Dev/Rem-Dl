@@ -13,8 +13,7 @@ def test_exact_aliases():
                        ("yande.re", "yande"), ("kona", "kona"), ("konachan", "kona"),
                        ("pix", "pixiv"), ("anime_dl", "anime_dl"),
                        ("anime-pictures", "anime_dl"), ("e-shuushuu", "eshuushuu"),
-                       ("r34", "rule34"), ("safebooru", "safe"), ("x", "x"),
-                       ("pinterest", "pinterest")]:
+                       ("r34", "rule34"), ("safebooru", "safe"), ("x", "x")]:
         assert resolve_site(term) == (site, None)
 
 

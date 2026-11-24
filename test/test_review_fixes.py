@@ -51,7 +51,7 @@ def test_api_settings_masks_secrets_and_preserves_them_on_roundtrip(lib, client,
         "gelbooru_api_key": "abcd1234",
         "pixiv_refresh_token": "tok1234",
         "konachan_password": "",
-        "pinterest_cookies": "cookies.json",
+        "x_cookies": "cookies.json",
         "x_username": "rem",
     })
     monkeypatch.setattr(Rems_Dl, "settings", stub)
@@ -61,7 +61,7 @@ def test_api_settings_masks_secrets_and_preserves_them_on_roundtrip(lib, client,
     assert got["pixiv_refresh_token"] == "\u2022\u2022\u2022\u20221234"
     assert got["konachang_password" if False else "konachan_password"] == ""
     # file PATHS and logins stay readable — the frontend shows them
-    assert got["pinterest_cookies"] == "cookies.json"
+    assert got["x_cookies"] == "cookies.json"
     assert got["x_username"] == "rem"
     assert "abcd1234" not in (got.get("gelbooru_api_key") or "")
 

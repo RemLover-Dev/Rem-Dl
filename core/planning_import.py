@@ -26,7 +26,6 @@ SITE_ALIASES = {
     "zero": ["zerochan", "zero"],
     "anime_dl": ["anime-pictures", "animepictures", "anime", "anime_dl"],
     "pixiv": ["pixiv", "pix"],
-    "pinterest": ["pinterest", "pin"],
     "eshuushuu": ["e-shuushuu", "eshuushuu", "shuushuu", "esh"],
     "nekosapi": ["nekosapi"],
     "nekosia": ["nekosia"],
