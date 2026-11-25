@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from core import jxl_progress
 from core.runtime_paths import resource_root
@@ -67,6 +68,8 @@ def file_version(path):
 
 def _copy_windows_creation_time(source, target):
     """Copy the native creation timestamp without treating Unix ctime as birth."""
+    if sys.platform != 'win32':
+        return
     import ctypes
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -167,7 +170,7 @@ class JxlService:
         self.preview_work = None
         self.lock = threading.RLock()
         self.cancel_event = threading.Event()
-        self.job = None
+        self.job: dict[str, Any] = {}
         self.thread = None
         self.grants = set()
         atexit.register(self.close)
@@ -187,13 +190,13 @@ class JxlService:
     def allowed_path(self, value):
         if not isinstance(value, str) or not value.strip() or '\x00' in value:
             raise ValueError('Choose an image or folder first')
-        # codeql[py/path-injection] resolved then immediately constrained to home / master / picker grants before return
+        # codeql[py/path-injection] resolved then immediately constrained to master / picker grants before return
         path = Path(value).expanduser().resolve(strict=True)
-        roots = [Path.home().resolve(), Path(self.master_folder()).resolve()]
+        roots = [Path(self.master_folder()).resolve()]
         with self.lock:
             roots += [Path(p) for p in self.grants]
         if not any(path == root or root in path.parents for root in roots):
-            raise ValueError('Choose a path in your home/gallery, or use the desktop picker to select another location')
+            raise ValueError('Choose a path in the gallery, or use the desktop picker to select another location')
         return path
 
     def snapshot(self):
@@ -406,8 +409,12 @@ class JxlService:
                         used = {item['slot'] for item in active}
                         if any(item['slot'] is None for item in active):
                             break
-                        slot = None if exclusive else next(slot for slot in range(len(allocations)) if slot not in used)
-                        threads = cpu_total if exclusive else allocations[slot]
+                        if exclusive:
+                            slot = None
+                            threads = cpu_total
+                        else:
+                            slot = next(slot for slot in range(len(allocations)) if slot not in used)
+                            threads = allocations[slot]
                         active.append(self.launch(path, mode, quality, effort, threads, cost, slot, pixels, kind))
                         self.update_active(active)
                     except Exception as exc:

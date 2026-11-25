@@ -231,7 +231,8 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
     def test_enqueue_download_sanitizes_prohibited_characters(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         dl = BaseDownloader("test_worker", "Test:Site", 10, {"anti_ban_pause": 0})
-        dl.download_queue = asyncio.Queue()
+        queue = asyncio.Queue()
+        setattr(dl, "download_queue", queue)
 
         async def _run():
             unsafe_dir = os.path.join(dl.site_root, "tag:with:colons")
@@ -240,7 +241,7 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
 
             enqueued = await dl.enqueue_download("http://example.com/img.png", unsafe_filepath, unsafe_filename, ["re:zero"])
             assert enqueued is True
-            item = dl.download_queue.get_nowait()
+            item = queue.get_nowait()
             _q_url, q_filepath, q_filename, _q_tags, *_ = item
 
             assert ":" not in q_filename
@@ -279,7 +280,7 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
             def get(self, *args, **kwargs):
                 return MockResponse()
 
-        dl.session = MockSession()
+        setattr(dl, "session", MockSession())
 
         async def _run_download():
             folder = os.path.join(dl.site_root, "Safe_Tag")

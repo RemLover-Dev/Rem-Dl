@@ -4,6 +4,7 @@ import os
 import random
 import sqlite3
 import threading
+from typing import cast
 
 import pytest
 from PIL import Image
@@ -42,19 +43,23 @@ def _mk_dl(tmp_path, monkeypatch, name="test_worker", site="Test:Site"):
     monkeypatch.setattr("core.shared.add_to_gallery", lambda *a, **k: None)
     monkeypatch.setattr("core.shared.send_tags", lambda *a, **k: None)
     dl = BaseDownloader(name, site, 10, {"anti_ban_pause": 0, "download_retries": 1})
-    dl.log = lambda m: None
+    setattr(dl, "log", lambda m: None)
     dl.download_queue = asyncio.Queue()
     return dl
 
 
-def _pairs(store, filepath):
+def _pairs(store, filepath) -> list[tuple[str, str, str]]:
     """[(site, algo, hash)] recorded for the image row of this filepath."""
     row = store._conn.execute(
         "SELECT id FROM image_hashes WHERE filepath=?", (filepath,)).fetchone()
     if row is None:
-        return None
+        return []
     return [(r["site"], r["algo"], r["hash"]) for r in store._conn.execute(
         "SELECT site, algo, hash FROM source_hashes WHERE image_id=?", (row["id"],))]
+
+
+def _queue(dl) -> asyncio.Queue:
+    return cast(asyncio.Queue, dl.download_queue)
 
 
 def _sites_for(store, digest):
@@ -339,6 +344,7 @@ class TestStorage:
         # each of them gates future listings from that site pre-download
         for digest in ("f" * 32, g2["md5"], g2["sha1"]):
             ok, match = store.claim_source_md5(digest, "/elsewhere/z.png")
+            assert match is not None
             assert ok is False and match["filepath"] == p1
 
     def test_phash_fallback_keeps_both_sites_hashes(self, tmp_path):
@@ -360,6 +366,7 @@ class TestStorage:
         # both md5s resolve to the same surviving file for future listings
         for digest in ("1" * 32, "2" * 32):
             ok, match = store.claim_source_md5(digest, "/incoming/q.png")
+            assert match is not None
             assert ok is False and match["filepath"] == p1
 
 
@@ -444,7 +451,7 @@ class TestPreDownload:
 
         assert asyncio.run(self._enqueue(dl, md5="9" * 32)) is False
         # never scheduled: no queue item, no counter bump
-        assert dl.download_queue.empty()
+        assert _queue(dl).empty()
         assert dl.enqueued_count == 0
 
     def test_stored_sha1_blocks_enqueue(self, tmp_path, monkeypatch, _store):
@@ -456,7 +463,7 @@ class TestPreDownload:
         _store.check_and_add(known, site="othersite", post_id="9", source_md5=sha1)
 
         assert asyncio.run(self._enqueue(dl, md5=sha1)) is False
-        assert dl.download_queue.empty()
+        assert _queue(dl).empty()
         assert dl.enqueued_count == 0
 
     def test_pre_download_skip_merges_tags_via_absorb(self, tmp_path, monkeypatch, _store):
@@ -512,13 +519,13 @@ class TestPreDownload:
         _store.check_and_add(known, source_md5="9" * 32)
 
         assert asyncio.run(self._enqueue(dl, md5="8" * 32)) is True
-        assert dl.download_queue.qsize() == 1
+        assert _queue(dl).qsize() == 1
 
     def test_invalid_hash_uses_existing_behavior(self, tmp_path, monkeypatch, _store):
         dl = _mk_dl(tmp_path, monkeypatch)
         assert asyncio.run(self._enqueue(dl, md5="not-a-hash")) is True
         assert asyncio.run(self._enqueue(dl, md5=None, filename="other.png")) is True
-        assert dl.download_queue.qsize() == 2
+        assert _queue(dl).qsize() == 2
 
     def test_inflight_claim_blocks_second_enqueue(self, tmp_path, monkeypatch, _store):
         dl1 = _mk_dl(tmp_path, monkeypatch, name="worker1", site="Site1")
@@ -526,7 +533,7 @@ class TestPreDownload:
         assert asyncio.run(self._enqueue(dl1, md5="7" * 32, filename="a.png")) is True
         # same source from a different site while dl1's download is in flight
         assert asyncio.run(self._enqueue(dl2, md5="7" * 32, filename="b.png")) is False
-        assert dl2.download_queue.empty()
+        assert _queue(dl2).empty()
 
     def test_dedup_disabled_no_blocking(self, tmp_path, monkeypatch, _store):
         dl = _mk_dl(tmp_path, monkeypatch)
@@ -551,21 +558,21 @@ class TestPreDownload:
 
     def _mock_session(self, dl, status=200, payload=None):
         class C:
-            def __init__(s, chunks): s.chunks = chunks
-            async def iter_chunked(s, n):
-                for c in s.chunks: yield c
+            def __init__(self, chunks): self.chunks = chunks
+            async def iter_chunked(self, n):
+                for c in self.chunks: yield c
         class R:
-            def __init__(s):
-                s.status = status
-                s.headers = {"Content-Length": str(len(payload or b""))}
-                s.content = C([payload] if payload else [])
-            def raise_for_status(s):
-                if s.status >= 400: raise RuntimeError("http error")
-            async def __aenter__(s): return s
-            async def __aexit__(s, *a): pass
+            def __init__(self):
+                self.status = status
+                self.headers = {"Content-Length": str(len(payload or b""))}
+                self.content = C([payload] if payload else [])
+            def raise_for_status(self):
+                if self.status >= 400: raise RuntimeError("http error")
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
         class S:
             headers = {}
-            def get(s, url, headers=None, timeout=None): return R()
+            def get(self, url, headers=None, timeout=None): return R()
         dl.session = S()
 
     def test_success_persists_claimed_and_streamed_hashes(self, tmp_path, monkeypatch, _store):
@@ -585,6 +592,7 @@ class TestPreDownload:
         # both md5s resolve to the stored file for future listings
         for digest in ("5" * 32, served["md5"]):
             ok, match = _store.claim_source_md5(digest, "/elsewhere/q.png")
+            assert match is not None
             assert ok is False and match["filepath"] == fp
         # claim released after the run
         assert _store.claimed_source_md5(fp) is None
@@ -636,7 +644,7 @@ class TestAdapters:
         monkeypatch.setattr(r34mod, "pace_requests", lambda: asyncio.sleep(0))
 
         w = r34mod.Rule34Worker("rem", 1, "and", "id", "desc", [], {}, exclude_ai=False)
-        w.log = lambda m: None
+        setattr(w, "log", lambda m: None)
 
         class FakePost:
             image = "http://example.com/img.jpg"
@@ -644,7 +652,7 @@ class TestAdapters:
             tags = []
             hash = "1bab3104189ed96ed8665843ffa38c5b"
 
-        w.client = type("C", (), {"search": lambda self, *a, **k: [FakePost()]})()
+        setattr(w, "client", type("C", (), {"search": lambda self, *a, **k: [FakePost()]})())
 
         captured = []
         async def fake_enqueue(url, filepath, filename, tags_list, artists=None,
@@ -693,7 +701,7 @@ class TestAdapters:
         monkeypatch.setattr("core.dedup_store.get_store", lambda: store)
         from workers.sankaku import SankakuWorker
         w = SankakuWorker("rem", 10, "", [], {})
-        w.log = lambda m: None
+        setattr(w, "log", lambda m: None)
         w.download_queue = asyncio.Queue()
 
         async def fake_download(url, filepath, filename, tags_list, artists, file_size=0,
@@ -724,7 +732,7 @@ class TestAdapters:
         from workers.anime_dl import AnimeDlWorker
         w = AnimeDlWorker("rem", 10, {})
         wlog = []
-        w.log = wlog.append
+        setattr(w, "log", wlog.append)
         w.download_queue = asyncio.Queue()
 
         payload = _img_bytes(30)
@@ -736,7 +744,7 @@ class TestAdapters:
                 yield payload[:mid]
                 yield payload[mid:]
             def close(self): pass
-        w.curl_session = type("CS", (), {"get": lambda self, *a, **k: Resp()})()
+        setattr(w, "curl_session", type("CS", (), {"get": lambda self, *a, **k: Resp()})())
 
         md5 = "a1b2c3d4" + "0" * 24
         fp = os.path.join(w.site_root, "img.png")
@@ -774,7 +782,7 @@ class TestAdapters:
         monkeypatch.setattr(zmod, "save_history", lambda *a, **k: None)
 
         w = zmod.ZerochanWorker("rem", 10, {})
-        w.log = lambda m: None
+        setattr(w, "log", lambda m: None)
 
         payload = _img_bytes(31)
         mid = len(payload) // 2

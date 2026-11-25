@@ -42,7 +42,7 @@ class YandeWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         async def attempt(tag_name):
-            async with self.session.get("https://yande.re/tag.xml", params={
+            async with self._session.get("https://yande.re/tag.xml", params={
                 "name": tag_name, "limit": 50
             }) as resp:
                 if resp.status != 200:
@@ -57,7 +57,7 @@ class YandeWorker(BaseWorker):
             return True  # 200 processed: match OR genuinely absent
         return await self._run_tag_fetch(tag_names, attempt, TAG_TYPES_FILE)
 
-    def _categorize_tags(self, tag_names, cache):
+    def _categorize_tags_dict(self, tag_names, cache):
         result = {"artist": [], "character": [], "copyright": [], "metadata": [], "tag": []}
         for t in tag_names:
             tag_type = cache.get(t, 0)
@@ -81,7 +81,7 @@ class YandeWorker(BaseWorker):
             try:
                 self.log(f"Scanning API... (Page {page})")
 
-                async with self.session.get("https://yande.re/post.json", params={"tags": self.api_tag, "page": page, "limit": page_limit}) as resp:
+                async with self._session.get("https://yande.re/post.json", params={"tags": self.api_tag, "page": page, "limit": page_limit}) as resp:
                     if resp.status in [403, 429]:
                         if not retried_rate_limit:
                             retried_rate_limit = True
@@ -167,7 +167,7 @@ class YandeWorker(BaseWorker):
 
                 tags_raw = post.get("tags", "")
                 tag_names = [t.strip() for t in tags_raw.split() if t.strip()]
-                cats = self._categorize_tags(tag_names, cache)
+                cats = self._categorize_tags_dict(tag_names, cache)
                 artists = cats["artist"]
                 characters = cats["character"]
                 copyrights = cats["copyright"]

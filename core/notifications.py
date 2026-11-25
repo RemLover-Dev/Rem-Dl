@@ -13,6 +13,7 @@ pixiv_notifications.json is folded in once on first access.
 import os
 import re
 import threading
+from typing import cast
 
 from core.database import DATABASE_DIR, DatabaseManager
 
@@ -26,7 +27,7 @@ MAX_SEEN = 4000
 _lock = threading.RLock()
 _migration_done = False
 # parsed-store cache: every UI poll used to re-read and re-parse the file
-_cache = {"key": None, "raw": None}
+_cache: dict[str, object] = {"key": None, "raw": None}
 
 
 def _stat_key():
@@ -64,7 +65,7 @@ def _load():
     with _lock:
         key = _stat_key()
         if _cache["raw"] is not None and _cache["key"] == key:
-            return _cache["raw"]
+            return cast(dict, _cache["raw"])
         raw = DatabaseManager.load_json(NOTIF_FILE)
         if not isinstance(raw, dict):
             raw = {}

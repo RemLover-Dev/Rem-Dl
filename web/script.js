@@ -1006,7 +1006,7 @@ function addRule34Tag() {
     if (!input) return;
     let added = false;
     chipsFromTyped(input.value).forEach(function(val) {
-        if (!currentRule34Tags.includes(val)) { currentRule34Tags.push(val); added = true; }
+        if (!currentRule34Tags.includes(val)) { replaceTagToken(currentRule34Tags, val); added = true; }
     });
     if (added) {
         input.value = "";
@@ -1014,7 +1014,7 @@ function addRule34Tag() {
     }
 }
 function removeRule34Tag(tag) {
-    currentRule34Tags = currentRule34Tags.filter(function(t) { return t !== tag; });
+    currentRule34Tags = withoutTagToken(currentRule34Tags, tag);
     renderRule34Tags();
 }
 function renderRule34Tags() {
@@ -1043,6 +1043,23 @@ function renderRule34Tags() {
 // --- Booru chip rows: one factory, eight tag boxes --------------------------
 // add/remove/render were per-site copy-paste; payload join, tab-clear and
 // restore paths keep working through the returned object (chips.tags etc.)
+function tagKey(tag) {
+    return String(tag == null ? "" : tag).replace(/^-/, "").toLowerCase();
+}
+// a tag and its "-tag" exclusion are one choice: adding either replaces both
+function replaceTagToken(list, val) {
+    const key = tagKey(val);
+    const removed = [];
+    for (let i = list.length - 1; i >= 0; i--) {
+        if (tagKey(list[i]) === key) removed.push(list.splice(i, 1)[0]);
+    }
+    list.push(val);
+    return removed;
+}
+function withoutTagToken(list, tag) {
+    const key = tagKey(tag);
+    return list.filter(function(t) { return tagKey(t) !== key; });
+}
 function makeChips(name) {
     const chips = {
         tags: [],
@@ -1056,7 +1073,7 @@ function makeChips(name) {
             // danTagForRequest reads dataset.raw so pretty text isn't shredded
             chipsFromTyped(danTagForRequest(name + "Tag")).forEach(function(val) {
                 if (!chips.tags.includes(val)) {
-                    chips.tags.push(val);
+                    replaceTagToken(chips.tags, val).forEach(function(t) { chips.subTags.delete(t); });
                     if (val === raw) chips.subTags.add(val);
                     added = true;
                 }
@@ -1064,8 +1081,9 @@ function makeChips(name) {
             if (added) { input.value = ""; delete input.dataset.raw; chips.render(); }
         },
         remove(tag) {
-            chips.tags = chips.tags.filter(function(t) { return t !== tag; });
-            chips.subTags.delete(tag);
+            chips.tags = withoutTagToken(chips.tags, tag);
+            const key = tagKey(tag);
+            chips.subTags.forEach(function(t) { if (tagKey(t) === key) chips.subTags.delete(t); });
             chips.render();
         },
         render() {
@@ -1095,7 +1113,9 @@ let nekosapiTagList = [];
 function renderNekosapiTagDropdown() {
     let menu = document.getElementById("nekosapiTagDropdown");
     if (!menu) return;
-    menu.innerHTML = nekosapiTagList.map(function(t) {
+    menu.innerHTML = nekosapiTagList.filter(function(t) {
+        return !tagIsPermanentlyExcluded("nekosapi", t);
+    }).map(function(t) {
         let exc = currentNekosapiTags.includes('-' + t);
         let inc = currentNekosapiTags.includes(t);
         return '<div class="dd-item' + (exc ? ' dd-excl' : '') + '" data-tag="' + escJs(t) + '" onclick="nekosapiTagToggle(this, 0)" oncontextmenu="return nekosapiTagToggle(this, 1)"><span>' + escapeHtml(cleanTagDisplay(t)) + '</span><input type="checkbox" tabindex="-1"' + (inc ? ' checked' : '') + '></div>';
@@ -1136,12 +1156,12 @@ function addWatcherTag() {
     if (!input) return;
     let added = false;
     chipsFromTyped(danTagForRequest('watcherTag')).forEach(function(val) {
-        if (!watcherTags.includes(val)) { watcherTags.push(val); added = true; }
+        if (!watcherTags.includes(val)) { replaceTagToken(watcherTags, val); added = true; }
     });
     if (added) { input.value = ""; delete input.dataset.raw; renderWatcherTags(); }
 }
 function removeWatcherTag(tag) {
-    watcherTags = watcherTags.filter(t => t !== tag);
+    watcherTags = withoutTagToken(watcherTags, tag);
     renderWatcherTags();
 }
 function renderWatcherTags() {
@@ -1300,11 +1320,61 @@ const TAG_EXCLUDE_LABELS = {
     safe: "Safebooru", sankaku: "Sankaku", yande: "Yande.re", zero: "Zerochan",
 };
 const TAG_EXCLUDE_SUGGEST = { zero: "zerochan" };
+const TAG_EXCLUDE_SPACE_SITES = ["anime_dl", "eshuushuu", "nekosapi", "zero"];
 let tagExcludeTags = [];
+let siteTagExcludes = {};
+const siteTagExcludesReady = fetch("/api/tag-excludes")
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        siteTagExcludes = d.all || {};
+        renderNekosapiTagDropdown();
+    })
+    .catch(function() {});
 
 function tagExcludeSiteId() {
     const el = document.getElementById("tagExcludeSite");
     return (el && el.value) || "dan";
+}
+
+function tagExclusionKey(tag, site) {
+    const base = String(tag == null ? "" : tag).replace(/^-/, "").trim();
+    return (TAG_EXCLUDE_SPACE_SITES.includes(site) ? base : base.replace(/\s+/g, "_")).toLowerCase();
+}
+
+function tagIsPermanentlyExcluded(site, tag) {
+    if (!site) return false;
+    const key = tagExclusionKey(tag, site);
+    return (siteTagExcludes[site] || []).some(function(t) {
+        return tagExclusionKey(t, site) === key;
+    });
+}
+
+function chipStateForSite(site) {
+    if (site === "zero") return { list: currentZerochanTags, sub: zerochanSubTags, render: renderZerochanTags };
+    if (site === "dan") return { list: currentDanTags, sub: danSubTags, render: renderDanTags };
+    if (site === "rule34") return { list: currentRule34Tags, render: renderRule34Tags };
+    if (site === "anime_dl") return { list: currentAnimeDlTags, sub: animeDlSubTags, render: renderAnimeDlTags };
+    if (site === "nekosapi") return { list: currentNekosapiTags, render: syncNekosapiTags };
+    const chips = {
+        eshuushuu: eshuushuuChips, gelbooru: gelbooruChips, gsbooru: gsbooruChips,
+        kona: konaChips, nekosia: nekosiaChips, safe: safeChips,
+        sankaku: sankakuChips, yande: yandeChips,
+    }[site];
+    return chips ? { list: chips.tags, sub: chips.subTags, render: chips.render } : null;
+}
+
+// a permanent exclude is the same choice as a search chip: do not keep both
+function stripExcludedChips(site, tags) {
+    const state = chipStateForSite(site);
+    if (!state) return;
+    const keys = new Set((tags || []).map(function(t) { return tagExclusionKey(t, site); }));
+    for (let i = state.list.length - 1; i >= 0; i--) {
+        if (keys.has(tagExclusionKey(state.list[i], site))) {
+            const removed = state.list.splice(i, 1)[0];
+            if (state.sub) state.sub.delete(removed);
+        }
+    }
+    state.render();
 }
 
 function tagExcludeValues(site) {
@@ -1318,11 +1388,14 @@ function tagExcludeValues(site) {
 }
 
 async function loadTagExcludes() {
+    const site = tagExcludeSiteId();
     try {
-        const r = await fetch("/api/tag-excludes?site=" + encodeURIComponent(tagExcludeSiteId()));
+        const r = await fetch("/api/tag-excludes?site=" + encodeURIComponent(site));
         const d = await r.json();
         tagExcludeTags = d.tags || [];
+        siteTagExcludes[site] = tagExcludeTags.slice();
     } catch (e) { tagExcludeTags = []; }
+    stripExcludedChips(site, tagExcludeTags);
     renderTagExcludeChips();
 }
 
@@ -1345,9 +1418,10 @@ function renderTagExcludeChips() {
 }
 
 async function saveTagExcludes(next) {
+    const site = tagExcludeSiteId();
     const r = await fetch("/api/tag-excludes", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ site: tagExcludeSiteId(), tags: next })
+        body: JSON.stringify({ site: site, tags: next })
     });
     const d = await r.json();
     if (!r.ok) {
@@ -1355,6 +1429,8 @@ async function saveTagExcludes(next) {
         return false;
     }
     tagExcludeTags = d.tags || [];
+    siteTagExcludes[site] = tagExcludeTags.slice();
+    stripExcludedChips(site, tagExcludeTags);
     renderTagExcludeChips();
     return true;
 }
@@ -1428,7 +1504,7 @@ function addEshuushuuTag() {
     }
     vals.forEach(function(val) {
         if (!eshuushuuChips.tags.includes(val)) {
-            eshuushuuChips.tags.push(val);
+            replaceTagToken(eshuushuuChips.tags, val).forEach(function(t) { eshuushuuChips.subTags.delete(t); });
             if (val === raw) eshuushuuChips.subTags.add(val);
             added = true;
         }
@@ -1469,7 +1545,7 @@ function addZerochanTagName(name, viaSubtag) {
     // ponytail: zerochan tags are proper nouns ("RezDen") — never lowercase
     let val = (name || "").trim();
     if (val && !currentZerochanTags.includes(val)) {
-        currentZerochanTags.push(val);
+        replaceTagToken(currentZerochanTags, val).forEach(function(t) { zerochanSubTags.delete(t); });
         if (viaSubtag) zerochanSubTags.add(val);
         renderZerochanTags();
     }
@@ -1483,8 +1559,9 @@ function addZerochanTag() {
     input.focus();
 }
 function removeZerochanTag(tag) {
-    currentZerochanTags = currentZerochanTags.filter(function(t) { return t !== tag; });
-    zerochanSubTags.delete(tag);
+    currentZerochanTags = withoutTagToken(currentZerochanTags, tag);
+    const key = tagKey(tag);
+    zerochanSubTags.forEach(function(t) { if (tagKey(t) === key) zerochanSubTags.delete(t); });
     renderZerochanTags();
 }
 const ZERO_STAR_ICON = '<svg width="1em" height="1em" viewBox="0 0 14 14" fill="none" style="vertical-align:-0.125em;"><path fill="currentColor" fill-rule="evenodd" d="M7 0.276855c-0.19843 0 -0.39272 0.056768 -0.55993 0.163603 -0.16508 0.10547 -0.29697 0.255388 -0.38055 0.432443L4.47196 4.07799c-0.00312 0.0063 -0.00611 0.01266 -0.00896 0.01909 -0.00071 0.00159 -0.00183 0.00298 -0.00324 0.00401 -0.00141 0.00103 -0.00306 0.00168 -0.0048 0.00187 -0.00609 0.00067 -0.01217 0.00146 -0.01823 0.00236l-3.495581 0.51786c-0.193204 0.01879 -0.377444 0.09129 -0.531759 0.20949 -0.159672 0.12231 -0.280454 0.28829 -0.3477142 0.47784 -0.06726016 0.18955 -0.0781133 0.39454 -0.0312442 0.59014 0.0466876 0.19483 0.1486564 0.37202 0.2936224 0.51027L2.88283 8.87974l-0.00004 0.00005 0.00587 0.00548c0.00365 0.00342 0.0064 0.00769 0.00798 0.01244 0.00158 0.00474 0.00195 0.00981 0.00107 0.01473l-0.00056 0.00327 -0.60974 3.56839 -0.00015 0.0009c-0.0335 0.1934 -0.01214 0.3923 0.06167 0.5741 0.07391 0.1822 0.19747 0.3399 0.3566 0.4553 0.15914 0.1153 0.34746 0.1837 0.54354 0.1973 0.19569 0.0136 0.39127 -0.0279 0.56457 -0.1197l0.00006 -0.0001 0.00099 -0.0005 3.14948 -1.6645c0.01129 -0.0049 0.0235 -0.0075 0.03585 -0.0075s0.02455 0.0026 0.03585 0.0075l3.14943 1.6645 0.0006 0.0003c0.1734 0.0921 0.3692 0.1337 0.565 0.12 0.1961 -0.0136 0.3844 -0.082 0.5436 -0.1973 0.1591 -0.1154 0.2827 -0.2731 0.3566 -0.4553 0.0738 -0.1818 0.0951 -0.3806 0.0617 -0.5739l-0.0002 -0.0011 -0.6097 -3.5684 -0.0006 -0.00326c-0.0009 -0.00492 -0.0005 -0.00999 0.0011 -0.01473 0.0015 -0.00474 0.0043 -0.00902 0.0079 -0.01244l0.0001 0.00005 0.0058 -0.00558 2.5588 -2.46885c0.1449 -0.13825 0.2469 -0.31542 0.2936 -0.51024 0.0468 -0.1956 0.036 -0.40059 -0.0313 -0.59014 -0.0672 -0.18955 -0.188 -0.35553 -0.3477 -0.47784 -0.1543 -0.1182 -0.3385 -0.1907 -0.5317 -0.20949l-3.49562 -0.51786c-0.00606 -0.0009 -0.01214 -0.00169 -0.01823 -0.00236 -0.00174 -0.00019 -0.0034 -0.00084 -0.00481 -0.00187 -0.00141 -0.00103 -0.00252 -0.00242 -0.00323 -0.00401 -0.00285 -0.00643 -0.00584 -0.01279 -0.00896 -0.01909L7.94048 0.872887C7.8569 0.695838 7.72501 0.545925 7.55994 0.440458 7.39272 0.333623 7.19843 0.276855 7 0.276855Z"/></svg>';
@@ -1517,7 +1594,8 @@ async function showZeroSubtags(dropdown, input) {
     }
     // ponytail: user kept typing while we fetched — normal suggest owns the box now
     if (input.value.trim() !== "") return;
-    const items = (zeroSubtagCache[key] || []).filter(s => s && s.name && !currentZerochanTags.includes(s.name));
+    await siteTagExcludesReady;
+    const items = (zeroSubtagCache[key] || []).filter(s => s && s.name && !currentZerochanTags.includes(s.name) && !tagIsPermanentlyExcluded("zero", s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
     items.forEach((s) => {
@@ -1582,14 +1660,17 @@ function initAutosuggest(cfg) {
                     let data = await resp.json();
                     if (input.dataset.suggestSeq !== mySeq) return;
                     if (cfg.skipIfEmptyInput && input.value.trim() === "") return;
+                    if (cfg.excludeSite) await siteTagExcludesReady;
                     if (data && data.length > 0) {
                         activeIndex = -1;
                         dropdown.innerHTML = "";
+                        let excludeSite = typeof cfg.excludeSite === "function" ? cfg.excludeSite() : cfg.excludeSite;
                         data.forEach((item) => {
                             let name = cfg.itemName
                                 ? cfg.itemName(item)
                                 : (typeof item === "string" ? item : (item.tag || item.value || ""));
                             if (!name) return;
+                            if (excludeSite && tagIsPermanentlyExcluded(excludeSite, name)) return;
                             let finalTag = isNegative ? '-' + name : name;
                             let div = document.createElement("div");
                             div.className = "autosuggest-item";
@@ -1665,6 +1746,7 @@ function pickAddTag(addFn) {
 
 initAutosuggest({
     inputId: "rule34TagInput", dropdownId: "rule34Autosuggest", endpoint: "rule34",
+    excludeSite: "rule34",
     enter: () => addRule34Tag(),
     pick: function(finalTag, input, dropdown) {
         input.value = finalTag;
@@ -1682,7 +1764,7 @@ let animeDlSubTags = new Set();
 function addAnimeDlTagName(name, viaSubtag) {
     let val = (name || "").trim();
     if (val && !currentAnimeDlTags.includes(val)) {
-        currentAnimeDlTags.push(val);
+        replaceTagToken(currentAnimeDlTags, val).forEach(function(t) { animeDlSubTags.delete(t); });
         if (viaSubtag) animeDlSubTags.add(val);
         renderAnimeDlTags();
     }
@@ -1696,8 +1778,9 @@ function addAnimeDlTag() {
     input.focus();
 }
 function removeAnimeDlTag(tag) {
-    currentAnimeDlTags = currentAnimeDlTags.filter(function(t) { return t !== tag; });
-    animeDlSubTags.delete(tag);
+    currentAnimeDlTags = withoutTagToken(currentAnimeDlTags, tag);
+    const key = tagKey(tag);
+    animeDlSubTags.forEach(function(t) { if (tagKey(t) === key) animeDlSubTags.delete(t); });
     renderAnimeDlTags();
 }
 function renderAnimeDlTags() {
@@ -1726,7 +1809,8 @@ async function showAnimeDlSubtags(dropdown, input) {
         } catch(e) { animeDlSubtagCache[key] = []; }
     }
     if (input.value.trim() !== "") return;
-    const items = (animeDlSubtagCache[key] || []).filter(s => s && s.name && !currentAnimeDlTags.includes(s.name));
+    await siteTagExcludesReady;
+    const items = (animeDlSubtagCache[key] || []).filter(s => s && s.name && !currentAnimeDlTags.includes(s.name) && !tagIsPermanentlyExcluded("anime_dl", s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
     items.forEach((s) => {
@@ -1753,7 +1837,7 @@ function addDanTagName(name, viaSubtag) {
     let added = false;
     chipsFromTyped(name).forEach(function(val) {
         if (!currentDanTags.includes(val)) {
-            currentDanTags.push(val);
+            replaceTagToken(currentDanTags, val).forEach(function(t) { danSubTags.delete(t); });
             if (viaSubtag) danSubTags.add(val);
             added = true;
         }
@@ -1769,8 +1853,9 @@ function addDanTag() {
     input.focus();
 }
 function removeDanTag(tag) {
-    currentDanTags = currentDanTags.filter(function(t) { return t !== tag; });
-    danSubTags.delete(tag);
+    currentDanTags = withoutTagToken(currentDanTags, tag);
+    const key = tagKey(tag);
+    danSubTags.forEach(function(t) { if (tagKey(t) === key) danSubTags.delete(t); });
     renderDanTags();
 }
 function renderDanTags() {
@@ -1799,7 +1884,8 @@ async function showDanSubtags(dropdown, input) {
         } catch(e) { danSubtagCache[key] = []; }
     }
     if (input.value.trim() !== "") return;
-    const items = (danSubtagCache[key] || []).filter(s => s && (s.tag || s.name) && !currentDanTags.includes(s.tag || s.name));
+    await siteTagExcludesReady;
+    const items = (danSubtagCache[key] || []).filter(s => s && (s.tag || s.name) && !currentDanTags.includes(s.tag || s.name) && !tagIsPermanentlyExcluded("dan", s.tag || s.name));
     dropdown.innerHTML = "";
     if (!items.length) { dropdown.style.display = "none"; return; }
     items.forEach((s) => {
@@ -1824,7 +1910,7 @@ async function showDanSubtags(dropdown, input) {
 // exist nowhere — so the whole suggest never ran; these are the real ids)
 initAutosuggest({
     inputId: "zeroTag", dropdownId: "zeroAutosuggest", endpoint: "zerochan",
-    skipIfEmptyInput: true, showSubtags: showZeroSubtags,
+    skipIfEmptyInput: true, showSubtags: showZeroSubtags, excludeSite: "zero",
     enter: () => addZerochanTag(),
     pick: pickAddTag(addZerochanTagName)
 });
@@ -1832,7 +1918,7 @@ initAutosuggest({
 // AnimeDL: same pattern, joined with '&&', child tags standalone
 initAutosuggest({
     inputId: "animeDlTag", dropdownId: "animeDlAutosuggest", endpoint: "anime_dl",
-    skipIfEmptyInput: true, showSubtags: showAnimeDlSubtags,
+    skipIfEmptyInput: true, showSubtags: showAnimeDlSubtags, excludeSite: "anime_dl",
     enter: () => addAnimeDlTag(),
     pick: pickAddTag(addAnimeDlTagName)
 });
@@ -1840,7 +1926,7 @@ initAutosuggest({
 // Danbooru: same pattern, joined with ' ', related tags as subs
 initAutosuggest({
     inputId: "danTag", dropdownId: "danAutosuggest", endpoint: "dan",
-    skipIfEmptyInput: true, showSubtags: showDanSubtags,
+    skipIfEmptyInput: true, showSubtags: showDanSubtags, excludeSite: "dan",
     enter: () => addDanTag(),
     pick: pickAddTag(addDanTagName)
 });
@@ -1949,7 +2035,7 @@ function setSelectValue(sel, value) {
     sel.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn, enterFn) {
+function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn, enterFn, excludeSite) {
     let input = document.getElementById(inputId);
     let dropdown = document.getElementById(dropdownId);
     if (!input || !dropdown) return;
@@ -1986,6 +2072,13 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn, enterFn) 
                 });
                 let data = await resp.json();
                 if (String(input.dataset.suggestSeq || "0") !== String(mySeq)) return;
+                if (excludeSite) {
+                    await siteTagExcludesReady;
+                    let site = typeof excludeSite === "function" ? excludeSite() : excludeSite;
+                    data = (data || []).filter(function(item) {
+                        return !site || !tagIsPermanentlyExcluded(site, item);
+                    });
+                }
                 if (data && data.length > 0) {
                     activeIndex = -1;
                     dropdown.innerHTML = "";
@@ -2096,16 +2189,16 @@ function chipsFromTyped(str) {
 
 document.addEventListener("DOMContentLoaded", function() {
     enhanceAllSelects();
-    setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay);
-    setupAutosuggest("gelbooruTag", "gelbooruAutosuggest", "/api/tags/gelbooru", cleanTagDisplay);
-    setupAutosuggest("watcherTag", "watcherAutosuggest", function() { const s = WATCHER_SUGGEST[watcherSourceId()]; return s ? "/api/tags/" + s : ""; }, cleanTagDisplay);
+    setupAutosuggest("nekosiaTag", "nekosiaAutosuggest", "/api/tags/nekosia", cleanTagDisplay, null, "nekosia");
+    setupAutosuggest("gelbooruTag", "gelbooruAutosuggest", "/api/tags/gelbooru", cleanTagDisplay, null, "gelbooru");
+    setupAutosuggest("watcherTag", "watcherAutosuggest", function() { const s = WATCHER_SUGGEST[watcherSourceId()]; return s ? "/api/tags/" + s : ""; }, cleanTagDisplay, null, function() { const s = WATCHER_SUGGEST[watcherSourceId()]; return s === "zerochan" ? "zero" : s; });
     syncWatcherRatingBox();
-    setupAutosuggest("konaTag", "konaAutosuggest", "/api/tags/kona", cleanTagDisplay);
-    setupAutosuggest("safeTag", "safeAutosuggest", "/api/tags/safe", cleanTagDisplay);
-    setupAutosuggest("sankakuTag", "sankakuAutosuggest", "/api/tags/sankaku", cleanTagDisplay);
-    setupAutosuggest("yandeTag", "yandeAutosuggest", "/api/tags/yande", cleanTagDisplay);
-    setupAutosuggest("gsbooruTag", "gsbooruAutosuggest", "/api/tags/gsbooru", cleanTagDisplay);
-    setupAutosuggest("tagExcludeInput", "tagExcludeAutosuggest", function() { return "/api/tags/" + (TAG_EXCLUDE_SUGGEST[tagExcludeSiteId()] || tagExcludeSiteId()); }, cleanTagDisplay, addTagExclude);
+    setupAutosuggest("konaTag", "konaAutosuggest", "/api/tags/kona", cleanTagDisplay, null, "kona");
+    setupAutosuggest("safeTag", "safeAutosuggest", "/api/tags/safe", cleanTagDisplay, null, "safe");
+    setupAutosuggest("sankakuTag", "sankakuAutosuggest", "/api/tags/sankaku", cleanTagDisplay, null, "sankaku");
+    setupAutosuggest("yandeTag", "yandeAutosuggest", "/api/tags/yande", cleanTagDisplay, null, "yande");
+    setupAutosuggest("gsbooruTag", "gsbooruAutosuggest", "/api/tags/gsbooru", cleanTagDisplay, null, "gsbooru");
+    setupAutosuggest("tagExcludeInput", "tagExcludeAutosuggest", function() { return "/api/tags/" + (TAG_EXCLUDE_SUGGEST[tagExcludeSiteId()] || tagExcludeSiteId()); }, cleanTagDisplay, addTagExclude, tagExcludeSiteId);
     loadTagExcludes();
 
 

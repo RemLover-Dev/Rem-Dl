@@ -164,8 +164,8 @@ def _classify(tokens, ctx_site):
             # a second site name on the line ('gel dan rem') is noise
             warns.append(f"token '{st}' looks like a site name but the site placement is unclear")
         rt = _RATING_TOKEN.match(st.lower())
-        if rt and (sites and sites[0] or ctx_site) in RATING_SITES:
-            host = sites[0] if sites else ctx_site
+        host = sites[0] if sites else ctx_site
+        if rt and host is not None and host in RATING_SITES:
             code = rt.group(1).lower()
             if code not in ALLOWED_RATINGS[host]:
                 warns.append(f"rating '{code}' is not supported by {host}")

@@ -68,7 +68,7 @@ class GelbooruWorker(BaseWorker):
             if api_key and user_id:
                 params["api_key"] = api_key
                 params["user_id"] = user_id
-            async with self.session.get("https://gelbooru.com/index.php", params=params) as resp:
+            async with self._session.get("https://gelbooru.com/index.php", params=params) as resp:
                 if resp.status != 200:
                     return False
                 data = await resp.json()
@@ -109,7 +109,7 @@ class GelbooruWorker(BaseWorker):
                     params["api_key"] = api_key
                     params["user_id"] = user_id
 
-                async with self.session.get("https://gelbooru.com/index.php", params=params) as resp:
+                async with self._session.get("https://gelbooru.com/index.php", params=params) as resp:
                     if resp.status == 401:
                         self.log("ERROR 401: Unauthorized! Enter API Key in Options.")
                         break

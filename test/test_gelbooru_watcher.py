@@ -70,6 +70,7 @@ def _make(tags=None, **kw):
     data.update(kw)
     w, err = watchers.create(data)
     assert err is None, err
+    assert w is not None
     return w
 
 
@@ -87,15 +88,19 @@ def _check(pages, w, calls=None):
 
 def test_create_validation(store):
     w, err = watchers.create({"source": "nope", "tags": ["a"]})
+    assert err is not None
     assert w is None and "unsupported" in err
     w, err = watchers.create({"source": "gelbooru", "tags": []})
     assert w is None
     w, err = watchers.create({"source": "gelbooru", "tags": ["a"],
                               "ratings": ["rating:x"]})
+    assert err is not None
     assert w is None and "rating" in err
     w, err = watchers.create({"source": "gelbooru", "tags": ["a"],
                               "interval_minutes": 1})
-    assert err is None and w["interval_minutes"] == 5  # clamped to min
+    assert err is None
+    assert w is not None
+    assert w["interval_minutes"] == 5  # clamped to min
 
 
 def test_update_config_resets_toggle_preserves(store):
@@ -107,12 +112,14 @@ def test_update_config_resets_toggle_preserves(store):
     # config change (new result set) -> fresh baseline, no stale checkpoint
     w2, err = watchers.update(w["watcher_id"], {"tags": ["landscape"]})
     assert err is None
+    assert w2 is not None
     assert w2["initialized"] is False and w2["last_seen_post_id"] is None
     assert w2["scan_pid"] == 0
 
     # enable toggle keeps the checkpoint
     w2, err = watchers.update(w["watcher_id"], {"enabled": False})
     assert err is None
+    assert w2 is not None
     assert w2["initialized"] is False and w2["enabled"] is False
 
     _, err = watchers.update("w_missing", {"enabled": True})

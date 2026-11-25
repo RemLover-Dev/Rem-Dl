@@ -44,7 +44,8 @@ def test_fetch_persists_verified_types(tmp_path, monkeypatch):
         def get(self, *a, **k):
             return _Resp()
 
-    w.session = _Session()
+    sess = _Session()
+    setattr(w, "session", sess)
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
     assert w.tag_cache["mika_pikazo"] == "artist"
 
@@ -89,10 +90,11 @@ def test_failed_fetch_is_retried(tmp_path, monkeypatch):
                 raise RuntimeError("flaky network")
             return _Resp()
 
-    w.session = _Session()
+    sess = _Session()
+    setattr(w, "session", sess)
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
-    assert w.session.calls == 3  # two failures, third attempt landed
+    assert sess.calls == 3  # two failures, third attempt landed
     assert w.tag_cache["mika_pikazo"] == "artist"  # verified → cached
 
 
@@ -119,8 +121,9 @@ def test_gives_up_after_three_attempts(tmp_path, monkeypatch):
             self.calls += 1
             return _Resp()
 
-    w.session = _Session()
+    sess = _Session()
+    setattr(w, "session", sess)
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
-    assert w.session.calls == 3
+    assert sess.calls == 3
     assert w.tag_cache == {}  # failure never cached — next run retries

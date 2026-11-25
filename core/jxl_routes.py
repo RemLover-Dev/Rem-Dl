@@ -62,7 +62,8 @@ def browser_png(path, cache, difference_with=None):
     return target
 
 
-def register(app, master, folder_picker, image_picker, changed, cache, replaced=None):
+def register(app, master, folder_picker, image_picker, changed, cache, replaced=None,
+             local_only=None):
     service = JxlService(master, changed, replaced)
     app.extensions['rems_jxl'] = service
 
@@ -88,7 +89,9 @@ def register(app, master, folder_picker, image_picker, changed, cache, replaced=
 
     @app.route('/api/jxl/browse', methods=['POST'])
     def jxl_browse():
-        if request.remote_addr not in ('127.0.0.1', '::1'):
+        is_local = (local_only() if local_only is not None
+                    else request.remote_addr in ('127.0.0.1', '::1'))
+        if not is_local:
             return jsonify(error='The file picker runs on the server machine — paste the path instead'), 501
         data = request.get_json(silent=True) or {}
         if not isinstance(data, dict) or data.get('kind') not in ('file', 'folder'):

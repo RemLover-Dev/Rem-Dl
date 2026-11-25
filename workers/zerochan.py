@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.parse
 from html.parser import HTMLParser
+from typing import Any
 
 import urllib3
 import xml.etree.ElementTree as ET
@@ -55,7 +56,7 @@ class _ZerochanSubtagParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
-        if tag == "section" and "carousel" in attrs_dict.get("class", "").split():
+        if tag == "section" and "carousel" in (attrs_dict.get("class") or "").split():
             self._in_carousel = True
             return
         if not self._in_carousel:
@@ -64,17 +65,17 @@ class _ZerochanSubtagParser(HTMLParser):
             self._current = {"name": "", "short": "", "url": "",
                              "count": 0, "thumb": "", "kind": ""}
         elif tag == "a" and self._current is not None and not self._current["url"]:
-            href = attrs_dict.get("href", "")
+            href = attrs_dict.get("href") or ""
             if href.startswith("/"):
                 self._current["url"] = "https://www.zerochan.net" + href
                 self._current["name"] = urllib.parse.unquote_plus(
                     href.rsplit("/", 1)[-1])
-            title = attrs_dict.get("title", "")
+            title = attrs_dict.get("title") or ""
             m = re.search(r"(\d+)", title)
             if m:
                 self._current["count"] = int(m.group(1))
         elif tag == "div" and self._current is not None:
-            if "thumb" in attrs_dict.get("class", "").split():
+            if "thumb" in (attrs_dict.get("class") or "").split():
                 self._current["thumb"] = attrs_dict.get("data-src", "")
         elif tag == "p" and self._current is not None:
             self._current["kind"] = attrs_dict.get("class", "")
@@ -142,7 +143,7 @@ class _ZerochanTagParser(HTMLParser):
             return
 
         if self._in_tag_list and tag == "li":
-            classes = attrs_dict.get("class", "").split()
+            classes = (attrs_dict.get("class") or "").split()
             data_tag = attrs_dict.get("data-tag", "")
 
             if data_tag and classes:
@@ -293,7 +294,7 @@ class ZerochanWorker(BaseDownloader):
         self.curl_session = pace_session(s)
         return self.curl_session
 
-    async def _create_session(self):
+    async def _create_session(self) -> Any:
         """Override: create curl_cffi session instead of aiohttp."""
         self._ensure_curl_session()
         if not getattr(self, "proxy", None):
@@ -397,16 +398,18 @@ class ZerochanWorker(BaseDownloader):
         from it. Returns (posts, engine_ok); engine_ok False means
         gallery-dl itself failed and the caller must switch engines.
         """
-        if getattr(self, "_gdl_listing", None) is None:
+        listing = getattr(self, "_gdl_listing", None)
+        if listing is None:
             # always list the full cap: already-downloaded posts are filtered
             # out below, so a smaller listing would starve a small amount
             posts, engine_ok = self._gallery_dl_list(
                 tag, getattr(self, "_gdl_limit", 200))
             if not engine_ok:
                 return [], False
-            self._gdl_listing = posts
+            listing = posts
+            self._gdl_listing = listing
         start = (page - 1) * page_size
-        return self._gdl_listing[start:start + page_size], True
+        return listing[start:start + page_size], True
 
     def _gallery_dl_list(self, tag, limit):
         """Run gallery-dl once for `limit` posts of the tag."""
@@ -680,7 +683,7 @@ class ZerochanWorker(BaseDownloader):
                 pid = src.rsplit("/", 1)[-1]
                 if not pid.isdigit():
                     continue
-                post = {"id": int(pid)}
+                post: dict[str, object] = {"id": int(pid)}
                 content = item.find(media + "content")
                 if content is not None:
                     for key in ("width", "height"):
@@ -845,7 +848,8 @@ class ZerochanWorker(BaseDownloader):
     # --- queue (overrides aiohttp HEAD size lookup) ---
     async def enqueue_download(self, url, filepath, filename, tags_list, artists=None,
                                characters=None, copyrights=None, metadata_tags=None,
-                               outfits=None, source_md5=None):
+                               outfits=None, groups=None, hair=None, eyes=None,
+                               rating=None, source_md5=None):
         if artists is None:
             artists = []
         if outfits is None:
@@ -870,9 +874,13 @@ class ZerochanWorker(BaseDownloader):
         # and a dropped item must not stay in queued_items forever
         item = (url, filepath, filename, tags_list, artists, file_size,
                 characters, copyrights, metadata_tags, outfits)
+        queue = self.download_queue
+        if queue is None:
+            self.queued_items.discard(filename)
+            return False
         while not self.stop_event.is_set():
             try:
-                await asyncio.wait_for(self.download_queue.put(item), 0.25)
+                await asyncio.wait_for(queue.put(item), 0.25)
                 self.enqueued_count += 1
                 return True
             except asyncio.TimeoutError:
@@ -883,7 +891,8 @@ class ZerochanWorker(BaseDownloader):
     # --- downloader (overrides aiohttp streaming) ---
     async def _async_download_file(self, url, filepath, filename, tags_list, artists,
                                    file_size=0, characters=None, copyrights=None,
-                                   metadata_tags=None, outfits=None):
+                                   metadata_tags=None, outfits=None, groups=None,
+                                   hair=None, eyes=None, rating=None):
         if artists is None:
             artists = []
         if outfits is None:

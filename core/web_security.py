@@ -50,8 +50,11 @@ def normalize_base_path(value):
 
 
 class AccessGuard:
-    def __init__(self, application, token=None, hosts=None):
+    def __init__(self, application, token=None, hosts=None, headless=None):
         self.application = application
+        if headless is None:
+            headless = os.environ.get('REMS_HEADLESS', '').lower() in ('1', 'true', 'yes')
+        self.headless = headless
         configured_token = token or os.environ.get('REMS_ACCESS_TOKEN')
         self.token_generated = not bool(configured_token)
         self.token = configured_token or secrets.token_urlsafe(32)
@@ -65,7 +68,7 @@ class AccessGuard:
         self._auth_last = {}
         # A different name per process/port avoids collisions between app instances.
         self.cookie_name = 'rems_' + secrets.token_hex(8)
-        self.hosts = set(hosts or ('localhost', '127.0.0.1', '::1'))
+        self.hosts: set[str] = set(hosts or ('localhost', '127.0.0.1', '::1'))
         self.hosts.update(h.strip().lower() for h in os.environ.get('REMS_ALLOWED_HOSTS', '').split(',') if h.strip())
         # Hostname-only forms of every entry, so a config value matches a Host
         # header with or without its port (and vice versa).
@@ -191,11 +194,11 @@ class AccessGuard:
         if authorization.startswith('Bearer '):
             authenticated = authenticated or self._valid(authorization[7:], self.token)
         if not authenticated:
-            # The app is a local desktop tool: anything connecting from this
-            # machine (127.0.0.1/::1, socket-verified, not spoofable) skips the
-            # token so the user never signs in. Remote clients still need it.
-            # Host/Origin/cross-site checks above still apply to loopback.
-            if (req.remote_addr or '') in ('127.0.0.1', '::1'):
+            # Desktop only: a loopback connection is the user's own machine, so
+            # skip the token. Headless mode cannot use this test — a same-host
+            # reverse proxy (and every local account) also arrives from
+            # 127.0.0.1, which would disable auth on a public deployment.
+            if not self.headless and (req.remote_addr or '') in ('127.0.0.1', '::1'):
                 authenticated = True
         if not authenticated:
             if req.path == '/' and req.method == 'GET':

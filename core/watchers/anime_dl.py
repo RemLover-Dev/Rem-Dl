@@ -21,7 +21,7 @@ def _cf_get(url, **kw):
     st = get_settings()
     s = curl_requests.Session(impersonate="chrome131")
     if st.get("use_proxy") and st.get("proxy_url"):
-        s.proxies = {"http": st["proxy_url"], "https": st["proxy_url"]}
+        setattr(s, "proxies", {"http": st.get("proxy_url"), "https": st.get("proxy_url")})
     s.cookies.set("time_zone", "UTC", domain=".anime-pictures.net")
     s.cookies.set("sitelang", "en", domain=".anime-pictures.net")
     kw.setdefault("timeout", 30)

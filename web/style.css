@@ -788,6 +788,7 @@ select option:hover, select option:checked { background: var(--title-color); col
     animation: toastSlideIn 0.35s ease forwards;
 }
 .toast-item.fade-out { animation: toastSlideOut 0.3s ease forwards; }
+.toast-dismiss { margin-left: auto; }
 .toast-item.warn { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 12px rgba(243, 156, 18, 0.25), 0 0 0 1px rgba(243, 156, 18, 0.7); }
 @keyframes toastSlideIn { 0% { transform: translateX(120%); opacity: 0; } 100% { transform: translateX(0); opacity: 1; } }
 @keyframes toastSlideOut { 0% { transform: translateX(0); opacity: 1; } 100% { transform: translateX(120%); opacity: 0; } }

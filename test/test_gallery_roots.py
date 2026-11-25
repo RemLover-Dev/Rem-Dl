@@ -234,11 +234,26 @@ def test_same_basename_inside_master_uses_distinct_path_ids(client, roots_env, m
     assert len(scanned["images"]) == 3
 
 
+def test_auto_cull_trusts_walk_set_without_statting(monkeypatch):
+    gallery = {"images": [{"id": "a", "filename": "a.jpg", "filepath": "A/a.jpg"}]}
+    calls = []
+    monkeypatch.setattr(Rems_Dl.os.path, "isfile", lambda p: calls.append(p) or False)
+    assert Rems_Dl._prune_dead_gallery_entries(gallery, {"A/a.jpg"}) == []
+    assert calls == []
+
+
+def test_gallery_roots_reject_home_and_its_ancestors(client):
+    home = os.path.realpath(os.path.expanduser("~"))
+    for path in (home, os.path.dirname(home) or os.sep, os.sep):
+        r = client.post("/api/gallery/roots", json={"path": path}, headers=H)
+        assert r.status_code == 400, path
+
+
 def test_filepath_cache_resolves_each_same_named_row_by_path(client, roots_env):
     Rems_Dl, master, _hdd_root, _roots = roots_env
     first = "Danbooru/tag-a/same.jpg"
     second = "Pixiv/tag-b/same.jpg"
-    fp_cache = {"__by_name__": {"same.jpg": [first, second]}}
+    fp_cache: dict[str, object] = {"__by_name__": {"same.jpg": [first, second]}}
     fp_cache["__path__:" + Rems_Dl.shared.gallery_path_key(first, master_root=str(master))] = first
     fp_cache["__path__:" + Rems_Dl.shared.gallery_path_key(second, master_root=str(master))] = second
     assert Rems_Dl._filepath_cache_lookup(fp_cache, {"filename": "same.jpg", "filepath": first}) == first

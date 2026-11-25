@@ -97,7 +97,7 @@ class Rule34Worker(BaseWorker):
 
         if api_key and user_id:
             client.api_key = api_key
-            client.user_id = user_id
+            setattr(client, "user_id", user_id)
             self.log("API credentials loaded from .env")
         else:
             self.log("No API credentials found. Running in anonymous mode.")

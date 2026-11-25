@@ -39,6 +39,7 @@ class BaseWorker(BaseDownloader, ABC):
 
     def __init__(self, name, site_folder, amount, net_config):
         super().__init__(name, site_folder, amount, net_config)
+        self.tag_cache: dict[str, str | int] = {}
 
     @abstractmethod
     async def scraper_task(self):

@@ -1,6 +1,7 @@
 """Viewer display decode: thread budget + native-JXL byte mapping."""
 import io
 import os
+from typing import Any, cast
 
 import pytest
 
@@ -28,11 +29,12 @@ def test_native_jxl_rgba_same_pixels_as_plugin():
         for x in range(33):
             im.putpixel((x, y), (x * 7 % 256, y * 15 % 256, 60,
                                  (x + y) % 256))
-    enc = pillow_jxl.Encoder(mode="RGBA", lossless=True, effort=3,
-                             use_original_profile=True, num_threads=1)
+    enc = cast(Any, pillow_jxl.Encoder)(mode="RGBA", lossless=True, effort=3,
+                                        use_original_profile=True, num_threads=1)
     payload = enc(im.tobytes(), im.width, im.height, jpeg_encode=False)
 
     ref = Image.open(io.BytesIO(payload)).convert("RGBA")
     got = Rems_Dl._jxl_display_image(payload, 4096)  # under the cap: no draft resize
+    assert got is not None
     assert got.mode == ref.mode and got.size == ref.size
     assert ImageChops.difference(ref, got).getbbox() is None

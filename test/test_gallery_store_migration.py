@@ -46,6 +46,15 @@ def _seed_history(path):
     return hist
 
 
+def test_deleting_tags_prunes_orphaned_terms(store):
+    s, entries, _ = store
+    s.replace_all(entries)
+    assert s.ids_matching_tags("1girl") == {"a"}
+    s.delete("a")
+    assert s.ids_matching_tags("1girl") == set()
+    assert s.ids_matching_tags("hug") == {"b"}
+
+
 @pytest.fixture
 def store(tmp_path):
     entries = _seed_gallery(tmp_path)

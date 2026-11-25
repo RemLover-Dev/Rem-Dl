@@ -86,11 +86,11 @@ def test_history_row_lands_before_metadata_and_gallery(monkeypatch, tmp_path):
     payload = b"jpgbytes" * 100
     dl = BaseDownloader("test_worker", "Test:Site", 1,
                         {"anti_ban_pause": 0, "download_retries": 1})
-    dl.log = lambda m: order.append("log:SUCCESS") if "[SUCCESS]" in m else None
-    dl.session = MockSession([
+    setattr(dl, "log", lambda m: order.append("log:SUCCESS") if "[SUCCESS]" in m else None)
+    setattr(dl, "session", MockSession([
         MockResponse(200, {"Content-Length": str(len(payload))},
                      MockContent([payload])),
-    ])
+    ]))
 
     async def _run():
         folder = os.path.join(dl.site_root, "Safe_Tag")
@@ -126,11 +126,11 @@ def test_publish_discarded_when_file_replaced_in_grace_window(monkeypatch, tmp_p
     payload = b"jpgbytes" * 100
     dl = BaseDownloader("test_worker", "Test:Site", 1,
                         {"anti_ban_pause": 0, "download_retries": 1})
-    dl.log = lambda m: order.append("log:SUCCESS") if "[SUCCESS]" in m else None
-    dl.session = MockSession([
+    setattr(dl, "log", lambda m: order.append("log:SUCCESS") if "[SUCCESS]" in m else None)
+    setattr(dl, "session", MockSession([
         MockResponse(200, {"Content-Length": str(len(payload))},
                      MockContent([payload])),
-    ])
+    ]))
 
     async def _run():
         folder = os.path.join(dl.site_root, "Safe_Tag")
@@ -174,11 +174,11 @@ def test_held_publish_waits_for_its_own_conversion(monkeypatch, tmp_path):
     payload = b"jpgbytes" * 100
     dl = BaseDownloader("test_worker", "Test:Site", 1,
                         {"anti_ban_pause": 0, "download_retries": 1})
-    dl.log = lambda m: order.append("log:" + (os.path.basename(m.split("|PATH| ")[1].split(" |TAGS|")[0]) if "|PATH|" in m else m)) if "[SUCCESS]" in m else None
-    dl.session = MockSession([
+    setattr(dl, "log", lambda m: order.append("log:" + (os.path.basename(m.split("|PATH| ")[1].split(" |TAGS|")[0]) if "|PATH|" in m else m)) if "[SUCCESS]" in m else None)
+    setattr(dl, "session", MockSession([
         MockResponse(200, {"Content-Length": str(len(payload))},
                      MockContent([payload])),
-    ])
+    ]))
 
     async def _download(fp, fname):
         folder = os.path.join(dl.site_root, "Safe_Tag")
@@ -191,7 +191,7 @@ def test_held_publish_waits_for_its_own_conversion(monkeypatch, tmp_path):
     fp_a = str(tmp_path / "a.jpg")
     Image.new("RGB", (4, 4)).save(fp_a)
     payload_write = b"jpgbytes" * 100
-    dl.session = MockSession([MockResponse(200, {"Content-Length": str(len(payload_write))}, MockContent([payload_write]))])
+    setattr(dl, "session", MockSession([MockResponse(200, {"Content-Length": str(len(payload_write))}, MockContent([payload_write]))]))
     assert asyncio.run(_download(fp_a, "a.jpg")) is True
     sh.mark_download_held(os.path.abspath(fp_a))
 
@@ -199,7 +199,7 @@ def test_held_publish_waits_for_its_own_conversion(monkeypatch, tmp_path):
     fp_b = str(tmp_path / "b.jpg")
     Image.new("RGB", (4, 4)).save(fp_b)
     payload_write = b"jpgbytes" * 100
-    dl.session = MockSession([MockResponse(200, {"Content-Length": str(len(payload_write))}, MockContent([payload_write]))])
+    setattr(dl, "session", MockSession([MockResponse(200, {"Content-Length": str(len(payload_write))}, MockContent([payload_write]))]))
     assert asyncio.run(_download(fp_b, "b.jpg")) is True
     sh.mark_download_held(os.path.abspath(fp_b))
     jxl_b = str(tmp_path / "b.jxl")

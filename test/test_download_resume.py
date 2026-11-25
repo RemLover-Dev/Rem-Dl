@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import os
+from typing import Any, cast
 
 import aiohttp
 
@@ -29,7 +30,7 @@ class MockResponse:
     def raise_for_status(self):
         if self.status >= 400:
             raise aiohttp.ClientResponseError(
-                request_info=None, history=(), status=self.status
+                request_info=cast(Any, None), history=(), status=self.status
             )
 
     async def __aenter__(self):
@@ -69,8 +70,8 @@ def test_truncated_download_resumes_with_range(monkeypatch, tmp_path):
         {"anti_ban_pause": 0, "download_retries": 3},
     )
     logs = []
-    dl.log = logs.append
-    dl.session = MockSession(
+    setattr(dl, "log", logs.append)
+    session = MockSession(
         [
             MockResponse(
                 200,
@@ -84,6 +85,7 @@ def test_truncated_download_resumes_with_range(monkeypatch, tmp_path):
             ),
         ]
     )
+    setattr(dl, "session", session)
 
     async def _run():
         folder = os.path.join(dl.site_root, "Safe_Tag")
@@ -101,9 +103,9 @@ def test_truncated_download_resumes_with_range(monkeypatch, tmp_path):
     ok = asyncio.run(_run())
 
     assert ok is True
-    assert len(dl.session.calls) == 2
-    assert "Range" not in dl.session.calls[0]
-    assert dl.session.calls[1].get("Range") == f"bytes={half}-"
+    assert len(session.calls) == 2
+    assert "Range" not in session.calls[0]
+    assert session.calls[1].get("Range") == f"bytes={half}-"
     filepath = os.path.join(dl.site_root, "Safe_Tag", filename)
     with open(filepath, "rb") as f:
         assert f.read() == full

@@ -203,7 +203,7 @@ class ExtensionManager:
         if ext_id not in self.active_plugins:
             return True
 
-        plugin = self.active_plugins.get(ext_id)
+        plugin = self.active_plugins[ext_id]
         try:
             if hasattr(plugin, "teardown"):
                 plugin.teardown()

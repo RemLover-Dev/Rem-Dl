@@ -359,9 +359,13 @@ def test_danbooru_filenames_are_post_ids_not_md5s():
     assert refetch._danbooru_id({"filename": "12038425.jpg"}) == "12038425"
     assert refetch._danbooru_id({"filename": f"{MD5}.png"}) is None
     assert refetch._danbooru_id({"filename": "dl.jpg"}) is None
-    _url, params, _kind = refetch._query("danbooru", MD5, post_id="12038425")
+    q = refetch._query("danbooru", MD5, post_id="12038425")
+    assert q is not None
+    _url, params, _kind = q
     assert params["tags"] == "id:12038425"
-    _url, params, _kind = refetch._query("danbooru", MD5)
+    q = refetch._query("danbooru", MD5)
+    assert q is not None
+    _url, params, _kind = q
     assert params["tags"] == f"md5:{MD5}"
 
 
@@ -523,7 +527,7 @@ def _resp(monkeypatch, content):
         def json():
             raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
-    _Resp.content = content
+    setattr(_Resp, "content", content)
 
     monkeypatch.setattr(cc_requests, "get", lambda url, **kw: _Resp())
     monkeypatch.delenv("USE_PROXY", raising=False)

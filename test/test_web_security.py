@@ -90,6 +90,22 @@ def test_auth_works_behind_tls_terminating_proxy():
     assert r.status_code == 403
 
 
+def test_loopback_bypass_is_desktop_only():
+    token = "T" * 40
+    guard = AccessGuard(_app, token=token, headless=False)
+    client = Client(guard, Response)
+    r = client.get("/api/private", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert r.status_code == 200
+
+    guard = AccessGuard(_app, token=token, headless=True)
+    client = Client(guard, Response)
+    r = client.get("/api/private", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert r.status_code == 401
+    r = client.get("/api/private", headers={"Authorization": f"Bearer {token}"},
+                   environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert r.status_code == 200
+
+
 def test_generated_token_is_marked_but_explicit_token_is_not(monkeypatch):
     monkeypatch.delenv("REMS_ACCESS_TOKEN", raising=False)
     generated = AccessGuard(_app)

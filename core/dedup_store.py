@@ -44,6 +44,7 @@ import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import cast
 
 from PIL import Image, ImageChops, ImageOps
 
@@ -158,6 +159,21 @@ PARALLEL_WINDOW = 4                 # signatures kept in flight per worker (boun
 COLOR_SIM_THRESHOLD = 0.80
 LOCAL_COLOR_SIM_THRESHOLD = 0.75
 PREFILTER_MARGIN = THRESHOLDS["phash"]
+
+# Chunked phash index: if at most PREFILTER_MARGIN bits differ, some chunk
+# differs by at most PREFILTER_MARGIN // 8 bits. With 8 chunks and margin 12,
+# at least one chunk differs by <= 1, so probing each chunk's 33 neighbours
+# finds every candidate without scanning the whole library.
+_PHASH_CHUNKS = 8
+_PHASH_BITS = HASH_SIZE * HASH_SIZE
+_PHASH_CHUNK_BITS = (_PHASH_BITS + _PHASH_CHUNKS - 1) // _PHASH_CHUNKS
+_PHASH_CHUNK_MASK = (1 << _PHASH_CHUNK_BITS) - 1
+assert PREFILTER_MARGIN < _PHASH_CHUNKS * 2, "phash chunk index needs margin < 16"
+
+
+def _phash_bucket_keys(value: int) -> list[tuple[int, int]]:
+    return [((value >> (i * _PHASH_CHUNK_BITS)) & _PHASH_CHUNK_MASK, i)
+            for i in range(_PHASH_CHUNKS)]
 
 
 # --- Pure-Python Perceptual Hash Implementation --------------------------
@@ -372,7 +388,8 @@ def _content_bbox(rgb: Image.Image):
     the border color, i.e. real padding / letterboxing.
     """
     w, h = rgb.size
-    corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+    corners = [cast(tuple[int, int, int], rgb.getpixel(p))
+               for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
     bg = corners[0]
     for c in corners[1:]:
         if max(abs(c[i] - bg[i]) for i in range(3)) > BORDER_TOL:
@@ -418,7 +435,7 @@ def _load_content(path: str) -> Image.Image:
             rgba = img.convert("RGBA")
         except Exception:
             rgba = img.convert("RGB").convert("RGBA")
-    if rgba.getchannel("A").getextrema()[0] < 255:
+    if cast(tuple[int, int], rgba.getchannel("A").getextrema())[0] < 255:
         rgba = Image.alpha_composite(Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba)
     rgb = rgba.convert("RGB")
     # two passes: e.g. black letterbox bars first, then the picture's own white margin
@@ -484,6 +501,7 @@ def compute_signature(path: str) -> Signature:
     rgb, cw, ch = _prepare(path)
 
     if _USE_EXTERNAL_IMAGEHASH:
+        import imagehash
         try:
             p = imagehash.phash(rgb, hash_size=HASH_SIZE)
             d = imagehash.dhash(rgb, hash_size=HASH_SIZE)
@@ -668,6 +686,10 @@ class DedupStore:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
         self._phash_index = self._load_phash_index()  # {id: int}
+        self._phash_buckets: dict[tuple[int, int], set[int]] = {}
+        for row_id, value in self._phash_index.items():
+            for key in _phash_bucket_keys(value):
+                self._phash_buckets.setdefault(key, set()).add(row_id)
         # writes since the last commit — see _maybe_commit_locked
         self._pending_writes = 0
         # in-flight source-md5 claims: {md5: filepath} + reverse, guarded by _lock
@@ -788,15 +810,34 @@ class DedupStore:
                 print(f"[DEDUP] {dropped} rows with unparseable phash skipped at startup")
             return index
 
+    def _index_put_locked(self, row_id: int, value: int):
+        self._index_pop_locked(row_id)
+        self._phash_index[row_id] = value
+        for key in _phash_bucket_keys(value):
+            self._phash_buckets.setdefault(key, set()).add(row_id)
+
+    def _index_pop_locked(self, row_id: int):
+        value = self._phash_index.pop(row_id, None)
+        if value is None:
+            return
+        for key in _phash_bucket_keys(value):
+            bucket = self._phash_buckets.get(key)
+            if bucket is not None:
+                bucket.discard(row_id)
+                if not bucket:
+                    self._phash_buckets.pop(key, None)
+
     def _candidate_ids(self, phash) -> list[int]:
         target = int(phash) if isinstance(phash, PureHash) else int(str(phash), 16)
-        out = []
+        out: set[int] = set()
         with self._lock:
-            # iterate the live dict — no list copy of ~1M pairs per image
-            for row_id, ph in self._phash_index.items():
-                if (target ^ ph).bit_count() <= PREFILTER_MARGIN:
-                    out.append(row_id)
-        return out
+            for i in range(_PHASH_CHUNKS):
+                base = (target >> (i * _PHASH_CHUNK_BITS)) & _PHASH_CHUNK_MASK
+                for value in (base, *(base ^ (1 << b) for b in range(_PHASH_CHUNK_BITS))):
+                    bucket = self._phash_buckets.get((value, i))
+                    if bucket:
+                        out.update(bucket)
+        return list(out)
 
     def _prune_ids(self, ids: list[int]):
         if not ids:
@@ -809,7 +850,7 @@ class DedupStore:
                     f"DELETE FROM source_hashes WHERE image_id IN ({placeholders})", ids)
                 self._conn.commit()
                 for i in ids:
-                    self._phash_index.pop(i, None)
+                    self._index_pop_locked(i)
             except Exception as e:
                 print(f"[DEDUP] Error pruning stale IDs: {e}")
 
@@ -860,7 +901,9 @@ class DedupStore:
                  sig.content_w, sig.content_h),
             )
             new_id = cur.lastrowid
-            self._phash_index[new_id] = int(data["phash"], 16)
+            if new_id is None:
+                raise RuntimeError("failed to insert image hash row")
+            self._index_put_locked(new_id, int(data["phash"], 16))
             if src:
                 self._add_source_hash_locked(new_id, site, src[1], src[0])
             for algo, value in extras.items():
@@ -868,7 +911,7 @@ class DedupStore:
             self._maybe_commit_locked()
         return new_id
 
-    def _add_source_hash_locked(self, image_id: int, site: str, digest: str,
+    def _add_source_hash_locked(self, image_id: int, site: str | None, digest: str,
                                 algo: str = "md5") -> bool:
         """Attach one (site, algo, digest) pair to an image row. Caller holds the lock."""
         try:
@@ -1085,7 +1128,7 @@ class DedupStore:
             return DedupResult(
                 is_duplicate=True, filepath=new_path, matched_path=old_path,
                 matched_site=match["site"], matched_post_id=match["post_id"])
-        self._phash_index[match["id"]] = int(data["phash"], 16)
+        self._index_put_locked(match["id"], int(data["phash"], 16))
         replaced_path = None
         replaced_stat = None
         if DELETE_REPLACED:
@@ -1211,7 +1254,7 @@ class DedupStore:
                              sig.content_w, sig.content_h, row["id"], fp),
                         )
                         if cur.rowcount:
-                            self._phash_index[row["id"]] = int(data["phash"], 16)
+                            self._index_put_locked(row["id"], int(data["phash"], 16))
                             done += 1
                             if done % 50 == 0:
                                 self._conn.commit()
@@ -1340,7 +1383,7 @@ class DedupStore:
                         f"DELETE FROM source_hashes WHERE image_id IN ({placeholders})", ids)
                     self._conn.commit()
                     for i in ids:
-                        self._phash_index.pop(i, None)
+                        self._index_pop_locked(i)
             except Exception as e:
                 # half a prune must never ride the next unrelated commit
                 self._conn.rollback()
@@ -1365,6 +1408,7 @@ class DedupStore:
             self._conn.execute("DELETE FROM source_hashes")
             self._conn.commit()
             self._phash_index = {}
+            self._phash_buckets = {}
 
     def close(self):
         with self._lock:

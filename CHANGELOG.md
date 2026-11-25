@@ -166,13 +166,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [4.2.0] - The Danbooru & Hydrus Sidecar Update - 2026-07-08
+## [4.2.0] - The Danbooru Update - 2026-07-08
 
 ### Added
 - **Danbooru Support** -- New worker, offline tag database (`dan_tag_names.json`), tag autocomplete endpoint, and Danbooru tab in the UI. Supports full tag search, rating filter (Safe/Sensitive/Questionable/NSFW), artist extraction, and video/image separation into subdirectories.
-- **Hydrus Sidecar Files** -- New `write_hydrus_sidecar()` function auto-generates `.filename.txt` sidecar files for every downloaded image, containing tags, artists (prefixed with `creator:`), and source site. Configurable via `WRITE_HYDRUS_SIDECAR` in `.env` or the web UI config.
 - **Gelbooru Danbooru-Style Rating System** -- Gelbooru rating dropdown now uses Danbooru short codes (`g`/`s`/`q`/`e`) with labels Safe/Sensitive/Questionable/NSFW and corresponding folder names.
-- **Nekos.best & Nekos.life Hydrus Support** -- Both workers now call `send_tags()` after each download, generating Hydrus sidecar files with the category as the tag.
+- **Nekos.best & Nekos.life Support** -- Both workers now call `send_tags()` after each download.
 - **Waifu.im Tag Database** -- New `tags.json` with all 20 tags from the waifu.im API, sorted alphabetically, so the dropdown always shows the full list without relying on live API calls.
 
 ### Changed

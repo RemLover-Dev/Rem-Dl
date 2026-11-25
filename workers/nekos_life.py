@@ -39,7 +39,7 @@ class NekosLifeWorker(BaseWorker):
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log("Scanning API...")
-                async with self.session.get(self.fetch_url) as resp:
+                async with self._session.get(self.fetch_url) as resp:
                     if resp.status in [403, 429]:
                         self.log(f"API BAN ({resp.status}). Change VPN node.")
                         break

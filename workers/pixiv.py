@@ -250,6 +250,7 @@ class PixivWorker(BaseDownloader):
         MAX_PAGES = 100
         no_new_pages = 0
         while (need == 0 or collected < need) and not self.stop_event.is_set() and page < MAX_PAGES:
+            data = None
             try:
                 # ponytail: 3 attempts — a transient API blip must not kill
                 # a whole 50-item run; auth ValueError stays fatal
@@ -383,7 +384,7 @@ class PixivWorker(BaseDownloader):
             rating_label = folder_component(RATING_CODES.get(x_restrict, "Unknown"), fallback="Unknown")
             # ugoira zips become .gif below — route them with the gif, not the zip
             rating_dir = os.path.join(self.tag_dir, rating_label,
-                                      "Gifs" if is_u else media_subdir(ext))
+                                      "Gifs" if is_u else media_subdir(str(ext or "")))
             safe_ensure_dir(rating_dir)
             filepath = os.path.join(rating_dir, filename)
 

@@ -21,7 +21,7 @@ def fetch(api_tag, pid):
     uid = cfg.get("rule34_user_id") or ""
     if key and uid.isdigit():
         client.api_key = key
-        client.user_id = int(uid)
+        setattr(client, "user_id", int(uid))
     results = client.search(api_tag, page_id=pid, limit=LIMIT) or []
     # rule34Py Post objects -> plain dicts for the generic engine;
     # 'change' (last-modified epoch) stands in for created_at

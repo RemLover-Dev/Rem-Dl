@@ -11,6 +11,7 @@ import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pillow_jxl
 from PIL import Image, ImageChops, ImageCms, ImageOps
@@ -86,16 +87,22 @@ def open_still(path, decode=True):
 def normalize(path):
     """Upright 8-bit sRGB pixels; metadata other than the sRGB profile is removed."""
     from core import jxl_highbit
-    image = ImageOps.exif_transpose(jxl_highbit.display_image(path) if jxl_highbit.is_highbit(path)
-                                    else open_still(path))
+    source_image = cast(Image.Image, jxl_highbit.display_image(path) if jxl_highbit.is_highbit(path)
+                        else open_still(path))
+    image = ImageOps.exif_transpose(source_image)
+    if image is None:
+        raise ValueError('Cannot apply EXIF orientation')
     profile = image.info.get('icc_profile')
     has_alpha = image.mode in ('RGBA', 'LA', 'PA') or 'transparency' in image.info
     alpha = image.convert('RGBA').getchannel('A') if has_alpha else None
     if profile:
         try:
             inp = image if image.mode in ('RGB', 'L', 'CMYK') else image.convert('RGB')
-            image = ImageCms.profileToProfile(inp, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
-                                             ImageCms.createProfile('sRGB'), outputMode='RGB')
+            converted = ImageCms.profileToProfile(inp, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
+                                                  ImageCms.createProfile('sRGB'), outputMode='RGB')
+            if converted is None:
+                raise ValueError('Cannot interpret this ICC profile safely; conversion was stopped')
+            image = converted
         except Exception as exc:
             raise ValueError('Cannot interpret this ICC profile safely; conversion was stopped') from exc
     elif image.mode not in ('L', 'LA', 'RGB', 'RGBA'):
@@ -186,8 +193,8 @@ def convert(source, output_directory, options=Options()):
         if image.format != 'JPEG':
             raise ValueError('Reversible JPEG mode requires an original .jpg/.jpeg file')
         raw = source.read_bytes()
-        encoder = pillow_jxl.Encoder(mode='RGB', lossless=True, effort=options.effort,
-                                     use_container=True, num_threads=options.threads)
+        encoder = cast(Any, pillow_jxl.Encoder)(mode='RGB', lossless=True, effort=options.effort,
+                                                use_container=True, num_threads=options.threads)
         payload = encoder(raw, image.width, image.height, jpeg_encode=True)
         reconstructed = pillow_jxl.Decoder(num_threads=options.threads)(payload)
         if not reconstructed[0] or reconstructed[2] != raw:

@@ -68,6 +68,7 @@ def _make(tags=None, **kw):
     data.update(kw)
     w, err = watchers.create(data)
     assert err is None, err
+    assert w is not None
     return w
 
 

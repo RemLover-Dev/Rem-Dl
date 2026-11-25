@@ -326,7 +326,7 @@ python Rems_Dl.py
   ```bash
   ssh -L 5000:127.0.0.1:5000 user@server
   ```
-  Then open `http://127.0.0.1:5000` locally. Closing browser tabs will **not** terminate the server.
+  Then open `http://127.0.0.1:5000` locally. Headless mode asks for the access token even on loopback — a same-host reverse proxy makes remote clients look local, so loopback alone cannot prove the request is yours. Closing browser tabs will **not** terminate the server.
 
   Direct network binding is opt-in and requires a 32+ character `REMS_ACCESS_TOKEN` plus an explicit `REMS_ALLOWED_HOSTS` allowlist. Only expose it behind a firewall/reverse proxy you control:
   ```bash

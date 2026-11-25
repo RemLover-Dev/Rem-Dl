@@ -36,14 +36,14 @@ class _Session:
 def _worker(tmp_path, monkeypatch, payload, category="neko", amount=1):
     monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
     w = NekosBestWorker(category, amount, NET_CONFIG)
-    w.session = _Session(payload)
+    setattr(w, "session", _Session(payload))
     calls = []
 
     async def fake_enqueue(url, filepath, filename, tags_list, artists=None, copyrights=None, **kw):
         calls.append((tags_list, artists, copyrights or []))
         return True
 
-    w.enqueue_download = fake_enqueue
+    setattr(w, "enqueue_download", fake_enqueue)
     return w, calls
 
 
@@ -83,14 +83,14 @@ def test_multi_category_round_robin(tmp_path, monkeypatch):
             urls.append(url)
             return _Resp({"results": [{"url": url.split("?")[0] + "/x.png", "artist_name": "A"}]})
 
-    w.session = _S()
+    setattr(w, "session", _S())
     calls = []
 
     async def fake_enqueue(url, filepath, filename, tags_list, artists=None, copyrights=None, **kw):
         calls.append((url, tags_list))
         return True
 
-    w.enqueue_download = fake_enqueue
+    setattr(w, "enqueue_download", fake_enqueue)
     asyncio.run(w.scraper_task())
     assert urls == ["https://nekos.best/api/v2/neko?amount=2",
                     "https://nekos.best/api/v2/hug?amount=1"], urls

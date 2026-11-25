@@ -229,19 +229,28 @@ def _api_json_500(e):
         return jsonify({"error": "internal server error"}), 500
     raise e
 
+# headless/server mode: no pywebview window, the UI is served over HTTP to
+# real browsers — the desktop-only gates below (UA check, tab-close shutdown,
+# loopback token bypass, native pickers) must not apply
+_HEADLESS = (
+    os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")
+    or any(arg in sys.argv for arg in ("--headless", "--server", "--no-window"))
+)
+
 from core.web_security import AccessGuard
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import safe_join
 
-access_guard = AccessGuard(app.wsgi_app)
-# Honor X-Forwarded-Proto/Host/Prefix from the reverse proxy before the access
-# guard runs, so host checks and the Secure cookie flag see the public scheme.
+access_guard = AccessGuard(app.wsgi_app, headless=_HEADLESS)
+# Honor X-Forwarded-For/Proto/Host/Prefix from the reverse proxy before the
+# access guard runs, so host checks, client IPs and the Secure cookie flag see
+# the real request. Without X-Forwarded-For every proxied client looks local.
 # OPT-IN: ProxyFix trusts client-supplied X-Forwarded-* headers, so on a plain
 # LAN binding (no proxy) any client could forge req.host past the host
 # allowlist. Set REMS_TRUST_PROXY=1 only when traffic really passes a proxy.
 # The guard itself is ALWAYS mounted — without it no route checks the token.
 if os.environ.get("REMS_TRUST_PROXY") == "1":
-    app.wsgi_app = ProxyFix(access_guard, x_proto=1, x_host=1, x_prefix=1)
+    app.wsgi_app = ProxyFix(access_guard, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 else:
     app.wsgi_app = access_guard
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
@@ -264,16 +273,6 @@ class _KeepAliveHandler(WSGIRequestHandler):
     # handshake each. HTTP/1.1 keep-alive lets the browser reuse its
     # 6 connections across all of them.
     protocol_version = "HTTP/1.1"
-
-# headless/server mode: no pywebview window, the UI is served over HTTP to
-# real browsers — the desktop-only gates below (UA check, tab-close shutdown)
-# must not apply
-_HEADLESS = (
-    os.environ.get("REMS_HEADLESS", "").lower() in ("1", "true", "yes")
-    or any(arg in sys.argv for arg in ("--headless", "--server", "--no-window"))
-)
-
-
 
 _BROWSER_FALLBACK = False
 
@@ -744,8 +743,10 @@ def _pick_folder_desktop(start: str):
 
 def _local_desktop_request():
     """Native pickers/revealers run on the SERVER's display — a remote
-    client must paste the path instead of hanging the server's desktop."""
-    return request.remote_addr in ("127.0.0.1", "::1")
+    client must paste the path instead of hanging the server's desktop.
+    Headless has no desktop, and a same-host reverse proxy makes every
+    remote request look local, so headless never counts as local."""
+    return not _HEADLESS and request.remote_addr in ("127.0.0.1", "::1")
 
 @app.route("/api/folder/browse", methods=["POST"])
 def browse_folder():
@@ -920,7 +921,8 @@ from core.jxl_routes import register as register_jxl_routes
 
 jxl_service = register_jxl_routes(app, lambda: shared.MASTER_FOLDER,
     _pick_folder_desktop, _pick_jxl_image, _jxl_outputs_changed,
-    os.path.join(DATABASE_DIR, 'jxl_display_cache'), replaced=_jxl_replace_index)
+    os.path.join(DATABASE_DIR, 'jxl_display_cache'), replaced=_jxl_replace_index,
+    local_only=_local_desktop_request)
 
 
 # --- Automatic download conversion (settings tab) --------------------------
@@ -2228,22 +2230,23 @@ def _build_filepath_cache(force=False):
         def _bg():
             global _fp_refreshing
             try:
-                _walk_filepaths()
-                _auto_cull_gallery()
+                cache = _walk_filepaths()
+                _auto_cull_gallery(cache.get("__paths__"))
             finally:
                 _fp_refreshing = False
         threading.Thread(target=_bg, daemon=True).start()
     return data                           # fresh or stale: never block the request
 
 
-def _auto_cull_gallery():
+def _auto_cull_gallery(known_paths=None):
     """Piggyback the TTL filepath refresh: prune gallery rows whose file
     disappeared outside the app (manual cleanup, external delete) so stale
-    cards melt out within one TTL instead of waiting for a manual rescan."""
+    cards melt out within one TTL instead of waiting for a manual rescan.
+    `known_paths` is the walk that just finished — present files need no stat."""
     try:
         with shared._GALLERY_LOCK:
             gallery = shared.load_gallery()
-            removed_names = _prune_dead_gallery_entries(gallery)
+            removed_names = _prune_dead_gallery_entries(gallery, known_paths)
             if removed_names:
                 shared.save_gallery(gallery)
     except Exception as e:
@@ -2976,6 +2979,13 @@ def gallery_roots_manage():
         p = os.path.realpath(os.path.expanduser(path))
         if not os.path.isdir(p):
             return jsonify(error="Folder does not exist"), 400
+        home = os.path.realpath(os.path.expanduser("~"))
+        home_parent = os.path.dirname(home)
+        if (p == home or p == os.path.dirname(p) or home.startswith(p + os.sep)
+                or (home_parent != os.path.dirname(home_parent)
+                    and p.startswith(home_parent + os.sep)
+                    and not p.startswith(home + os.sep))):
+            return jsonify(error="Choose a folder inside your home or on an external drive"), 400
         if p == master or master.startswith(p + os.sep) or p.startswith(master + os.sep):
             return jsonify(error="Folder overlaps the download folder"), 400
         if any(os.path.realpath(r) == p for r in saved):
@@ -4751,7 +4761,8 @@ def watchers_check_now():
 @app.route("/api/tag-excludes", methods=["GET"])
 def tag_excludes_list():
     return jsonify({"sites": list(tag_excludes.SITES),
-                    "tags": tag_excludes.get(request.args.get("site"))})
+                    "tags": tag_excludes.get(request.args.get("site")),
+                    "all": tag_excludes.all()})
 
 
 @app.route("/api/tag-excludes", methods=["POST"])
@@ -5240,15 +5251,23 @@ def _heal_bare_gallery_tags():
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _prune_dead_gallery_entries(gallery):
+def _prune_dead_gallery_entries(gallery, known_paths=None):
     """Drop entries whose file no longer exists (deleted manually or by
     cleanups). A .gallery_roots row whose link itself is missing means the
     root is offline (HDD unmounted): those are KEPT, not pruned — pruning
     them would erase 11k real images on every early start. Must run under
-    _GALLERY_LOCK: add_to_gallery inserts into this same list."""
+    _GALLERY_LOCK: add_to_gallery inserts into this same list.
+
+    `known_paths` comes from the TTL walk: a file in that set is present, so
+    skip the per-row stat. Files added after the walk are not in it and still
+    get the isfile check, so a fresh download is never culled."""
     kept, removed_names = [], []
     for i in gallery["images"]:
         fp = i.get("filepath", "")
+        if known_paths is not None and (fp in known_paths
+                                        or fp.replace("\\", "/") in known_paths):
+            kept.append(i)
+            continue
         if os.path.isfile(os.path.join(MASTER_FOLDER, fp)):
             kept.append(i)
             continue

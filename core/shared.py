@@ -1981,6 +1981,12 @@ class BaseDownloader:
                 extra = f" ({self.failed_count} failed)" if self.failed_count else ""
                 self.log(f"⚠️ Notice: You requested {self.amount} images, but only {total_found} were downloaded{extra}. The site may have blocked further pages, or downloads failed.")
 
+    @property
+    def _session(self) -> aiohttp.ClientSession:
+        if self.session is None:
+            raise RuntimeError("download session not initialized")
+        return self.session
+
     # --- aiohttp session factory (override in subclasses for curl_cffi etc.) ---
     async def _create_session(self):
         """Create and return an aiohttp.ClientSession with proxy and headers."""

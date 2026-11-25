@@ -44,6 +44,15 @@ def test_nekosapi_uses_commas():
     assert tag_excludes.apply("nekosapi", "kemonomimi") == "kemonomimi,-solo"
 
 
+def test_all_returns_cleaned_tags_for_every_site():
+    tag_excludes.save("gelbooru", ["Guro"])
+    tag_excludes.save("zero", ["Ines (Arknights)"])
+    every = tag_excludes.all()
+    assert every["gelbooru"] == ["guro"]
+    assert every["zero"] == ["Ines (Arknights)"]
+    assert set(every) == set(tag_excludes.SITES)
+
+
 def test_dispatch_worker_applies_excludes(monkeypatch):
     import Rems_Dl
 

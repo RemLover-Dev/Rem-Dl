@@ -63,6 +63,7 @@ def pixel_hash(source, width, height, threads):
         process = subprocess.Popen(_command(source, 'pipe:1', threads,
             ['-f', 'rawvideo', '-pix_fmt', 'rgba64be']), stdout=subprocess.PIPE,
             stderr=errors, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        assert process.stdout is not None
         try:
             while True:
                 block = process.stdout.read(1024 * 1024)

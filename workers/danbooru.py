@@ -47,7 +47,7 @@ class DanbooruWorker(BaseWorker):
         # ponytail: one cheap call so the log states the real tier —
         # Member accounts keep the 3-tag cap, so "authenticated" alone misleads
         try:
-            async with self.session.get(
+            async with self._session.get(
                     "https://danbooru.donmai.us/profile.json",
                     headers=self._auth,
                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -86,7 +86,7 @@ class DanbooruWorker(BaseWorker):
             try:
                 self.log(f"Scanning API... (Page {page})")
 
-                async with self.session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": page_limit}, headers=self._auth) as resp:
+                async with self._session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": page_limit}, headers=self._auth) as resp:
                     if resp.status in [403, 429]:
                         # one transient rate-limit hit should not kill a long
                         # run — pause once, refetch the same page

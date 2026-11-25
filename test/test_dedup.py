@@ -29,6 +29,20 @@ class TestDedupStore:
         assert str(h2) == "000000000000000f"
         assert int(h2) == 15
 
+    def test_candidate_index_finds_near_hashes(self, dedup_env):
+        store, _ = dedup_env
+        base = (1 << 200) | (1 << 100)
+        with store._lock:
+            store._index_put_locked(1, base)
+        near = base
+        for bit in (0, 40, 80, 120, 160, 200, 240, 33, 73, 113, 153, 193):
+            near ^= 1 << bit
+        assert 1 in store._candidate_ids(PureHash(near))
+        far = base
+        for bit in range(0, 256, 16):
+            far ^= 1 << bit
+        assert 1 not in store._candidate_ids(PureHash(far))
+
     def test_add_and_duplicate_detection(self, dedup_env):
         store, tmp_dir = dedup_env
 

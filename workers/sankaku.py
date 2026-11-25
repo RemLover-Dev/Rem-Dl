@@ -81,7 +81,7 @@ class SankakuWorker(BaseWorker):
 
         return session
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, source_md5=None):
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None, source_md5=None):
         if artists is None: artists = []
         if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
             return False
@@ -126,7 +126,7 @@ class SankakuWorker(BaseWorker):
             try:
                 self.log(f"Scanning API... (Page {page})")
 
-                params = {"limit": page_limit, "page": page}
+                params: dict[str, str | int] = {"limit": page_limit, "page": page}
                 if self.net_config.get("hide_pools", False):
                     params["hide_posts_in_books"] = "always"
 
@@ -134,7 +134,7 @@ class SankakuWorker(BaseWorker):
                 if tags_param:
                     params["tags"] = tags_param
 
-                async with self.session.get(f"{API_BASE}/posts", params=params) as resp:
+                async with self._session.get(f"{API_BASE}/posts", params=params) as resp:
                     if resp.status in [403, 429]:
                         # one transient rate-limit hit should not kill a long
                         # run — pause once, refetch the same page
@@ -163,7 +163,7 @@ class SankakuWorker(BaseWorker):
 
                 if not posts:
                     if page == 1:
-                        self.log(f"ZERO images found for '{self.api_tag}'. Auth: {'yes' if self.session.headers.get('Authorization') else 'none'}")
+                        self.log(f"ZERO images found for '{self.api_tag}'. Auth: {'yes' if self._session.headers.get('Authorization') else 'none'}")
                     break
 
             except Exception as e:

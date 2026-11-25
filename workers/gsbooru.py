@@ -1,5 +1,8 @@
 import asyncio
 import os
+from typing import cast
+
+import aiohttp
 
 try:
     from workers import BaseWorker
@@ -102,8 +105,9 @@ class GsbooruWorker(BaseWorker):
                     break
                 await asyncio.sleep(wait)
             try:
-                async with self.session.get(
-                        url, params=params, headers=headers, timeout=30) as resp:
+                async with self._session.get(
+                        url, params=params, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         if isinstance(data, dict) and data.get("status") == "ok":
@@ -269,7 +273,7 @@ class GsbooruWorker(BaseWorker):
                 if post.get("is_soft_deleted"):
                     continue
 
-                word = RATING_WORD_BY_INT.get(post.get("rating"))
+                word = RATING_WORD_BY_INT.get(cast(int, post.get("rating")))
 
                 if (
                     self.filter_words
@@ -323,7 +327,7 @@ class GsbooruWorker(BaseWorker):
 
                 rating_label = folder_component(
                     self.rating_label_map.get(
-                        word,
+                        cast(str, word),
                         "Unknown"
                     ),
                     fallback="Unknown"
@@ -377,8 +381,9 @@ class GsbooruWorker(BaseWorker):
 
             # Wait for this page's downloads and pHash
             # deduplication to finish.
-            if page_enqueued:
-                await self.download_queue.join()
+            queue = self.download_queue
+            if page_enqueued and queue is not None:
+                await queue.join()
 
             page += 1
 

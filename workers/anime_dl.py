@@ -2,6 +2,7 @@ import asyncio
 import os
 import threading
 import time
+from typing import Any, cast
 
 from curl_cffi import requests as curl_requests
 
@@ -79,7 +80,7 @@ class AnimeDlWorker(BaseDownloader):
         self.tag_dir = os.path.join(self.site_root, self.tag_slug)
         safe_ensure_dir(self.tag_dir)
         
-        self.curl_session = None
+        self.curl_session: Any = None
 
     def _excluded(self, tag_names):
         if not self._exclude_norm:
@@ -250,7 +251,7 @@ class AnimeDlWorker(BaseDownloader):
             return []
         kind = {1: "character", 4: "artist", 5: "copyright", 7: "metadata"}
         return [{"name": t["tag"].replace("_", " "), "count": t.get("num_pub", t.get("num", 0)),
-                 "kind": kind.get(t.get("type"), "tag")}
+                 "kind": kind.get(cast(int, t.get("type")), "tag")}
                 for t in r2.json().get("tags", [])
                 if isinstance(t, dict) and t.get("tag")]
 

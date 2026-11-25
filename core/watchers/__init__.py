@@ -161,7 +161,7 @@ def create(data):
     if source not in SOURCES:
         return None, f"unsupported source: {source or '?'}"
     fields, err = _clean(data)
-    if err:
+    if err or fields is None:
         return None, err
     if not fields.get("tags"):
         return None, "at least one tag is required"
@@ -190,7 +190,7 @@ def create(data):
 
 def update(wid, data):
     fields, err = _clean(data)
-    if err:
+    if err or fields is None:
         return None, err
     with _lock:
         raw = _load()
@@ -292,6 +292,7 @@ def check_watcher(w):
     """One watcher check. Never raises; returns {new, error}."""
     wid = w["watcher_id"]
     src = w.get("source")
+    mod = None
     try:
         mod = _source(src)
         api_tag = mod.query(w.get("tags") or [], w.get("ratings") or [])
@@ -417,11 +418,17 @@ def check_now(source=None):
             for w in list_watchers(source):
                 if not w.get("enabled"):
                     continue
-                res = check_watcher(w)
-                if res.get("error"):
-                    _log(f"[{w['source']}] {res['error']}")
-                if res.get("new"):
-                    _emit(w, res["new"])
+                wid = w.get("watcher_id")
+                if not _claim(wid):
+                    continue
+                try:
+                    res = check_watcher(w)
+                    if res.get("error"):
+                        _log(f"[{w['source']}] {res['error']}")
+                    if res.get("new"):
+                        _emit(w, res["new"])
+                finally:
+                    _release(wid)
         finally:
             _manual_lock.release()
 
@@ -446,16 +453,33 @@ def _in_flight(wid):
         return wid in _INFLIGHT
 
 
+def _claim(wid):
+    """Reserve a watcher for one check. Shared by the pool and manual runs."""
+    if not wid:
+        return False
+    with _INFLIGHT_LOCK:
+        if wid in _INFLIGHT:
+            return False
+        _INFLIGHT.add(wid)
+        return True
+
+
+def _release(wid):
+    with _INFLIGHT_LOCK:
+        _INFLIGHT.discard(wid)
+    _wakeup.set()
+
+
 def _idle_due(now=None):
     """Due watchers that are not already being checked."""
-    return [w for w in due_watchers(now) if not _in_flight(w.get("id"))]
+    return [w for w in due_watchers(now) if not _in_flight(w.get("watcher_id"))]
 
 
 def _seconds_until_due():
     enabled = [w for w in list_watchers() if w.get("enabled")]
     if not enabled:
         return 60.0
-    pending = [w for w in enabled if not _in_flight(w.get("id"))]
+    pending = [w for w in enabled if not _in_flight(w.get("watcher_id"))]
     if not pending:
         return 5.0  # everything due is running; a done-callback wakes us
     return max(1.0, min(_due_at(w) for w in pending) - time.time())
@@ -482,11 +506,9 @@ def _emit(w, new_count):
 
 def _submit(w):
     """Run one check on the pool; never two checks for the same watcher."""
-    wid = w.get("id")
-    with _INFLIGHT_LOCK:
-        if wid in _INFLIGHT:
-            return
-        _INFLIGHT.add(wid)
+    wid = w.get("watcher_id")
+    if not _claim(wid):
+        return
 
     def run():
         try:
@@ -497,10 +519,9 @@ def _submit(w):
             if res.get("new"):
                 _emit(w, res["new"])
         finally:
-            with _INFLIGHT_LOCK:
-                _INFLIGHT.discard(wid)
-            _wakeup.set()
+            _release(wid)
 
+    assert _POOL is not None
     _POOL.submit(run)
 
 

@@ -17,6 +17,7 @@ def test_add_requires_site_and_tags():
 
 def test_add_sets_fields_and_dedupes():
     entry = DatabaseManager.add_planning_entry("dan", "rem blue_hair", "rating:g", "check animu")
+    assert entry is not None
     assert entry["site"] == "dan" and entry["tags"] == "rem blue_hair"
     assert entry["rating"] == "rating:g" and entry["note"] == "check animu"
     assert entry["completed"] is False and entry["completed_at"] == 0
@@ -31,26 +32,34 @@ def test_add_sets_fields_and_dedupes():
 def test_newest_first_ordering():
     a = DatabaseManager.add_planning_entry("dan", "one")
     b = DatabaseManager.add_planning_entry("kona", "two")
+    assert a is not None and b is not None
     ids = [e["id"] for e in DatabaseManager.load_planning_list()]
     assert ids == [b["id"], a["id"]]
 
 
 def test_toggle_completion_stamp():
     entry = DatabaseManager.add_planning_entry("dan", "rem")
+    assert entry is not None
     out = DatabaseManager.update_planning_entry(entry["id"], {"completed": True})
+    assert out is not None
     assert out["completed"] is True and out["completed_at"] > 0
     out = DatabaseManager.update_planning_entry(entry["id"], {"completed": False})
+    assert out is not None
     assert out["completed"] is False and out["completed_at"] == 0
     # repeated True keeps the original hand-set date
     out = DatabaseManager.update_planning_entry(entry["id"], {"completed": True})
+    assert out is not None
     stamp = out["completed_at"]
     out = DatabaseManager.update_planning_entry(entry["id"], {"completed": True})
+    assert out is not None
     assert out["completed_at"] == stamp
 
 
 def test_update_fields_and_guards():
     entry = DatabaseManager.add_planning_entry("dan", "rem")
+    assert entry is not None
     out = DatabaseManager.update_planning_entry(entry["id"], {"tags": "rem blue", "note": "later"})
+    assert out is not None
     assert out["tags"] == "rem blue" and out["note"] == "later"
     assert DatabaseManager.update_planning_entry("nope", {"tags": "x"}) is None
     assert DatabaseManager.update_planning_entry(entry["id"], {"tags": "   "}) is None
@@ -59,6 +68,7 @@ def test_update_fields_and_guards():
 def test_remove_and_clear():
     keep = DatabaseManager.add_planning_entry("dan", "kept")
     done = DatabaseManager.add_planning_entry("kona", "done")
+    assert keep is not None and done is not None
     DatabaseManager.update_planning_entry(done["id"], {"completed": True})
     assert DatabaseManager.remove_planning_entry(keep["id"]) is True
     assert DatabaseManager.remove_planning_entry(keep["id"]) is False
@@ -74,6 +84,7 @@ def test_clear_duplicates_keeps_first():
     b = DatabaseManager.add_planning_entry("gelbooru", "rem", "rating:g", "n")
     assert b is None  # add() refuses exact duplicates
     other = DatabaseManager.add_planning_entry("kona", "rem")
+    assert a is not None and other is not None
     # forge a duplicate by updating 'other' onto 'a's identity
     DatabaseManager.update_planning_entry(other["id"],
                                           {"site": "gelbooru", "tags": "rem",

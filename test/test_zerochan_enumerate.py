@@ -49,8 +49,8 @@ def _worker(tmp_path, monkeypatch):
     monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
     w = ZerochanWorker("Ines (Arknights)", 0, {"anti_ban_pause": 0})
     logs = []
-    w.log = logs.append
-    w.download_queue = asyncio.Queue()
+    setattr(w, "log", logs.append)
+    setattr(w, "download_queue", asyncio.Queue())
     return w, logs
 
 
@@ -170,7 +170,9 @@ def test_xml_enumerate_parses_feed(tmp_path, monkeypatch):
 
 
 def test_extract_jsonld_picks_the_content_url():
-    assert ZerochanWorker._extract_jsonld(POST_HTML)["contentUrl"].endswith(
+    ld = ZerochanWorker._extract_jsonld(POST_HTML)
+    assert ld is not None
+    assert ld["contentUrl"].endswith(
         "Remilia.Scarlet.full.3943142.png")
     assert ZerochanWorker._extract_jsonld("<html>no ld+json</html>") is None
     assert ZerochanWorker._extract_jsonld('') is None
@@ -205,9 +207,10 @@ def test_scraper_uses_listing_plus_one_page_fetch_per_post(tmp_path, monkeypatch
     asyncio.run(w.scraper_task())
 
     assert fetched == [3943142]
-    assert len(w.download_queue._queue) == 1
+    queue = getattr(w, "download_queue")
+    assert len(queue._queue) == 1
     url, filepath, filename, tags, artists, _size, characters, copyrights = \
-        w.download_queue._queue[0][:8]
+        queue._queue[0][:8]
     assert url.endswith("Remilia.Scarlet.full.3943142.png")
     assert filename == "Remilia.Scarlet.full.3943142.png"
     assert filepath.endswith(filename)
@@ -356,7 +359,7 @@ def test_gallery_dl_is_priority_when_credentials_exist(tmp_path, monkeypatch):
     # supplies the categorized tags
     assert _filenames(w) == ["Remilia.Scarlet.full.3943142.png"]
     url, _fp, _fn, _tags, artists, _size, characters, copyrights = \
-        w.download_queue._queue[0][:8]
+        getattr(w, "download_queue")._queue[0][:8]
     assert url.endswith("Remilia.Scarlet.full.3943142.png")
     assert artists == ["Torinari"]
     assert characters == ["Remilia Scarlet"]
@@ -554,8 +557,9 @@ def test_no_runtime_patcher_left():
     """gallery-dl is used as-is; nothing may patch its installed extractor."""
     from workers import zerochan as mod
     assert not hasattr(mod, "_ensure_gallery_dl_patch")
+    import importlib
     try:
-        import core.gallery_dl_interop  # noqa: F401
+        importlib.import_module("core.gallery_dl_interop")
     except ImportError:
         pass
     else:

@@ -24,7 +24,7 @@ def fetch(encoded_tag, pid):
     st = get_settings()
     s = curl_requests.Session(impersonate="chrome131")
     if st.get("use_proxy") and st.get("proxy_url"):
-        s.proxies = {"http": st["proxy_url"], "https": st["proxy_url"]}
+        setattr(s, "proxies", {"http": st.get("proxy_url"), "https": st.get("proxy_url")})
     url = f"{BASE}/{encoded_tag}?json=1&l={LIMIT}&p={pid + 1}"
     resp = s.get(url, timeout=30, allow_redirects=True,
                  headers={"Referer": "https://www.zerochan.net/",

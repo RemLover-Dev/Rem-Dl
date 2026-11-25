@@ -26,7 +26,7 @@ class SafebooruWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         async def attempt(tag_name):
-            async with self.session.get("https://safebooru.org/index.php", params={
+            async with self._session.get("https://safebooru.org/index.php", params={
                 "page": "dapi", "s": "tag", "q": "index",
                 # safebooru tag search needs entity-encoded names (kal&#039;tsit_...); &#x27; doesn't match
                 "name": html.escape(tag_name, quote=False).replace("'", "&#039;"), "limit": 50
@@ -42,7 +42,7 @@ class SafebooruWorker(BaseWorker):
             return True  # 200 processed: match OR genuinely absent
         return await self._run_tag_fetch(tag_names, attempt, TAG_TYPES_FILE)
 
-    def _categorize_tags(self, tag_names, cache):
+    def _categorize_tags_dict(self, tag_names, cache):
         result = {"artist": [], "character": [], "copyright": [], "metadata": [], "tag": []}
         for t in tag_names:
             tag_type = cache.get(t, 0)
@@ -65,7 +65,7 @@ class SafebooruWorker(BaseWorker):
             try:
                 self.log(f"Scanning API... (Page {pid})")
 
-                async with self.session.get("https://safebooru.org/index.php", params={
+                async with self._session.get("https://safebooru.org/index.php", params={
                     "page": "dapi", "s": "post", "q": "index",
                     "tags": self.original_tag, "pid": pid, "limit": page_limit, "json": 1
                 }) as resp:
@@ -146,7 +146,7 @@ class SafebooruWorker(BaseWorker):
 
                 tags_raw = post.get("tag_string", post.get("tags", ""))
                 tag_names = [html.unescape(t.strip()) for t in tags_raw.split() if t.strip()]
-                cats = self._categorize_tags(tag_names, cache)
+                cats = self._categorize_tags_dict(tag_names, cache)
                 artists = cats["artist"]
                 characters = cats["character"]
                 copyrights = cats["copyright"]

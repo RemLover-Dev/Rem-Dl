@@ -22,6 +22,12 @@ RUN pip install --no-cache-dir -r requirements.docker.txt
 # Copy application code, web UI and icons. Runtime databases are volume-mounted; see .dockerignore.
 COPY . .
 
+# Run unprivileged. The mounted data dirs must be writable by UID 1000.
+RUN useradd --create-home --uid 1000 app \
+    && mkdir -p "/app/Rems Dl" /app/database \
+    && chown -R app:app /app
+USER app
+
 # Expose port 5000 for Flask
 EXPOSE 5000
 

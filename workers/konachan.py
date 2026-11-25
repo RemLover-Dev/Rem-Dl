@@ -41,7 +41,7 @@ class KonachanWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         async def attempt_one(tag_name):
-            async with self.session.get(
+            async with self._session.get(
                 "https://konachan.com/tag.json",
                 params={"name": tag_name, "order": "count", "limit": 50}
             ) as resp:
@@ -81,7 +81,7 @@ class KonachanWorker(BaseWorker):
             try:
                 self.log(f"Scanning API... (Page {page})")
 
-                async with self.session.get("https://konachan.com/post.json", params={"tags": self.api_tag, "page": page, "limit": page_limit, **auth}) as resp:
+                async with self._session.get("https://konachan.com/post.json", params={"tags": self.api_tag, "page": page, "limit": page_limit, **auth}) as resp:
                     if resp.status in [403, 429]:
                         if not retried_rate_limit:
                             retried_rate_limit = True

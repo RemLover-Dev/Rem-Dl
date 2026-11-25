@@ -47,7 +47,7 @@ class NekosiaWorker(BaseDownloader):
 
         while collected < need and not self.stop_event.is_set():
             # ponytail: nekosia.cat returns an empty array for count=1; always ask for >=2
-            params = {"count": max(2, min(batch_size, need - collected))}
+            params: dict[str, str | int] = {"count": max(2, min(batch_size, need - collected))}
             if self.rating:
                 params["rating"] = self.rating
             if wanted:
@@ -57,7 +57,7 @@ class NekosiaWorker(BaseDownloader):
 
             try:
                 # The endpoint is /api/v1/images/{category/tag}
-                async with self.session.get(f"{self.api_base}/{endpoint_cat}", params=params) as resp:
+                async with self._session.get(f"{self.api_base}/{endpoint_cat}", params=params) as resp:
                     if resp.status in (403, 429):
                         self.log(f"API BAN ({resp.status}).")
                         break

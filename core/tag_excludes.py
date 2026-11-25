@@ -62,6 +62,11 @@ def get(site):
     return _clean(site, tags)[:_cap(site)]
 
 
+def all():
+    raw = _load()
+    return {site: _clean(site, raw.get(site, []))[:_cap(site)] for site in SITES}
+
+
 def save(site, tags):
     site = _site(site)
     if site not in SITES:

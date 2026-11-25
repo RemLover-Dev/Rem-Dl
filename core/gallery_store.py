@@ -200,6 +200,9 @@ class GalleryStore:
             conn.execute("""CREATE TRIGGER IF NOT EXISTS gallery_terms_insert AFTER INSERT ON gallery_tags
                 BEGIN INSERT OR IGNORE INTO gallery_tag_terms(tag, normalized)
                 VALUES (NEW.tag, LOWER(REPLACE(NEW.tag, '_', ' '))); END""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS gallery_terms_delete AFTER DELETE ON gallery_tags
+                BEGIN DELETE FROM gallery_tag_terms WHERE tag = OLD.tag
+                AND NOT EXISTS (SELECT 1 FROM gallery_tags WHERE tag = OLD.tag); END""")
             if not conn.execute("SELECT 1 FROM gallery_search_state WHERE version=1").fetchone():
                 conn.execute("INSERT OR IGNORE INTO gallery_tag_terms SELECT DISTINCT tag, LOWER(REPLACE(tag, '_', ' ')) FROM gallery_tags")
                 conn.execute("INSERT INTO gallery_search_state VALUES (1)")
