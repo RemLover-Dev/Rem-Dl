@@ -2135,8 +2135,8 @@ socket.on("conversion_progress", function (data) {
 // ponytail: authoritative finish signal — reuses the log parser so both paths render identically
 socket.on("worker_finished", function (data) {
     if (!data || data.stopped || data.more || data.converting) return;
-    const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0, k = data.skipped || 0;
-    const note = [z ? `${z} duplicates removed` : "", k ? `${k} skipped` : ""].filter(Boolean).join(", ");
+    const d = data.downloaded || 0, f = data.failed || 0, z = data.duplicates || 0;
+    const note = [z ? `${z} duplicates removed` : ""].filter(Boolean).join(", ");
     const dup = note ? ` (${note})` : "";
     const jobs = data.jobs || 1;
     if (jobs > 1) {

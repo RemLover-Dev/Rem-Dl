@@ -18,12 +18,12 @@ def test_single_job_report_matches_legacy(monkeypatch):
     assert "gelbooru" not in shared._BATCH_STATS
 
 
-def test_pre_download_skips_get_their_own_note(monkeypatch):
+def test_pre_download_skips_stay_out_of_the_log(monkeypatch):
     _reset()
     monkeypatch.setattr(shared, "queue_has_more", lambda site: False)
     logs = []
     p = shared.finish_report("gelbooru", 8, 0, 1, False, logs.append, skipped=3)
-    assert logs == ["--- All 8 downloads completed successfully! (1 duplicates removed, 3 skipped) ---"]
+    assert logs == ["--- All 8 downloads completed successfully! (1 duplicates removed) ---"]
     assert p["skipped"] == 3 and p["duplicates"] == 1
 
 

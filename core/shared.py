@@ -135,7 +135,9 @@ def notify_convert_start(abs_fp: str, eta: float = 0.0):
     caller's seconds-per-image estimate for the interpolation ticks."""
     with _PUBLISH_HOLD_LOCK:
         spec = _PENDING_PUBLISH.get(abs_fp)
-        site = spec.get("site") if spec else None
+        if not spec:
+            return
+        site = spec.get("site")
         if site:
             _CONVERT_CURRENT[site] = spec.get("filename") or os.path.basename(abs_fp)
             _CONVERT_ETA[site] = {"file": _CONVERT_CURRENT[site],
@@ -156,7 +158,9 @@ def notify_convert_tick(abs_fp: str):
     from core.jxl_progress import fraction
     with _PUBLISH_HOLD_LOCK:
         spec = _PENDING_PUBLISH.get(abs_fp)
-        site = spec.get("site") if spec else None
+        if not spec:
+            return
+        site = spec.get("site")
         st = _CONVERT_STATE.get(site) if site else None
         eta = _CONVERT_ETA.get(site) if site else None
         if not (st and eta) or not eta.get("eta") or eta.get("file") != spec.get("filename"):
@@ -201,8 +205,6 @@ def finish_report(site: str, downloaded: int, failed: int, duplicates: int,
     notes = []
     if duplicates:
         notes.append(f"{duplicates} duplicates removed")
-    if skipped:
-        notes.append(f"{skipped} skipped")
     dup_note = f" ({', '.join(notes)})" if notes else ""
     text = None
     if stopped:
@@ -999,7 +1001,7 @@ def _norm_cat(c):
     """Cache values are category strings; old entries store raw type ints."""
     if isinstance(c, str) and c in _TAG_CAT_SET:
         return c
-    return TAG_TYPE_MAP.get(c, "tag")
+    return TAG_TYPE_MAP.get(c, "tag") if isinstance(c, int) else "tag"
 
 _TAG_CAT_SET = frozenset(TAG_CATEGORIES)
 
@@ -1994,7 +1996,7 @@ class BaseDownloader:
             proxy = os.environ.get("https_proxy") or os.environ.get("http_proxy") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
 
         connector = aiohttp.TCPConnector(
-            ssl=False if not self.net_config.get("verify_tls", True) else None,
+            ssl=bool(self.net_config.get("verify_tls", True)),
             limit=10,
         )
         trace = aiohttp.TraceConfig()
@@ -2123,11 +2125,15 @@ class BaseDownloader:
         file_size = 0
         self.queued_items.add(filename)
         item = (url, filepath, filename, tags_list, artists, file_size, characters, copyrights, metadata_tags, outfits, groups, hair, eyes, rating)
+        queue = self.download_queue
+        if queue is None:
+            self.queued_items.discard(filename)
+            return False
         # Apply backpressure to API producers instead of retaining thousands
         # of tag-heavy jobs. A full queue must remain responsive to Stop.
         while not self.stop_event.is_set():
             try:
-                await asyncio.wait_for(self.download_queue.put(item), 0.25)
+                await asyncio.wait_for(queue.put(item), 0.25)
                 self.enqueued_count += 1
                 return True
             except asyncio.TimeoutError:
@@ -2153,9 +2159,12 @@ class BaseDownloader:
         # when its API supplied none at enqueue
         m = re.search(r'-([0-9a-f]{32})\.[^.]+$', filename, re.IGNORECASE)
         want_md5 = m.group(1).lower() if m else None
+        session = self.session
+        if session is None:
+            raise RuntimeError("download session not initialized")
         for attempt in range(self.dl_retries):
             try:
-                referer = self.session.headers.get("Referer") or url
+                referer = session.headers.get("Referer") or url
                 # a truncated attempt keeps its .part — the retry resumes it
                 # with a Range request instead of restarting a big file at 0
                 headers = {"Referer": referer}
@@ -2166,7 +2175,7 @@ class BaseDownloader:
                 # sock_read kills stalled/trickling connections fast; a bare
                 # total timeout lets a dead stream hang for minutes looking
                 # like the worker "stopped"
-                async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=300, connect=10, sock_read=30)) as resp:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=300, connect=10, sock_read=30)) as resp:
                     resumed = bool(base) and getattr(resp, "status", None) == 206
                     resp.raise_for_status()
                     if resumed:
@@ -2367,17 +2376,23 @@ class BaseDownloader:
         return False
 
     async def _download_worker(self):
+        queue = self.download_queue
+        if queue is None:
+            return
         while not self.stop_event.is_set():
-            if self.download_queue.empty():
+            if queue.empty():
                 if not self.is_scanning: break
                 await asyncio.sleep(0.5)
                 continue
-            item = await self.download_queue.get()
+            item = await queue.get()
             try: await self._async_download_file(*item)
             finally:
                 self._inflight.pop(item[1], None)
                 await asyncio.to_thread(self._release_source_claims, (item[1],))
-                self.download_queue.task_done()
+                queue.task_done()
+
+    async def scraper_task(self):
+        raise NotImplementedError
 
     def run(self):
         """Synchronous entry point shared by every worker.
