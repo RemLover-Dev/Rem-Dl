@@ -62,13 +62,17 @@ def _rate_limit_session(session, rate=_SITE_RATE):
     return session
 
 class AnimeDlWorker(BaseDownloader):
-    def __init__(self, tag, amount, net_config):
+    def __init__(self, tag, amount, net_config, exclusions=None):
         super().__init__("anime_dl", "AnimePictures", amount, net_config)
         self.tag = tag.strip().lower()
         toks = self.tag.split()
         # site search has no '-' operator (live: "-x" is just ANDed as "x")
         # — dashes are stripped from the query and filtered client-side
         self.exclude_tags = [t[1:] for t in toks if t.startswith('-') and len(t) > 1]
+        for t in exclusions or []:
+            t = str(t).strip().lstrip('-')
+            if t and t not in self.exclude_tags:
+                self.exclude_tags.append(t)
         self._exclude_norm = {t.replace("_", " ").strip().lower() for t in self.exclude_tags}
         self.tag = " ".join(t for t in toks if not t.startswith('-'))
         self.tag_slug = folder_component(self.tag, fallback="anime_pictures")
@@ -390,5 +394,5 @@ class AnimeDlWorker(BaseDownloader):
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
 
-def worker_anime_dl(tag, amount, net_config):
-    AnimeDlWorker(tag, amount, net_config).run()
+def worker_anime_dl(tag, amount, net_config, exclusions=None):
+    AnimeDlWorker(tag, amount, net_config, exclusions).run()

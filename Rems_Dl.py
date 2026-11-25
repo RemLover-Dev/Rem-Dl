@@ -103,7 +103,7 @@ if os.path.isdir(os.path.join(BASE_DIR, LEGACY_DOWNLOAD_DIR_NAME)) and not os.pa
 
 load_dotenv(os.path.join(BASE_DIR, ".env"), interpolate=False)
 
-from core import notifications, pixiv_notify, watchers
+from core import notifications, pixiv_notify, tag_excludes, watchers
 from core.database import DatabaseManager, SettingsManager
 from core.planning_import import (
     DEFAULT_SITE,
@@ -4745,6 +4745,24 @@ def watchers_check_now():
     return jsonify({"started": watchers.check_now(data.get("source"))})
 
 
+# ==========================================
+# === PER-SITE TAG EXCLUDES ===
+# ==========================================
+@app.route("/api/tag-excludes", methods=["GET"])
+def tag_excludes_list():
+    return jsonify({"sites": list(tag_excludes.SITES),
+                    "tags": tag_excludes.get(request.args.get("site"))})
+
+
+@app.route("/api/tag-excludes", methods=["POST"])
+def tag_excludes_save():
+    data = request.json or {}
+    tags, err = tag_excludes.save(data.get("site"), data.get("tags"))
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"tags": tags})
+
+
 _NOTIF_THUMB_CACHE = {}  # url -> (bytes, content-type), bounded on insert
 _NOTIF_THUMB_LOCK = threading.Lock()
 
@@ -4975,6 +4993,15 @@ def _dispatch_worker(data):
         except Exception as e:
             print("History Save Error:", e)
 
+    # permanent per-site excludes ride along as '-' tokens, after the user's
+    # query was recorded in history/learned tags
+    if tag and worker in tag_excludes.SITES:
+        if worker in ("anime_dl", "eshuushuu"):
+            data["exclusions"] = (list(data.get("exclusions") or [])
+                                  + tag_excludes.get(worker))
+        else:
+            data["tag"] = tag_excludes.apply(worker, tag)
+
     if worker == "zero":
         net_config["zerochan_login"] = os.getenv("ZEROCHAN_LOGIN") or os.getenv("ZEROCHAN_USERNAME", "")
         net_config["zerochan_password"] = os.getenv("ZEROCHAN_PASSWORD", "")
@@ -4989,7 +5016,7 @@ def _dispatch_worker(data):
     elif worker == "kona": worker_konachan(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
     elif worker == "dan": worker_danbooru(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
     elif worker == "sankaku": worker_sankaku(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config)
-    elif worker == "anime_dl": worker_anime_dl(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config)
+    elif worker == "anime_dl": worker_anime_dl(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), net_config, data.get("exclusions", []))
     elif worker == "pixiv":
         net_config["pixiv_refresh_token"] = os.getenv("PIXIV_REFRESH_TOKEN", "")
         worker_pixiv(data.get("tag", ""), _safe_int(data.get("limit", 50), 50), data.get("rating", ""), data.get("exclusions", []), net_config, data.get("exclude_ai", False))

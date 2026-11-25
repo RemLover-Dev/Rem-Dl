@@ -1291,6 +1291,102 @@ function cancelGelWatcherEdit() {
     if (cb) cb.style.display = "none";
 }
 
+// --- Permanent per-site tag excludes (sent as -tag with every download) ---
+const TAG_EXCLUDE_MAX = { dan: 2 };
+const TAG_EXCLUDE_LABELS = {
+    anime_dl: "Anime DL", dan: "Danbooru", eshuushuu: "E-Shuushuu",
+    gelbooru: "Gelbooru", gsbooru: "Gsbooru", kona: "Konachan",
+    nekosapi: "NekosAPI", nekosia: "Nekosia", rule34: "Rule34",
+    safe: "Safebooru", sankaku: "Sankaku", yande: "Yande.re", zero: "Zerochan",
+};
+const TAG_EXCLUDE_SUGGEST = { zero: "zerochan" };
+let tagExcludeTags = [];
+
+function tagExcludeSiteId() {
+    const el = document.getElementById("tagExcludeSite");
+    return (el && el.value) || "dan";
+}
+
+function tagExcludeValues(site) {
+    const raw = danTagForRequest("tagExcludeInput");
+    if (["zero", "anime_dl", "eshuushuu", "nekosapi"].includes(site)) {
+        return raw.split(",").map(function(s) { return s.trim(); })
+            .filter(Boolean)
+            .map(function(s) { return site === "zero" ? s : s.toLowerCase(); });
+    }
+    return chipsFromTyped(raw);
+}
+
+async function loadTagExcludes() {
+    try {
+        const r = await fetch("/api/tag-excludes?site=" + encodeURIComponent(tagExcludeSiteId()));
+        const d = await r.json();
+        tagExcludeTags = d.tags || [];
+    } catch (e) { tagExcludeTags = []; }
+    renderTagExcludeChips();
+}
+
+function renderTagExcludeChips() {
+    const box = document.getElementById("tagExcludeChips");
+    if (!box) return;
+    const site = tagExcludeSiteId();
+    const cap = TAG_EXCLUDE_MAX[site];
+    const hint = document.getElementById("tagExcludeHint");
+    if (hint) hint.textContent = cap
+        ? `${TAG_EXCLUDE_LABELS[site] || site} free accounts allow at most ${cap} excluded tags (3-tag search limit).`
+        : `These tags are excluded from every download on ${TAG_EXCLUDE_LABELS[site] || site}.`;
+    if (!tagExcludeTags.length) {
+        box.innerHTML = '<span style="opacity:0.6; font-size:12px;">No excluded tags for this site yet.</span>';
+        return;
+    }
+    box.innerHTML = tagExcludeTags.map(function(t) {
+        return '<span class="v-tag warning" onclick="removeTagExclude(\'' + escJs(t) + '\')" style="cursor:pointer;" title="Click to remove">− ' + escapeHtml(cleanTagDisplay(t)) + '</span>';
+    }).join('');
+}
+
+async function saveTagExcludes(next) {
+    const r = await fetch("/api/tag-excludes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ site: tagExcludeSiteId(), tags: next })
+    });
+    const d = await r.json();
+    if (!r.ok) {
+        showToast(d.error || "Failed to save excluded tags", { warn: true, icon: WARN_ICON });
+        return false;
+    }
+    tagExcludeTags = d.tags || [];
+    renderTagExcludeChips();
+    return true;
+}
+
+async function addTagExclude() {
+    const input = document.getElementById("tagExcludeInput");
+    if (!input) return;
+    const site = tagExcludeSiteId();
+    const cap = TAG_EXCLUDE_MAX[site] || 20;
+    const next = tagExcludeTags.slice();
+    let overflow = false;
+    tagExcludeValues(site).forEach(function(val) {
+        if (!next.includes(val)) next.push(val);
+        if (next.length > cap) overflow = true;
+    });
+    if (overflow) {
+        showToast(`${TAG_EXCLUDE_LABELS[site] || site} allows at most ${cap} excluded tags`, { warn: true, icon: WARN_ICON });
+        return;
+    }
+    if (next.length === tagExcludeTags.length) {
+        input.value = ""; delete input.dataset.raw;
+        return;
+    }
+    if (await saveTagExcludes(next)) {
+        input.value = ""; delete input.dataset.raw;
+    }
+}
+
+async function removeTagExclude(tag) {
+    await saveTagExcludes(tagExcludeTags.filter(function(t) { return t !== tag; }));
+}
+
 async function toggleGelWatcher(id, enabled) {
     await fetch("/api/watchers/" + id, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: enabled }) });
     await loadGelWatchers();
@@ -1853,7 +1949,7 @@ function setSelectValue(sel, value) {
     sel.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
+function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn, enterFn) {
     let input = document.getElementById(inputId);
     let dropdown = document.getElementById(dropdownId);
     if (!input || !dropdown) return;
@@ -1918,7 +2014,7 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
                             dropdown.style.display = "none";
                             input.focus();
                             // ponytail: chip tabs add on pick — other tabs keep fill-then-confirm
-                            var _chipFn = { 'gelbooruTag': 'addGelbooruTag', 'watcherTag': 'addWatcherTag', 'gsbooruTag': 'addGsbooruTag', 'konaTag': 'addKonaTag', 'nekosiaTag': 'addNekosiaTag', 'safeTag': 'addSafeTag', 'sankakuTag': 'addSankakuTag', 'yandeTag': 'addYandeTag' }[inputId];
+                            var _chipFn = { 'gelbooruTag': 'addGelbooruTag', 'watcherTag': 'addWatcherTag', 'tagExcludeInput': 'addTagExclude', 'gsbooruTag': 'addGsbooruTag', 'konaTag': 'addKonaTag', 'nekosiaTag': 'addNekosiaTag', 'safeTag': 'addSafeTag', 'sankakuTag': 'addSankakuTag', 'yandeTag': 'addYandeTag' }[inputId];
                             if (_chipFn && typeof window[_chipFn] === 'function') window[_chipFn]();
                         };
                         dropdown.appendChild(div);
@@ -1952,10 +2048,14 @@ function setupAutosuggest(inputId, dropdownId, apiEndpoint, displayFn) {
                     items[activeIndex].click();
                 } else {
                     dropdown.style.display = "none";
+                    if (typeof enterFn === "function") enterFn();
                 }
             } else if (e.key === "Escape") {
                 dropdown.style.display = "none";
             }
+        } else if (e.key === "Enter" && typeof enterFn === "function") {
+            e.preventDefault();
+            enterFn();
         }
     });
 
@@ -2005,11 +2105,13 @@ document.addEventListener("DOMContentLoaded", function() {
     setupAutosuggest("sankakuTag", "sankakuAutosuggest", "/api/tags/sankaku", cleanTagDisplay);
     setupAutosuggest("yandeTag", "yandeAutosuggest", "/api/tags/yande", cleanTagDisplay);
     setupAutosuggest("gsbooruTag", "gsbooruAutosuggest", "/api/tags/gsbooru", cleanTagDisplay);
+    setupAutosuggest("tagExcludeInput", "tagExcludeAutosuggest", function() { return "/api/tags/" + (TAG_EXCLUDE_SUGGEST[tagExcludeSiteId()] || tagExcludeSiteId()); }, cleanTagDisplay, addTagExclude);
+    loadTagExcludes();
 
 
     document.addEventListener("click", function(e) {
-        let dropdowns = ["eshuushuuAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "watcherAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
-        let inputs = ["eshuushuuTag", "nekosiaTag", "gelbooruTag", "watcherTag", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
+        let dropdowns = ["eshuushuuAutosuggest", "nekosiaAutosuggest", "gelbooruAutosuggest", "watcherAutosuggest", "tagExcludeAutosuggest", "konaAutosuggest", "safeAutosuggest", "sankakuAutosuggest", "yandeAutosuggest", "gsbooruAutosuggest"];
+        let inputs = ["eshuushuuTag", "nekosiaTag", "gelbooruTag", "watcherTag", "tagExcludeInput", "konaTag", "safeTag", "sankakuTag", "yandeTag", "gsbooruTag"];
         for (let i = 0; i < dropdowns.length; i++) {
             let dp = document.getElementById(dropdowns[i]);
             let inp = document.getElementById(inputs[i]);
@@ -2622,6 +2724,7 @@ function openTab(tabName, btn) {
         loadTagsData();
     }
     if (tabName === "Notifications") loadNotifications();
+    if (tabName === "TagExcludes") loadTagExcludes();
     if (tabName === "Planning") loadPlanning();
 }
 

@@ -33,6 +33,10 @@ class EShuushuuWorker(BaseDownloader):
         # site search has no negation (live: tags=-ID still serves the plain
         # feed) — dashed tokens are filtered client-side instead
         self.exclude_names = [t[1:] for t in self.original_tag.split() if t.startswith('-') and len(t) > 1]
+        for t in exclusions or []:
+            t = str(t).strip().lstrip('-')
+            if t and t not in self.exclude_names:
+                self.exclude_names.append(t)
         self.tag_ids, self.unknown_tags = self._resolve_many(self.tag_names)
         self.tag_id = ",".join(self.tag_ids)
 

@@ -51,6 +51,7 @@
             <div class="tab-group-title" onclick="toggleMenu('group-settings')">Settings <span class="chevron">▼</span></div>
             <div class="tab-group-content" id="group-settings">
                 <button class="tab-btn" onclick="openTab('Customize', this)">Customize</button>
+                <button class="tab-btn" onclick="openTab('TagExcludes', this)" title="Permanent tag excludes">Tag Excludes</button>
                 <button class="tab-btn" onclick="openTab('Options', this)">Settings<span id="jxlDot" class="notif-dot" style="display:none;" title="JPEG XL conversion running"></span><span id="settingsDirtyMark" hidden aria-label="Unsaved changes"> •</span></button>
             </div>
         </div>
@@ -767,6 +768,41 @@
                 </div>
             </div>
 
+
+            <div id="TagExcludes" class="tab-content" style="display: none;">
+                <div class="options-scroll">
+                    <h2>Permanent Tag Excludes</h2>
+                    <p style="font-size: 13px; opacity: 0.85; margin-bottom: 16px;">Tags added here are applied to every download search on that site, as if you typed them as exclusions yourself. Gallery searches are not affected.</p>
+                    <div class="input-group" style="align-items: flex-start; flex-wrap: wrap;">
+                        <label style="padding-top: 9px;">Site:</label>
+                        <select id="tagExcludeSite" onchange="loadTagExcludes()" style="width: 150px; margin-right: 6px;">
+                            <option value="dan">Danbooru</option>
+                            <option value="gelbooru">Gelbooru</option>
+                            <option value="gsbooru">Gsbooru</option>
+                            <option value="kona">Konachan</option>
+                            <option value="rule34">Rule34</option>
+                            <option value="safe">Safebooru</option>
+                            <option value="sankaku">Sankaku</option>
+                            <option value="yande">Yande.re</option>
+                            <option value="zero">Zerochan</option>
+                            <option value="anime_dl">Anime DL</option>
+                            <option value="eshuushuu">E-Shuushuu</option>
+                            <option value="nekosapi">NekosAPI</option>
+                            <option value="nekosia">Nekosia</option>
+                        </select>
+                        <label style="padding-top: 9px;">Exclude tag:</label>
+                        <div style="flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 4px;">
+                            <div style="display: flex; gap: 6px; position: relative;">
+                                <input style="flex: 1;" autocomplete="off" type="text" id="tagExcludeInput" placeholder="e.g. guro, 1boy">
+                                <div id="tagExcludeAutosuggest" class="autosuggest-dropdown" style="display:none; right: 0;"></div>
+                            </div>
+                            <div id="tagExcludeChips" class="tag-visualizer" style="margin-top: 0; align-items: center;"></div>
+                        </div>
+                        <button class="action-btn" onclick="addTagExclude()">Add</button>
+                    </div>
+                    <p id="tagExcludeHint" style="font-size: 12px; opacity: 0.7; margin-top: 10px;"></p>
+                </div>
+            </div>
 
             <div id="Planning" class="tab-content" style="display: none;">
                 <div class="options-scroll">
