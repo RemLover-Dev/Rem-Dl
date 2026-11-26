@@ -10,3 +10,10 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Web UI
+
+Any list, dropdown, combo box or chip row added to `web/` must follow
+`web/UI_CONVENTIONS.md`: alphabetical order unless a comment justifies another order,
+and tag text rendered through `cleanTagDisplay()` / `displayTagList()` like the tag
+pills. Use existing theme variables, never new hardcoded hex.

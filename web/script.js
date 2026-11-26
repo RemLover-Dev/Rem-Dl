@@ -2362,7 +2362,11 @@ function renderQueueChip(data) {
     actives.forEach(a => (actBySite[a.site] = actBySite[a.site] || []).push(a));
     if (openQueueSite && !bySite[openQueueSite]) openQueueSite = null;
     // the pill lives inside the worker's own tab — clear all, rebuild per worker
-    document.querySelectorAll(".queue-chip-row").forEach(r => r.remove());
+    document.querySelectorAll(".queue-chip-row").forEach(r => {
+        const t = r.closest(".tab-content");
+        if (t) t.classList.remove("has-queue");
+        r.remove();
+    });
     const sites = new Set([...Object.keys(bySite), ...Object.keys(actBySite)]);
     if (!sites.size) return;
     let drag = null; // {site, from} while dragging
@@ -2515,6 +2519,7 @@ function renderQueueChip(data) {
         const h2 = tab.querySelector("h2");
         if (h2 && h2.parentNode === tab) tab.insertBefore(pillRow, h2.nextSibling);
         else tab.prepend(pillRow);
+        tab.classList.add("has-queue");
     });
 }
 
@@ -2676,7 +2681,7 @@ function onNekoCatChange() {
     // always carries an explicit list the worker can loop over
     hidden.value = ((allCheck && allCheck.checked) ? itemChecks : checked).map(c => c.value).join(' ');
     const btn = document.querySelector('[onclick="toggleDropdown(\'nekoCatDropdown\')"]');
-    if (btn) btn.textContent = getMultiLabel('nekoCatDropdown', 'All Categories') + ' ▾';
+    if (btn) btn.textContent = getMultiLabel('nekoCatDropdown', 'All Categories');
 }
 
 function updatePixivMode() {
@@ -3522,7 +3527,7 @@ function historyRatingLabel(site, rating) {
 function selectHistorySort(el, value) {
     historySort = value;
     const btn = document.querySelector('[onclick="toggleDropdown(\'histSortDropdown\')"]');
-    if (btn) btn.textContent = el.textContent.trim() + " \u25be";
+    if (btn) btn.textContent = el.textContent.trim();
     const menu = document.getElementById("histSortDropdown");
     if (menu) menu.classList.remove("open");
     renderHistory();
@@ -3904,9 +3909,9 @@ function renderHistory() {
     });
     if (historySort === "oldest") filtered.reverse();
     const srcBtn = document.querySelector('[onclick="toggleDropdown(\'histSourceDropdown\')"]');
-    if (srcBtn) srcBtn.textContent = getMultiLabel("histSourceDropdown", "All Sources") + " \u25be";
+    if (srcBtn) srcBtn.textContent = getMultiLabel("histSourceDropdown", "All Sources");
     const ratBtn = document.querySelector('[onclick="toggleDropdown(\'histRatingDropdown\')"]');
-    if (ratBtn) ratBtn.textContent = getMultiLabel("histRatingDropdown", "All Ratings") + " \u25be";
+    if (ratBtn) ratBtn.textContent = getMultiLabel("histRatingDropdown", "All Ratings");
     const list = historyExpanded ? filtered : filtered.slice(0, 10);
     const wrap = document.getElementById("historyExpandWrap");
     if (wrap) wrap.innerHTML = filtered.length > 10
@@ -4325,6 +4330,10 @@ function toggleGalleryBlur() {
     const btn = document.getElementById("galleryBlurBtn");
     if (btn) btn.classList.toggle("active", galleryBlurNsfw);
     document.body.classList.toggle("blur-nsfw", galleryBlurNsfw);
+    if (galleryBlurNsfw) {
+        const viewer = document.getElementById("galleryViewer");
+        if (viewer) viewer.classList.remove("viewer-unblurred");
+    }
 }
 // which ratings get blurred — picked in Settings; default = old explicit+questionable behavior
 function getBlurRatings() {
@@ -4345,6 +4354,7 @@ async function saveBlurRatings() {
     renderGallery();
     renderHistory();
     renderImageHistory();
+    refreshViewerBlur();
     return "Saved!";
 }
 // re-apply everything once the server config has loaded
@@ -4484,7 +4494,7 @@ function snapAloneMenu(menuId, defaultLabel) {
     }
     // the label has to follow: with All hidden, that one checked item IS the filter
     const btn = document.querySelector('[onclick="toggleDropdown(\'' + menuId + '\')"]');
-    if (btn) btn.textContent = getMultiLabel(menuId, defaultLabel) + ' ▾';
+    if (btn) btn.textContent = getMultiLabel(menuId, defaultLabel);
 }
 
 function toggleDropdownCheck(el, event) {
@@ -4533,7 +4543,7 @@ function toggleDropdownCheck(el, event) {
 
 function updateMultiRatingBtn(menuId) {
     const btn = document.querySelector('[onclick="toggleDropdown(\'' + menuId + '\')"]');
-    if (btn) btn.textContent = getMultiLabel(menuId, 'All Ratings') + ' ▾';
+    if (btn) btn.textContent = getMultiLabel(menuId, 'All Ratings');
 }
 
 function onMultiRatingChange(menuId, hiddenId) {
@@ -5020,7 +5030,6 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
     const perPage = layout.perPage;
     galleryLastPerPage = perPage;
     applyGalleryLayout(layout);
-    const t0 = performance.now();
     const params = galleryRequestParams(currentGalleryPage, perPage);
     const buffered = reuseBuffered ? bufferedGalleryPage(params) : null;
     if (buffered) {
@@ -5044,8 +5053,6 @@ async function loadGallery(page, remeasured, reuseBuffered = false) {
         warmGalleryThumbnails(data.images);
         galleryState = data;
         galleryState.layout = liveLayout;
-        const ms = Math.round(performance.now() - t0);
-        if (ms > 1500) showToast(`Gallery request took ${ms} ms`, { warn: true, key: "galtime" });
         // server clamps page to total_pages — trust its answer, not our guess
         if (data.page) currentGalleryPage = data.page;
         if (galleryPendingPage) {
@@ -5116,11 +5123,11 @@ function resetGalleryFilters() {
     updateSourceDropdown();
     updateRatingDropdown();
     const srcBtn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
-    if (srcBtn) srcBtn.textContent = 'All Sources ▾';
+    if (srcBtn) srcBtn.textContent = 'All Sources';
     const typeBtn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]');
-    if (typeBtn) typeBtn.textContent = 'All Types ▾';
+    if (typeBtn) typeBtn.textContent = 'All Types';
     const ratingBtn = document.querySelector('[onclick="toggleDropdown(\'ratingDropdown\')"]');
-    if (ratingBtn) ratingBtn.textContent = 'All Ratings ▾';
+    if (ratingBtn) ratingBtn.textContent = 'All Ratings';
 
     loadGallery(1);
     populateGallerySiteFilter();
@@ -5773,7 +5780,7 @@ function openGalleryViewer(id, force) {
     _viewerOpenedPage = currentGalleryPage;
     const mp = document.getElementById("galleryViewerMeta");
     if (mp) mp.style.minWidth = "";
-    showViewerImage();
+    showViewerImage(true);
 }
 
 // card checkbox: checking it (from anywhere) enters edit/select mode
@@ -6142,7 +6149,8 @@ function openFullImage(filepath, filename, el) {
         if (idx >= 0) list = imgs.map(i => i.dataset.ofi);
     }
     // always use the in-app viewer — new tabs don't exist in the desktop app
-    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null);
+    const rating = el && el.closest ? (el.closest('.image-card-log')?.dataset.rating || "") : "";
+    openViewerSingle(url, filename || "image", list, idx, list && box.id ? box.id : null, rating);
 }
 
 let viewerSingle = false;
@@ -6153,6 +6161,50 @@ let viewerSingleFilename = "";
 // log/history box the viewer was opened from — lets steps re-read the live
 // DOM so images downloaded after open stay reachable
 let viewerSingleBoxId = null;
+let viewerPendingBlur = null;
+let viewerStageFresh = false;
+function queueViewerBlur(rating, revealDirect) {
+    viewerPendingBlur = { rating: rating, revealDirect: !!revealDirect };
+}
+function commitViewerBlur(force) {
+    if (!force && !viewerStageFresh) return;
+    viewerStageFresh = false;
+    if (!viewerPendingBlur) return;
+    const pending = viewerPendingBlur;
+    viewerPendingBlur = null;
+    applyViewerBlur(pending.rating);
+    if (pending.revealDirect && viewerBlurActive()) {
+        document.getElementById("galleryViewer").classList.add("viewer-unblurred");
+    }
+}
+function applyViewerBlur(rating) {
+    const viewer = document.getElementById("galleryViewer");
+    if (!viewer) return;
+    viewer.classList.toggle("is-nsfw", ratingBlurred(rating));
+    viewer.classList.remove("viewer-unblurred");
+}
+function viewerBlurActive() {
+    const viewer = document.getElementById("galleryViewer");
+    return !!(galleryBlurNsfw && viewer && viewer.classList.contains("is-nsfw")
+        && !viewer.classList.contains("viewer-unblurred"));
+}
+function viewerSingleRating(entry, boxId) {
+    const box = boxId ? document.getElementById(boxId) : null;
+    if (!box || !entry) return "";
+    const img = [...box.querySelectorAll('img[data-ofi]')].find(i => i.dataset.ofi === entry);
+    const card = img && img.closest('.image-card-log');
+    return card ? (card.dataset.rating || "") : "";
+}
+function refreshViewerBlur() {
+    const viewer = document.getElementById("galleryViewer");
+    if (!viewer || viewer.style.display === "none") return;
+    if (viewerSingle) {
+        applyViewerBlur(viewerSingleRating(viewerSingleList[viewerSingleIdx], viewerSingleBoxId));
+    } else {
+        applyViewerBlur(getGalleryImageRating(galleryState.images[viewerIndex]));
+    }
+    viewerPendingBlur = null;
+}
 // Viewer resource: tracks the in-flight raster load (URL, generation, abort).
 // Display swaps in the preloaded image; Copy fetches its Blob on demand.
 let viewerResource = {
@@ -6214,6 +6266,7 @@ function loadViewerRaster(url, filename) {
     const viewerImg = document.getElementById("galleryViewerImg");
     // ponytail: single owner — abort the previous load, drop its Blob, revoke its URL
     clearViewerResource();
+    viewerStageFresh = false;
     const generation = viewerResource.generation;
     viewerResource.url = url;
     viewerResource.filename = filename || "image";
@@ -6235,6 +6288,7 @@ function loadViewerRaster(url, filename) {
         if (generation !== viewerResource.generation || controller.signal.aborted) return;
         if (!image || !image.naturalWidth) throw new Error("Image load failed");
         viewerStageImage = image;
+        viewerStageFresh = true;
         painted = true;
         viewerNaturalWidth = image.naturalWidth;
         viewerNaturalHeight = image.naturalHeight;
@@ -6306,6 +6360,8 @@ function loadViewerRaster(url, filename) {
                 console.warn("Original failed to decode; display copy stays:", err);
                 return Promise.resolve();
             }
+            viewerPendingBlur = null;
+            viewerStageFresh = false;
             let msg2 = err.message || "Image load failed";
             return Promise.resolve().then(async () => {
                 try {
@@ -6321,7 +6377,7 @@ function loadViewerRaster(url, filename) {
     p.catch(() => {});
     return p;
 }
-function openViewerSingle(url, filename, list, idx, boxId) {
+function openViewerSingle(url, filename, list, idx, boxId, rating) {
     // ←/→ lands here directly: block a path deleted this session even when
     // the browser serves it from cache
     const dp = galleryPathFromUrl(url);
@@ -6345,6 +6401,8 @@ function openViewerSingle(url, filename, list, idx, boxId) {
     viewerSingleFilename = filename || "image";
     viewer.classList.add("single");
     viewer.classList.toggle("has-list", viewerSingleList.length > 1);
+    // hold the previous frame's blur state until this image actually paints
+    queueViewerBlur(rating, !reSwitch);
     // leftovers a skipped teardown would strand (same as showViewerImage)
     const oldWrap = viewer.querySelector('.gallery-video-wrap');
     if (oldWrap) oldWrap.remove();
@@ -6370,6 +6428,7 @@ function openViewerSingle(url, filename, list, idx, boxId) {
         attachVideoStallRecovery(video);
         wrap.appendChild(video);
         viewer.insertBefore(wrap, viewerImg.nextSibling);
+        commitViewerBlur(true);
     } else {
         loadViewerRaster(url, filename || "image");
     }
@@ -6488,13 +6547,15 @@ function renderViewerMeta(entry, filepath) {
         .then(d => paint(d && d.site ? d.site : entry.site))
         .catch(() => paint(entry.site));
 }
-function showViewerImage() {
+function showViewerImage(revealDirect) {
     const viewer = document.getElementById("galleryViewer");
     viewer.classList.remove("single");
     viewerSingle = false;
     const viewerImg = document.getElementById("galleryViewerImg");
     const img = galleryState.images[viewerIndex];
     if (!img) return closeGalleryViewer();
+    // hold the previous frame's blur state until this image actually paints
+    queueViewerBlur(getGalleryImageRating(img), revealDirect);
     let vw = document.querySelector('.gallery-video-wrap');
     if (vw) { vw.remove(); }
     const safeFp = (img.filepath || '').replace(/\\/g, '/');
@@ -6537,6 +6598,7 @@ function showViewerImage() {
         ctrls.innerHTML = `<button class="gv-play-btn" title="Play/Pause (Space)">&#9654;</button><div class="gv-progress-wrap" title="Seek"><div class="gv-progress"><div class="gv-progress-fill"></div><div class="gv-progress-thumb"></div></div></div><span class="gv-time">0:00 / 0:00</span><button class="gv-vol-btn" title="Mute (click)">&#9835;</button><input type="range" class="gv-vol-slider" min="0" max="1" step="0.05" value="1" title="Volume">`;
         wrap.append(video, ctrls);
         viewer.insertBefore(wrap, viewerImg.nextSibling);
+        commitViewerBlur(true);
         const playBtn = ctrls.querySelector('.gv-play-btn');
         const progressFill = ctrls.querySelector('.gv-progress-fill');
         const progressThumb = ctrls.querySelector('.gv-progress-thumb');
@@ -6631,7 +6693,7 @@ function showViewerImage() {
         video.addEventListener('canplay', () => { if (video.paused && !video.ended) video.play().catch(() => {}); }, { once: true });
         attachVideoStallRecovery(video);
     } else if (fullSrc) { loadViewerRaster(fullSrc, img.filename); }
-    else { clearViewerResource(); viewerImg.removeAttribute('src'); viewerImg.style.display = 'none'; }
+    else { clearViewerResource(); viewerImg.removeAttribute('src'); viewerImg.style.display = 'none'; commitViewerBlur(true); }
     document.getElementById("galleryViewerFav").innerHTML = heartIcon(img.favourite);
 
     // === پنل اطلاعات و تگ‌ها پایین صفحه ===
@@ -6719,7 +6781,7 @@ function closeGalleryViewer() {
         loadGalleryPage(currentGalleryPage);
     }
     _viewerOpenedPage = null;
-    clearViewerResource(); flushPendingThumbs(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
+    clearViewerResource(); flushPendingThumbs(); document.getElementById("galleryViewer").classList.remove("single", "has-list", "at-start", "at-end", "is-nsfw", "viewer-unblurred"); viewerSingle = false; viewerSingleList = []; viewerSingleIdx = -1; viewerSingleUrl = ""; viewerSingleFilename = ""; viewerSingleBoxId = null; viewerPendingBlur = null; viewerStageFresh = false; document.getElementById("galleryViewer").style.display = 'none'; document.getElementById("galleryViewerImg").className = ''; document.getElementById("galleryViewerImg").style.transform = ''; document.getElementById("galleryViewerImg").style.transformOrigin = ''; const _closeImg = document.getElementById("galleryViewerImg"); if (_closeImg) { _closeImg.removeAttribute('src'); _closeImg.style.display = 'none'; _closeImg.style.position = ''; _closeImg.style.left = ''; _closeImg.style.top = ''; _closeImg.style.width = ''; _closeImg.style.height = ''; _closeImg.style.maxWidth = ''; _closeImg.style.maxHeight = ''; _closeImg.style.pointerEvents = ''; } const vw = document.querySelector('.gallery-video-wrap'); if (vw) { vw.remove(); } const _closeCanvas = document.getElementById("galleryViewerCanvas"); if (_closeCanvas) { delete _closeCanvas._safeRatio; delete _closeCanvas._failedSize; _closeCanvas.width = _closeCanvas.height = 1; _closeCanvas.style.visibility = ''; _closeCanvas.style.opacity = ''; _closeCanvas.style.display = 'none'; _closeCanvas.classList.remove('zoomed', 'dragging'); } viewerStageImage = null; viewerZoom = 1; viewerFitScale = 1; viewerFitWidth = 0; viewerFitHeight = 0; viewerPanX = 0; viewerPanY = 0; viewerIndex = -1; viewerDrag.active = false; releaseViewerCaches(); }
 function updateViewerNav() {
     // boundary buttons: no prev on the first image, no next on the last one
     const v = document.getElementById("galleryViewer");
@@ -6784,7 +6846,7 @@ function viewerNav(dir) {
         const p = viewerSingleList[n];
         let clean = p; try { clean = decodeURIComponent(p); } catch (e) {}
         const fn = (clean.split('/').pop() || "image");
-        openViewerSingle(fullImageUrl(p, fn), fn, viewerSingleList, n, viewerSingleBoxId);
+        openViewerSingle(fullImageUrl(p, fn), fn, viewerSingleList, n, viewerSingleBoxId, viewerSingleRating(p, viewerSingleBoxId));
         return;
     }
     const total = galleryState.images.length; const newIdx = viewerIndex + dir; if (newIdx < 0 && currentGalleryPage > 1) { loadGalleryPage(currentGalleryPage - 1, () => { viewerIndex = galleryState.images.length - 1; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage < galleryState.total_pages) { loadGalleryPage(currentGalleryPage + 1, () => { viewerIndex = 0; showViewerImage(); }); return; } if (newIdx >= total && currentGalleryPage >= galleryState.total_pages) { showToast("Last image"); return; } if (newIdx < 0 && currentGalleryPage <= 1) { return; } viewerIndex = newIdx; viewerZoom = 1; showViewerImage(); }
@@ -7019,9 +7081,9 @@ function toggleViewerFav() {
         if (L.vw < 1 || L.vh < 1 || L.zoom <= 0 || viewerNaturalWidth <= 0) return;
         // animated rasters reuse the image-fallback painter: a live <img>
         // element keeps animating, a canvas draw would freeze on frame 0
-        if (viewerAnimatedRaster) { viewerImageFallback(canvas, L); return; }
+        if (viewerAnimatedRaster) { viewerImageFallback(canvas, L); commitViewerBlur(); return; }
         const surface = allocateViewerSurface(canvas, L.vw, L.vh);
-        if (!surface) { viewerImageFallback(canvas, L); return; }
+        if (!surface) { viewerImageFallback(canvas, L); commitViewerBlur(); return; }
         const {ctx, dpr, bw, bh} = surface;
         canvas.style.visibility = '';
         canvas.style.opacity = '';
@@ -7040,6 +7102,7 @@ function toggleViewerFav() {
                 ctx.imageSmoothingEnabled = false;
                 ctx.drawImage(fitted, Math.round((bw - fw) / 2), Math.round((bh - fh) / 2));
                 canvas.dataset.viewerRaster = 'software-lanczos3-v2';
+                commitViewerBlur();
                 return;
             }
             // Do not show an aliased browser resize while the software filter
@@ -7083,7 +7146,8 @@ function toggleViewerFav() {
             L.offY - sy + ry / repScale * L.zoom,
             rw / repScale * L.zoom,
             rh / repScale * L.zoom);
-        } catch (error) { viewerImageFallback(canvas, L); }
+        commitViewerBlur();
+        } catch (error) { viewerImageFallback(canvas, L); commitViewerBlur(); }
     }
     let _viewerPaintFrame = 0;
     function scheduleViewerPaint() {
@@ -7318,8 +7382,22 @@ function toggleViewerFav() {
     } catch (e) {}
     let viewerDrag = { active: false, startX: 0, startY: 0, imgX: 0, imgY: 0 };
     document.getElementById("galleryViewer").addEventListener('click', function(e) { // the canvas covers the whole viewport: only empty space at fit
+        const canvas = e.target.id === 'galleryViewerCanvas';
+        const img = e.target.id === 'galleryViewerImg';
+        if (viewerBlurActive() && (canvas || img)) {
+            // only the painted image unblurs — clicks in the letterbox do not
+            const L = viewerLayoutState();
+            const [sx, sy] = viewerPanToScroll(L, viewerPanX, viewerPanY);
+            const r = this.getBoundingClientRect();
+            const x = e.clientX - r.left, y = e.clientY - r.top;
+            const left = L.offX - sx, top = L.offY - sy;
+            if (x >= left && x <= left + L.dispW && y >= top && y <= top + L.dispH) {
+                this.classList.add('viewer-unblurred');
+                return;
+            }
+        }
         // zoom closes; a zoomed canvas owns its area (drag/click)
-        if (e.target === this || (e.target.id === 'galleryViewerCanvas' && viewerZoom <= 1.001)) closeGalleryViewer(); });
+        if (e.target === this || (canvas && viewerZoom <= 1.001)) closeGalleryViewer(); });
     let zoomThrottle = 0;
 
 
@@ -7409,29 +7487,29 @@ async function rescanGallery() { try { let resp = await fetch("/api/gallery/resc
             }
         } catch (e) { _lastSourceFilterKey = null; console.error("site filter load failed:", e); }
         const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
-        if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
+        if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources');
         updateSourceDropdown();
         container.scrollTop = prevScroll;
     }
     function toggleDropdown(id) { const menu = document.getElementById(id); document.querySelectorAll('.gallery-dropdown-menu.open').forEach(m => { if (m.id !== id) m.classList.remove('open'); }); menu.classList.toggle('open'); }
     function onSourceChange() {
         const btn = document.querySelector('[onclick="toggleDropdown(\'sourceDropdown\')"]');
-        if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources') + ' ▾';
+        if (btn) btn.textContent = getMultiLabel('sourceDropdown', 'All Sources');
         updateRatingDropdown();
         loadGallery(1);
     }
     function onRatingChange() {
         const btn = document.querySelector('[onclick="toggleDropdown(\'ratingDropdown\')"]');
-        if (btn) btn.textContent = getMultiLabel('ratingDropdown', 'All Ratings') + ' ▾';
+        if (btn) btn.textContent = getMultiLabel('ratingDropdown', 'All Ratings');
         updateSourceDropdown();
         loadGallery(1);
     }
     function onTypeChange() {
         const btn = document.querySelector('[onclick="toggleDropdown(\'typeDropdown\')"]');
-        if (btn) btn.textContent = getMultiLabel('typeDropdown', 'All Types') + ' ▾';
+        if (btn) btn.textContent = getMultiLabel('typeDropdown', 'All Types');
         loadGallery(1);
     }
-    function selectSort(el, value) { document.getElementById("sortDropdown").dataset.sort = value; const btn = document.querySelector('[onclick="toggleDropdown(\'sortDropdown\')"]'); btn.textContent = el.textContent.trim() + ' ▾'; document.getElementById("sortDropdown").classList.remove('open'); loadGallery(1); }
+    function selectSort(el, value) { document.getElementById("sortDropdown").dataset.sort = value; const btn = document.querySelector('[onclick="toggleDropdown(\'sortDropdown\')"]'); btn.textContent = el.textContent.trim(); document.getElementById("sortDropdown").classList.remove('open'); loadGallery(1); }
     document.addEventListener('click', function(e) { if (!e.target.closest('.gallery-dropdown')) { document.querySelectorAll('.gallery-dropdown-menu.open').forEach(m => m.classList.remove('open')); } });
 
     // themed replacement for native confirm() (which ignores dark mode)

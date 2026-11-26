@@ -4771,6 +4771,7 @@ def tag_excludes_save():
     tags, err = tag_excludes.save(data.get("site"), data.get("tags"))
     if err:
         return jsonify({"error": err}), 400
+    _purge_queued_excludes(str(data.get("site") or "").strip().lower())
     return jsonify({"tags": tags})
 
 
@@ -4933,6 +4934,29 @@ def _queue_entry(job):
     return {"site": job.get("worker", "?"),
             "tag": (job.get("tag") or job.get("category") or "").strip() or "?"}
 
+
+def _drop_excluded_tags(job):
+    """Strip permanent excludes from a queued job; False means nothing left."""
+    site = str(job.get("worker") or "").strip().lower()
+    tag = job.get("tag")
+    if site in tag_excludes.SITES and tag:
+        kept = tag_excludes.strip(site, tag)
+        if kept != tag:
+            shared.log_msg(site, f">>> Removed permanently excluded tag: {tag} <<<")
+            job["tag"] = kept
+        tag = kept
+    return bool(tag or job.get("category") or job.get("user_id"))
+
+
+def _purge_queued_excludes(site):
+    with QUEUE_LOCK:
+        q = DOWNLOAD_QUEUES.get(site)
+        if not q:
+            return
+        DOWNLOAD_QUEUES[site] = [job for job in q if _drop_excluded_tags(job)]
+    _emit_queue_state()
+
+
 # form-level settings a START payload carries that must override what queued
 # jobs snapshotted at enqueue time (identity keys tag/category/user_id and
 # net_config stay per-job)
@@ -5062,6 +5086,7 @@ def handle_get_queue():
 @socketio.on("start_worker")
 def handle_start_worker(data):
     data = data or {}
+    _drop_excluded_tags(data)
     site = data.get("worker")
     has_payload = any(data.get(k) for k in ("tag", "category", "user_id"))
     # settings_only: client's START with a waiting queue carries only the
@@ -5108,8 +5133,11 @@ def handle_start_worker(data):
 
 @socketio.on("queue_add")
 def handle_queue_add(data):
-    site = (data or {}).get("worker")
+    data = data or {}
+    site = data.get("worker")
     if not site or not any(data.get(k) for k in ("tag", "category", "user_id")):
+        return
+    if not _drop_excluded_tags(data):
         return
     with QUEUE_LOCK:
         q = DOWNLOAD_QUEUES.setdefault(site, [])

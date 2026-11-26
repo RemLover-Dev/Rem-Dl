@@ -53,6 +53,19 @@ def test_all_returns_cleaned_tags_for_every_site():
     assert set(every) == set(tag_excludes.SITES)
 
 
+def test_strip_removes_positive_excludes_and_keeps_negatives():
+    tag_excludes.save("gelbooru", ["solo", "1boy"])
+    assert tag_excludes.strip("gelbooru", "rem solo") == "rem"
+    assert tag_excludes.strip("gelbooru", "solo") == ""
+    assert tag_excludes.strip("gelbooru", "rem -solo") == "rem -solo"
+
+
+def test_strip_handles_comma_sites():
+    tag_excludes.save("zero", ["Ines (Arknights)"])
+    assert (tag_excludes.strip("zero", "Kafka (Honkai: Star Rail),Ines (Arknights)")
+            == "Kafka (Honkai: Star Rail)")
+
+
 def test_dispatch_worker_applies_excludes(monkeypatch):
     import Rems_Dl
 

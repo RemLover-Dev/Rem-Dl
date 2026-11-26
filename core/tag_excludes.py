@@ -94,3 +94,31 @@ def apply(site, tag):
                if t.strip().startswith("-")}
     extra = [t for t in get(site) if t.lower() not in already]
     return (tag + sep + sep.join("-" + t for t in extra)).strip() if extra else tag
+
+
+def _key(site, tag):
+    cleaned = _clean(site, [tag])
+    return cleaned[0] if cleaned else ""
+
+
+def strip(site, tag):
+    """Remove permanently excluded positive tags from a queued search."""
+    site = _site(site)
+    tag = str(tag or "").strip()
+    if site not in SITES or not tag:
+        return tag
+    excluded = set(get(site))
+    if not excluded:
+        return tag
+    if site in _COMMA_SITES:
+        parts = (p.strip() for p in tag.split(","))
+        return ",".join(p for p in parts
+                        if p and (p.startswith("-") or _key(site, p) not in excluded))
+    if site in _SPACE_TAGS:
+        # shortcut: space-containing tags have no delimiter, so only an exact
+        # match is safe; upgrade when the payload keeps tag boundaries
+        if not tag.startswith("-") and _key(site, tag) in excluded:
+            return ""
+        return tag
+    return " ".join(p for p in tag.split()
+                    if p.startswith("-") or _key(site, p) not in excluded)

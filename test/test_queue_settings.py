@@ -21,7 +21,7 @@ for _k, _v in _env_before.items():
     else:
         os.environ[_k] = _v
 
-from core import shared
+from core import shared, tag_excludes
 
 
 def _wait(cond, timeout=5):
@@ -37,6 +37,13 @@ def _settled():
     # the finally block resolves active+queue together under QUEUE_LOCK, so
     # an empty ACTIVE_JOBS means the run is over
     return not Rems_Dl.ACTIVE_JOBS
+
+
+@pytest.fixture
+def restore_gelbooru_excludes():
+    before = tag_excludes.get("gelbooru")
+    yield
+    tag_excludes.save("gelbooru", before)
 
 
 @pytest.fixture
@@ -134,3 +141,30 @@ def test_bare_start_without_settings_leaves_queue_snapshots(queue_env):
     assert _wait(lambda: len(dispatches) == 1 and _settled()), "run never settled"
     assert dispatches[0]["limit"] == "50"
     assert dispatches[0]["rating"] == "g"
+
+
+def test_queue_add_drops_permanently_excluded_tag(queue_env, restore_gelbooru_excludes):
+    tag_excludes.save("gelbooru", ["solo"])
+    Rems_Dl.handle_queue_add({"worker": "gelbooru", "tag": "solo", "limit": "50"})
+    assert not Rems_Dl.DOWNLOAD_QUEUES.get("gelbooru")
+    Rems_Dl.handle_queue_add({"worker": "gelbooru", "tag": "rem solo", "limit": "50"})
+    assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["rem"]
+
+
+def test_start_worker_drops_permanently_excluded_tag(queue_env, restore_gelbooru_excludes):
+    tag_excludes.save("gelbooru", ["solo"])
+    Rems_Dl.handle_start_worker({"worker": "gelbooru", "tag": "solo", "limit": "50"})
+    assert not Rems_Dl.ACTIVE_JOBS
+    assert not Rems_Dl.DOWNLOAD_QUEUES
+
+
+def test_saving_exclude_purges_waiting_queue(queue_env, restore_gelbooru_excludes):
+    with Rems_Dl.QUEUE_LOCK:
+        Rems_Dl.DOWNLOAD_QUEUES["gelbooru"] = [
+            {"worker": "gelbooru", "tag": "solo"},
+            {"worker": "gelbooru", "tag": "rem"},
+        ]
+    resp = Rems_Dl.app.test_client().post(
+        "/api/tag-excludes", json={"site": "gelbooru", "tags": ["solo"]})
+    assert resp.status_code == 200
+    assert [j["tag"] for j in Rems_Dl.DOWNLOAD_QUEUES["gelbooru"]] == ["rem"]
