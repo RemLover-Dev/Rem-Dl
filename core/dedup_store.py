@@ -475,7 +475,7 @@ def image_quality(path: str) -> tuple:
         return (0, size)
 
 
-def is_larger(new_q: tuple, old_q: tuple) -> bool:
+def is_larger(new_q: tuple, old_q: tuple, compare_bytes: bool = True) -> bool:
     """True if `new_q` (pixels, bytes) beats `old_q`. Pixels first, bytes break ties."""
     new_px, new_sz = new_q
     old_px, old_sz = old_q
@@ -483,7 +483,7 @@ def is_larger(new_q: tuple, old_q: tuple) -> bool:
         return True
     if new_px * LARGER_PIXEL_MARGIN < old_px:
         return False
-    return new_sz > old_sz
+    return compare_bytes and new_sz > old_sz
 
 
 def sizes_comparable(new_path: str, old_path: str) -> bool:
@@ -1078,8 +1078,8 @@ class DedupStore:
                     except OSError:
                         new_size = 0
                     new_q = (sig.content_w * sig.content_h, new_size)
-                    if (sizes_comparable(filepath, match["filepath"])
-                            and is_larger(new_q, self._row_quality(match))):
+                    if is_larger(new_q, self._row_quality(match),
+                                 sizes_comparable(filepath, match["filepath"])):
                         return self._replace_with_larger_locked(
                             match, filepath, sig, site, post_id)
                 return DedupResult(

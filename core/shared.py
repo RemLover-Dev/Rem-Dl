@@ -923,6 +923,55 @@ def gallery_id_for_path(site, filepath, filename=None, master_root=None):
             "utf-8", "surrogateescape")).hexdigest()[:16]
     return hashlib.sha256((f"gallery-legacy:{normalize_site(site)}:{filename or ''}")
                           .encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def relocate_gallery_file(old_abs, new_abs):
+    """Rename an indexed image in place, keeping its gallery id and tags.
+
+    Gallery ids are path-derived, so a bare filesystem rename would make the
+    next scan treat the file as new and orphan its tag rows. This moves the
+    file and repoints both stores under the gallery lock; any store failure
+    moves the file back before raising.
+    """
+    old = os.path.abspath(os.fspath(old_abs))
+    new = os.path.abspath(os.fspath(new_abs))
+    if os.path.islink(old) or os.path.islink(new):
+        raise ValueError("Refusing to relocate a symbolic link")
+    if os.path.realpath(os.path.dirname(old)) != os.path.realpath(os.path.dirname(new)):
+        raise ValueError("Relocation must stay in the same directory")
+    if os.path.exists(new):
+        raise FileExistsError(new)
+    root = os.path.realpath(MASTER_FOLDER)
+    indexed = old.startswith(root + os.sep)
+    old_rel = os.path.relpath(old, root) if indexed else old
+    new_rel = os.path.relpath(new, root) if indexed else new
+    old_key = gallery_path_key(old_rel, master_root=MASTER_FOLDER)
+
+    os.rename(old, new)
+    try:
+        with _GALLERY_LOCK:
+            store = _store()
+            store.relocate_filepath(old_rel, new_rel, old, new)
+            try:
+                from core.dedup_store import get_store as get_dedup_store
+                get_dedup_store().relocate_filepath(old, new)
+            except BaseException:
+                store.relocate_filepath(new_rel, old_rel, new, old)
+                raise
+            cache = _gallery_cache["data"]
+            if cache is not None:
+                entry = next((item for item in cache.get("images", [])
+                              if gallery_path_key(item.get("filepath"),
+                                                  master_root=MASTER_FOLDER) == old_key), None)
+                if entry is not None:
+                    entry["filepath"] = new_rel
+                    entry["filename"] = os.path.basename(new)
+                    _reindex_gallery_locked(cache)
+    except BaseException:
+        os.rename(new, old)
+        raise
+    return new
+
 # entries whose tags are read per pass (heal, filtering) — keeps a whole
 # library's tags off the heap at once
 _TAG_CHUNK = 500

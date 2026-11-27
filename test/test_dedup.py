@@ -294,3 +294,26 @@ class TestKeepLargerAcrossFormats:
             assert res.matched_path == str(jxl)
         finally:
             store.close()
+
+    def test_bigger_pixels_replace_converted_jxl(self, tmp_path):
+        """A genuinely higher-resolution copy must still win after auto-JXL,
+        even though its format family differs from the stored .jxl."""
+        store = DedupStore(db_path=str(tmp_path / "dedup.sqlite3"))
+        try:
+            png = tmp_path / "img.png"
+            Image.new("RGB", (300, 300), color=(100, 150, 200)).save(png)
+            assert not store.check_and_add(
+                str(png), site="gelbooru", post_id="1").is_duplicate
+            jxl = tmp_path / "img.jxl"
+            jxl.write_bytes(b"x" * 64)
+            store.relocate_filepath(str(png), str(jxl))
+            png.unlink()
+            bigger = tmp_path / "img_big.png"
+            Image.new("RGB", (600, 600), color=(100, 150, 200)).save(bigger)
+            res = store.check_and_add(str(bigger), site="gelbooru", post_id="2")
+            assert not res.is_duplicate
+            assert res.replaced_path == str(jxl)
+            assert not jxl.exists()
+            assert bigger.exists()
+        finally:
+            store.close()
