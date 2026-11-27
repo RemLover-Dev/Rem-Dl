@@ -1029,14 +1029,9 @@ function renderRule34Tags() {
         if (methodSelect) methodSelect.disabled = false;
     }
 
-    container.innerHTML = currentRule34Tags.map(function(t) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : 'positive';
-        let icon = isNeg ? '− ' : '✔ ';
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeRule34Tag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
+    renderTagChips(container, currentRule34Tags, null, "removeRule34Tag",
+        { firstClass: 'positive', subClass: 'positive', neutralClass: 'positive',
+          firstIcon: '✔ ', otherIcon: '✔ ' });
 }
 
 // --- Gelbooru interactive tags (mirrors rule34; joined with ' ' for the worker) ---
@@ -1059,6 +1054,23 @@ function replaceTagToken(list, val) {
 function withoutTagToken(list, tag) {
     const key = tagKey(tag);
     return list.filter(function(t) { return tagKey(t) !== key; });
+}
+function renderTagChips(container, tags, subTags, removeName, opts) {
+    if (!container) return;
+    opts = opts || {};
+    const negClass = opts.negClass || 'warning';
+    const firstClass = opts.firstClass || 'main';
+    const subClass = opts.subClass || 'sub';
+    const neutralClass = opts.neutralClass || 'neutral';
+    const firstIcon = opts.firstIcon || ZERO_STAR_ICON;
+    const otherIcon = opts.otherIcon || ZERO_CHECK_ICON;
+    container.innerHTML = tags.map(function(t, idx) {
+        const isNeg = t.startsWith('-');
+        const text = isNeg ? t.substring(1) : t;
+        const cls = isNeg ? negClass : (idx === 0 ? firstClass : (subTags && subTags.has(t) ? subClass : neutralClass));
+        const icon = isNeg ? '− ' : (idx === 0 ? firstIcon : otherIcon);
+        return '<span class="v-tag ' + cls + '" onclick="' + removeName + '(\'' + escJs(t) + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
+    }).join('');
 }
 function makeChips(name) {
     const chips = {
@@ -1089,16 +1101,7 @@ function makeChips(name) {
         render() {
             let container = document.getElementById(name + "TagsContainer");
             if (!container) return;
-            container.innerHTML = chips.tags.map(function(t, idx) {
-                let isNeg = t.startsWith('-');
-                let text = isNeg ? t.substring(1) : t;
-                // negatives stay warning; first pill main, dropdown picks sub,
-                // typed neutral
-                let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (chips.subTags.has(t) ? 'sub' : 'neutral'));
-                let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-                let safeT = escJs(t);
-                return '<span class="v-tag ' + cls + '" onclick="' + name + 'Chips.remove(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-            }).join('');
+            renderTagChips(container, chips.tags, chips.subTags, name + "Chips.remove");
         }
     };
     return chips;
@@ -1167,14 +1170,7 @@ function removeWatcherTag(tag) {
 function renderWatcherTags() {
     let container = document.getElementById("watcherTagsContainer");
     if (!container) return;
-    container.innerHTML = watcherTags.map(function(t, idx) {
-        const isNeg = t.startsWith('-');
-        const text = isNeg ? t.substring(1) : t;
-        const cls = isNeg ? 'warning' : (idx === 0 ? 'main' : 'neutral');
-        const icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        const safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeWatcherTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
+    renderTagChips(container, watcherTags, null, "removeWatcherTag");
 }
 function onWatcherRatingChange() { onMultiRatingChange('watcherRatingDropdown', 'watcherGelRating'); }
 
@@ -1569,15 +1565,7 @@ const ZERO_CHECK_ICON = '<svg width="1em" height="1em" viewBox="0 0 14 14" fill=
 function renderZerochanTags() {
     let container = document.getElementById("zeroTagsContainer");
     if (!container) return;
-    container.innerHTML = currentZerochanTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        // ponytail: negatives stay warning; else first pill is main, dropdown picks are sub, typed are other
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (zerochanSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeZerochanTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
+    renderTagChips(container, currentZerochanTags, zerochanSubTags, "removeZerochanTag");
 }
 async function showZeroSubtags(dropdown, input) {
     if (!currentZerochanTags.length || input.value.trim() !== "") { dropdown.style.display = "none"; return; }
@@ -1786,14 +1774,7 @@ function removeAnimeDlTag(tag) {
 function renderAnimeDlTags() {
     let container = document.getElementById("animeDlTagsContainer");
     if (!container) return;
-    container.innerHTML = currentAnimeDlTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (animeDlSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeAnimeDlTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
+    renderTagChips(container, currentAnimeDlTags, animeDlSubTags, "removeAnimeDlTag");
 }
 async function showAnimeDlSubtags(dropdown, input) {
     if (!currentAnimeDlTags.length || input.value.trim() !== "") { dropdown.style.display = "none"; return; }
@@ -1861,14 +1842,7 @@ function removeDanTag(tag) {
 function renderDanTags() {
     let container = document.getElementById("danTagsContainer");
     if (!container) return;
-    container.innerHTML = currentDanTags.map(function(t, idx) {
-        let isNeg = t.startsWith('-');
-        let text = isNeg ? t.substring(1) : t;
-        let cls = isNeg ? 'warning' : (idx === 0 ? 'main' : (danSubTags.has(t) ? 'sub' : 'neutral'));
-        let icon = isNeg ? '− ' : (idx === 0 ? ZERO_STAR_ICON : ZERO_CHECK_ICON);
-        let safeT = escJs(t);
-        return '<span class="v-tag ' + cls + '" onclick="removeDanTag(\'' + safeT + '\')" style="cursor:pointer;" title="Click to remove">' + icon + escapeHtml(cleanTagDisplay(text)) + '</span>';
-    }).join('');
+    renderTagChips(container, currentDanTags, danSubTags, "removeDanTag");
 }
 async function showDanSubtags(dropdown, input) {
     if (!currentDanTags.length || input.value.trim() !== "") { dropdown.style.display = "none"; return; }

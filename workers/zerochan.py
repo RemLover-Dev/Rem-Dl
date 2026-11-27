@@ -1065,6 +1065,8 @@ class ZerochanWorker(BaseDownloader):
         # — known posts are filtered out after listing and must not starve it).
         # 2000 caps one listing walk (~20 requests) for absurd amounts.
         self._gdl_limit = min(max(200, self.amount or 200), 2000)
+        # a local gallery-dl slice is 10 posts; the page cap must cover the limit
+        MAX_PAGES = max(MAX_PAGES, (self._gdl_limit + PAGE_SIZE - 1) // PAGE_SIZE)
         if self.amount <= 0 or self.amount > self._gdl_limit:
             self.log(f"gallery-dl lists at most {self._gdl_limit} posts per run; "
                      f"re-run to continue past that.")

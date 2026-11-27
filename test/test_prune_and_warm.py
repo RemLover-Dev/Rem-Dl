@@ -46,6 +46,27 @@ def test_prune_dead_entries_keeps_offline_root(tmp_path, monkeypatch):
     assert names == ["a.png", "hdd.png"]
 
 
+def test_prune_keeps_rows_when_master_root_is_missing(tmp_path, monkeypatch):
+    """An unmounted drive must not look like a library of deleted files."""
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path / "not-mounted"))
+    gallery = {"images": [
+        {"filename": "a.png", "filepath": "Zerochan/a.png"},
+        {"filename": "b.png", "filepath": "Danbooru/b.png"},
+    ]}
+    assert Rems_Dl._prune_dead_gallery_entries(gallery) == []
+    assert [i["filename"] for i in gallery["images"]] == ["a.png", "b.png"]
+
+
+def test_ensure_root_link_does_not_create_missing_master(tmp_path, monkeypatch):
+    """Creating the link dir must not materialize an unmounted master root."""
+    master = tmp_path / "not-mounted"
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(master))
+    assert Rems_Dl._ensure_root_link(str(extra)) is None
+    assert not master.exists()
+
+
 def test_manual_rescan_prunes_dead_entries(client, tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
     _make(tmp_path, "Zerochan/a.png")

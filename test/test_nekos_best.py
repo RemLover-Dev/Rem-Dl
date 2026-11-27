@@ -105,3 +105,25 @@ def test_empty_category_falls_back_to_neko(tmp_path, monkeypatch):
     w, _calls = _worker(tmp_path, monkeypatch, {"results": [
         {"url": "https://nekos.best/api/v2/neko/abc.png"}]}, category="")
     assert w.categories == ["neko"]
+
+
+def test_exhausted_category_does_not_cascade(tmp_path, monkeypatch):
+    # an exhausted pool must not count its duplicate rounds against the next category
+    monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
+    w = NekosBestWorker("neko hug", 0, NET_CONFIG)
+    hits = {"neko": 0, "hug": 0}
+
+    class _S:
+        def get(self, url):
+            cat = url.split("/api/v2/", 1)[1].split("?", 1)[0]
+            hits[cat] += 1
+            return _Resp({"results": [{"url": f"https://nekos.best/api/v2/{cat}/x.png"}]})
+
+    setattr(w, "session", _S())
+
+    async def fake_enqueue(*args, **kw):
+        return False
+
+    setattr(w, "enqueue_download", fake_enqueue)
+    asyncio.run(w.scraper_task())
+    assert hits == {"neko": 20, "hug": 20}, hits

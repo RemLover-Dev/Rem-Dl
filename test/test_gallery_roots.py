@@ -28,6 +28,7 @@ def roots_env(tmp_path, monkeypatch):
     Image.new("RGB", (64, 64), color=(30, 60, 90)).save(master / "Zerochan" / "a.png")
     Image.new("RGB", (64, 64), color=(10, 200, 40)).save(hdd_root / "Danbooru" / "b.png")
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(master))
+    monkeypatch.setattr(Rems_Dl, "_gallery_root_bases", lambda: [str(tmp_path)])
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     roots_added = []
     monkeypatch.setattr(Rems_Dl.DatabaseManager, "load_ui_config",
@@ -247,6 +248,13 @@ def test_gallery_roots_reject_home_and_its_ancestors(client):
     for path in (home, os.path.dirname(home) or os.sep, os.sep):
         r = client.post("/api/gallery/roots", json={"path": path}, headers=H)
         assert r.status_code == 400, path
+
+
+def test_gallery_roots_reject_outside_allowed_roots(client, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    r = client.post("/api/gallery/roots", json={"path": str(outside)}, headers=H)
+    assert r.status_code == 400
 
 
 def test_filepath_cache_resolves_each_same_named_row_by_path(client, roots_env):

@@ -186,8 +186,28 @@ def test_merge_on_collision_keeps_both_files(scene):
 
     target = os.path.join(root, "Danbooru/Soo Ou/Safe/Images")
     assert os.path.isfile(os.path.join(target, "extra.jpg")), "non-clashing file lost"
-    # the clash is never overwritten: one of the two copies survives on disk
+    # the clash is never overwritten: both copies survive, one under a new name
     assert os.path.isfile(os.path.join(target, "5377943.jpg"))
+    assert os.path.isfile(os.path.join(target, "5377943 (2).jpg")), "clashing file lost"
+
+
+def test_internal_gallery_roots_dir_is_not_retitled(scene):
+    """The app-owned .gallery_roots link tree must keep its exact name."""
+    root, db = scene
+    link = os.path.join(root, ".gallery_roots", "deadbeef01", "Danbooru")
+    os.makedirs(link, exist_ok=True)
+    with open(os.path.join(link, "hdd.png"), "wb") as fh:
+        fh.write(b"x")
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO gallery VALUES (?,?,?)",
+                (99, "hdd.png", ".gallery_roots/deadbeef01/Danbooru/hdd.png"))
+    con.commit()
+    con.close()
+
+    folder_policy.migrate_folder_policy(root, force=True)
+
+    assert os.path.isdir(link), "internal link tree was renamed"
+    assert ".gallery_roots/deadbeef01/Danbooru/hdd.png" in _paths(db, "gallery")
 
 
 def test_defers_when_the_store_cannot_open(scene, monkeypatch):

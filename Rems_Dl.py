@@ -997,7 +997,11 @@ def _auto_jxl_convert_one(path, effort):
             finally:
                 if process.poll() is None:  # hung encoder — kill it, original kept
                     process.terminate()
-                    process.wait(timeout=5)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
             if process.returncode != 0 or not response_path.is_file():
                 raise ValueError('Codec worker stopped or timed out; original kept')
             data = json.loads(response_path.read_text(encoding='utf-8'))
@@ -2882,6 +2886,8 @@ def _root_key(root):
 
 
 def _ensure_root_link(root):
+    if not os.path.isdir(MASTER_FOLDER):
+        return None
     link_dir = os.path.join(MASTER_FOLDER, _ROOTS_LINK_DIR)
     os.makedirs(link_dir, exist_ok=True)
     link = os.path.join(link_dir, _root_key(root))
@@ -2909,6 +2915,25 @@ def _gallery_roots():
                 if os.path.isdir(p) and p != os.path.realpath(MASTER_FOLDER):
                     roots.append(p)
     return roots
+
+
+def _gallery_root_bases():
+    """Roots a user may add as extra gallery folders: home plus the OS's
+    external-drive mount points. Windows drive roots are the mount points."""
+    bases = [os.path.realpath(os.path.expanduser("~"))]
+    if os.name == "nt":
+        bases.extend(f"{letter}:\\" for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ")
+    else:
+        bases.extend(["/media", "/mnt", "/run/media", "/Volumes"])
+    return bases
+
+
+def _gallery_root_base(path):
+    for base in _gallery_root_bases():
+        base = os.path.realpath(base).rstrip(os.sep) or os.sep
+        if path.startswith(base + os.sep):
+            return base
+    return None
 
 
 def _allowed_image_base(full):
@@ -2977,15 +3002,12 @@ def gallery_roots_manage():
         if not path:
             return jsonify(error="path required"), 400
         p = os.path.realpath(os.path.expanduser(path))
+        base = _gallery_root_base(p)
+        # bare startswith is CodeQL's containment barrier (a helper call is not)
+        if base is None or not p.startswith(base + os.sep):
+            return jsonify(error="Choose a folder inside your home or on an external drive"), 400
         if not os.path.isdir(p):
             return jsonify(error="Folder does not exist"), 400
-        home = os.path.realpath(os.path.expanduser("~"))
-        home_parent = os.path.dirname(home)
-        if (p == home or p == os.path.dirname(p) or home.startswith(p + os.sep)
-                or (home_parent != os.path.dirname(home_parent)
-                    and p.startswith(home_parent + os.sep)
-                    and not p.startswith(home + os.sep))):
-            return jsonify(error="Choose a folder inside your home or on an external drive"), 400
         if p == master or master.startswith(p + os.sep) or p.startswith(master + os.sep):
             return jsonify(error="Folder overlaps the download folder"), 400
         if any(os.path.realpath(r) == p for r in saved):
@@ -5279,6 +5301,21 @@ def _heal_bare_gallery_tags():
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _master_root_accessible():
+    """True when MASTER_FOLDER is present and listable.
+
+    A removable/network drive that is not mounted must not be mistaken for a
+    library whose files were all deleted.
+    """
+    try:
+        if not os.path.isdir(MASTER_FOLDER):
+            return False
+        os.listdir(MASTER_FOLDER)
+        return True
+    except OSError:
+        return False
+
+
 def _prune_dead_gallery_entries(gallery, known_paths=None):
     """Drop entries whose file no longer exists (deleted manually or by
     cleanups). A .gallery_roots row whose link itself is missing means the
@@ -5289,6 +5326,8 @@ def _prune_dead_gallery_entries(gallery, known_paths=None):
     `known_paths` comes from the TTL walk: a file in that set is present, so
     skip the per-row stat. Files added after the walk are not in it and still
     get the isfile check, so a fresh download is never culled."""
+    if not _master_root_accessible():
+        return []
     kept, removed_names = [], []
     for i in gallery["images"]:
         fp = i.get("filepath", "")
