@@ -3006,6 +3006,15 @@ def gallery_roots_manage():
         # bare startswith is CodeQL's containment barrier (a helper call is not)
         if base is None or not p.startswith(base + os.sep):
             return jsonify(error="Choose a folder inside your home or on an external drive"), 400
+        home = os.path.realpath(os.path.expanduser("~"))
+        home_parent = os.path.dirname(home)
+        # the drive-root base must not make home, its ancestors, or its
+        # siblings on the same parent selectable
+        if (p == home or p == os.path.dirname(p) or home.startswith(p + os.sep)
+                or (home_parent != os.path.dirname(home_parent)
+                    and p.startswith(home_parent + os.sep)
+                    and not p.startswith(home + os.sep))):
+            return jsonify(error="Choose a folder inside your home or on an external drive"), 400
         if not os.path.isdir(p):
             return jsonify(error="Folder does not exist"), 400
         if p == master or master.startswith(p + os.sep) or p.startswith(master + os.sep):

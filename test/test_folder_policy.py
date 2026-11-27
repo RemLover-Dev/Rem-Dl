@@ -175,7 +175,9 @@ def test_half_renamed_tree_converges(scene):
 def test_merge_on_collision_keeps_both_files(scene):
     """Two folders that prettify to the same name must not lose either's files."""
     root, _ = scene
-    other = os.path.join(root, "danbooru/soo_ou/Safe/Images")   # same target as safe/images
+    # trailing underscore prettifies to the same "Images" but is a distinct
+    # directory on case-insensitive filesystems (unlike "Images" itself)
+    other = os.path.join(root, "danbooru/soo_ou/safe/images_")
     os.makedirs(other, exist_ok=True)
     with open(os.path.join(other, "5377943.jpg"), "wb") as fh:
         fh.write(b"clashing copy")
