@@ -55,13 +55,13 @@ def _mk(tmp_path, monkeypatch):
 
 def test_dup_killed_name_survives_for_the_next_run(tmp_path, monkeypatch):
     dl = _mk(tmp_path, monkeypatch)
-    dl.log = lambda m: None
+    setattr(dl, "log", lambda msg: None)
     monkeypatch.setattr("core.shared.check_duplicate", lambda *a, **k: _Dup())
 
     payload = b"img-bytes" * 300
-    dl.session = MockSession(
+    setattr(dl, "session", MockSession(
         [MockResponse(200, {"Content-Length": str(len(payload))}, MockContent([payload]))]
-    )
+    ))
 
     filename = "dup-shot.jpg"
     folder = os.path.join(dl.site_root, "Tag")
@@ -92,6 +92,9 @@ def test_dup_killed_name_survives_for_the_next_run(tmp_path, monkeypatch):
     dl2 = _mk(tmp_path, monkeypatch)
     assert filename in dl2.dl_history
     dl2.download_queue = asyncio.Queue()
+    # a name skip must not fall through to the source-hash gate
+    dl2._claim_source_md5 = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("hash checked on a name skip"))
     enqueued = asyncio.run(
         dl2.enqueue_download(
             url="http://example.com/x.jpg",
@@ -101,3 +104,4 @@ def test_dup_killed_name_survives_for_the_next_run(tmp_path, monkeypatch):
         )
     )
     assert enqueued is False
+    assert dl2.skipped_count == 1

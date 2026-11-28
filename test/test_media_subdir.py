@@ -1,3 +1,5 @@
+from typing import cast
+
 from core.shared import media_subdir
 
 
@@ -17,5 +19,5 @@ def test_media_subdir_routes_by_kind():
 
 def test_media_subdir_unknown_falls_back_to_images():
     assert media_subdir("") == "Images"
-    assert media_subdir(None) == "Images"
+    assert media_subdir(cast(str, None)) == "Images"
     assert media_subdir(".exe") == "Images"

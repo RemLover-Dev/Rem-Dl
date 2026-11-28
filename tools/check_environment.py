@@ -17,9 +17,6 @@ def main():
     args = parser.parse_args()
     failures = 0
     print(f'Python {platform.python_version()} / {platform.system()} {platform.machine()}')
-    if sys.version_info < (3, 10):
-        print('ERROR: Python 3.10 or newer is required')
-        failures += 1
     required = ['flask', 'flask_socketio', 'requests', 'dotenv', 'PIL', 'aiohttp', 'curl_cffi', 'rule34Py']
     if not args.headless:
         required.append('webview')

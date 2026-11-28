@@ -21,7 +21,7 @@ try:
             return _orig_meta_version(distribution_name)
         except Exception:
             if distribution_name and str(distribution_name).lower() in (
-                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+                "rule34py", "gallery-dl", "gallery_dl"
             ):
                 return "4.2.0"
             raise
@@ -31,7 +31,7 @@ try:
             return _orig_meta_distribution(distribution_name)
         except Exception:
             if distribution_name and str(distribution_name).lower() in (
-                "rule34py", "pinterest-dl", "pinterest_dl", "gallery-dl", "gallery_dl"
+                "rule34py", "gallery-dl", "gallery_dl"
             ):
                 return _SafeDistribution(str(distribution_name))
             raise
@@ -97,7 +97,7 @@ class Rule34Worker(BaseWorker):
 
         if api_key and user_id:
             client.api_key = api_key
-            client.user_id = user_id
+            setattr(client, "user_id", user_id)
             self.log("API credentials loaded from .env")
         else:
             self.log("No API credentials found. Running in anonymous mode.")
@@ -118,31 +118,33 @@ class Rule34Worker(BaseWorker):
 
         collected_count = 0
         page = 0
+        # page_id is a page number and the API offsets by limit: a shrinking
+        # per-page limit made later pages re-serve earlier posts
+        page_limit = min(1000, self.amount) if self.amount > 0 else 100
 
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             self.log(f"Scanning via rule34Py... (Page {page})")
-            chunk_limit = min(1000, self.amount - collected_count if self.amount > 0 else 100)
             results = None
             max_retries = 5
 
             for attempt in range(max_retries):
                 try:
                     await pace_requests()
-                    results = await asyncio.to_thread(self.client.search, self.api_tags, page_id=page, limit=chunk_limit, exclude_ai=self.exclude_ai)
+                    results = await asyncio.to_thread(self.client.search, self.api_tags, page_id=page, limit=page_limit, exclude_ai=self.exclude_ai)
                     break
                 except TypeError as e:
                     if "string indices must be integers" in str(e):
                         results = []
                         break
                     else:
-                        raise e
+                        raise
                 except Exception as e:
                     error_msg = str(e)
                     if "timeout" in error_msg.lower() or "read timed out" in error_msg.lower():
                         self.log(f"Network Timeout (Attempt {attempt+1}/{max_retries}). Retrying in 3s...")
                         await asyncio.sleep(3)
                     else:
-                        raise e
+                        raise
 
             if results is None:
                 self.log("Failed to connect to Rule34 after 5 attempts. Check your VPN/Proxy.")

@@ -11,6 +11,12 @@ class _Resp:
     async def json(self):
         return self._payload
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class _Session:
     """Fake gelbooru tag index: exact-name echo with a type, plus failure injection."""
@@ -19,7 +25,7 @@ class _Session:
         self.calls = []
         self.fail_first = dict(fail_first or {})
 
-    async def get(self, url, params=None):
+    def get(self, url, params=None):
         name = (params or {}).get("name", "")
         self.calls.append(name)
         if self.fail_first.get(name, 0) > 0:
@@ -44,34 +50,37 @@ def test_tag_fetch_covers_every_uncached_tag(tmp_path, monkeypatch):
     that wrong default was frozen into downloaded files' metadata."""
     w = _worker(tmp_path, monkeypatch)
     tags = [f"tag_{i:04d}" for i in range(300)]
-    w.session = _Session()
+    sess = _Session()
+    setattr(w, "session", sess)
 
     asyncio.run(w._fetch_tag_types(tags))
 
-    assert len(w.session.calls) == 300
+    assert len(sess.calls) == 300
     assert all(w.tag_cache[t] == "artist" for t in tags)
 
 
 def test_tag_fetch_retries_transient_failures(tmp_path, monkeypatch):
     w = _worker(tmp_path, monkeypatch)
-    w.session = _Session(fail_first={"uof": 2})  # two 500s, third attempt ok
+    sess = _Session(fail_first={"uof": 2})  # two 500s, third attempt ok
+    setattr(w, "session", sess)
 
     asyncio.run(w._fetch_tag_types(["uof"]))
 
     assert w.tag_cache["uof"] == "artist"
-    assert w.session.calls.count("uof") == 3
+    assert sess.calls.count("uof") == 3
 
 
 def test_tag_fetch_permanent_failure_stays_uncached(tmp_path, monkeypatch):
     """A tag that never comes back must not be cached as 'tag' — that would
     mislabel it forever; it retries next run instead."""
     w = _worker(tmp_path, monkeypatch)
-    w.session = _Session(fail_first={"uof": 99})
+    sess = _Session(fail_first={"uof": 99})
+    setattr(w, "session", sess)
 
     asyncio.run(w._fetch_tag_types(["uof"]))
 
     assert "uof" not in w.tag_cache
-    assert w.session.calls.count("uof") == 3
+    assert sess.calls.count("uof") == 3
 
 
 def test_pace_spaces_request_starts_under_isp_limit(monkeypatch):
@@ -98,7 +107,7 @@ def test_pace_spaces_request_starts_under_isp_limit(monkeypatch):
 
 
 def test_pace_session_paces_request_funnel(monkeypatch):
-    """Sync workers (rule34 lib, eshuushuu, pixiv, pinterest-dl) pace via
+    """Sync workers (rule34 lib, eshuushuu, pixiv) pace via
     session.request — every verb funnels through it, once."""
     from core import shared
 

@@ -1,4 +1,7 @@
 """POST /api/tags/nekosbest serves the /endpoints catalogue with a daily disk cache."""
+import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 import json
 import os
 import time

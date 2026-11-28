@@ -4,6 +4,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
+
 # same env snapshot/restore dance as test_pixiv_notifications
 _ENV_KEYS = [
     "USE_PROXY", "PROXY_URL", "VERIFY_TLS", "GELBOORU_API_KEY",
@@ -68,32 +70,37 @@ def _make(tags=None, **kw):
     data.update(kw)
     w, err = watchers.create(data)
     assert err is None, err
+    assert w is not None
     return w
 
 
 def _check(pages, w, calls=None):
     monkey = _fake_fetch(pages, calls)
-    orig = watchers._fetch_posts
-    watchers._fetch_posts = monkey
+    orig = watchers.gelbooru.fetch
+    watchers.gelbooru.fetch = monkey
     try:
         return watchers.check_watcher(w)
     finally:
-        watchers._fetch_posts = orig
+        watchers.gelbooru.fetch = orig
 
 
 # ---------- CRUD ----------
 
 def test_create_validation(store):
     w, err = watchers.create({"source": "nope", "tags": ["a"]})
+    assert err is not None
     assert w is None and "unsupported" in err
     w, err = watchers.create({"source": "gelbooru", "tags": []})
     assert w is None
     w, err = watchers.create({"source": "gelbooru", "tags": ["a"],
                               "ratings": ["rating:x"]})
+    assert err is not None
     assert w is None and "rating" in err
     w, err = watchers.create({"source": "gelbooru", "tags": ["a"],
                               "interval_minutes": 1})
-    assert err is None and w["interval_minutes"] == 5  # clamped to min
+    assert err is None
+    assert w is not None
+    assert w["interval_minutes"] == 5  # clamped to min
 
 
 def test_update_config_resets_toggle_preserves(store):
@@ -105,12 +112,14 @@ def test_update_config_resets_toggle_preserves(store):
     # config change (new result set) -> fresh baseline, no stale checkpoint
     w2, err = watchers.update(w["watcher_id"], {"tags": ["landscape"]})
     assert err is None
+    assert w2 is not None
     assert w2["initialized"] is False and w2["last_seen_post_id"] is None
     assert w2["scan_pid"] == 0
 
     # enable toggle keeps the checkpoint
     w2, err = watchers.update(w["watcher_id"], {"enabled": False})
     assert err is None
+    assert w2 is not None
     assert w2["initialized"] is False and w2["enabled"] is False
 
     _, err = watchers.update("w_missing", {"enabled": True})
@@ -298,8 +307,8 @@ def test_check_now_runs_enabled_watchers_immediately(store):
     watchers.update(off["watcher_id"], {"enabled": False})
     events = []
     watchers._emit_fn = lambda p: events.append(p)
-    orig = watchers._fetch_posts
-    watchers._fetch_posts = _fake_fetch({0: [_post(9), _post(5)]})
+    orig = watchers.gelbooru.fetch
+    watchers.gelbooru.fetch = _fake_fetch({0: [_post(9), _post(5)]})
     try:
         assert watchers.check_now("gelbooru") is True
         deadline = time.time() + 5
@@ -308,7 +317,7 @@ def test_check_now_runs_enabled_watchers_immediately(store):
         while time.time() < deadline and (not events or watchers._manual_lock.locked()):
             time.sleep(0.01)
     finally:
-        watchers._fetch_posts = orig
+        watchers.gelbooru.fetch = orig
         watchers._emit_fn = None
     assert events and events[0]["new"] == 1
     w = watchers.list_watchers("gelbooru")[0]
@@ -410,7 +419,7 @@ def test_notifications_endpoints(store):
 def test_watchers_endpoints(store):
     c = _client()
     assert c.get("/api/watchers?source=gelbooru").get_json()["watchers"] == []
-    assert c.post("/api/watchers", json={"source": "x", "tags": ["a"]}
+    assert c.post("/api/watchers", json={"source": "nope", "tags": ["a"]}
                   ).status_code == 400
     assert c.post("/api/watchers", json={"source": "gelbooru", "tags": []}
                   ).status_code == 400

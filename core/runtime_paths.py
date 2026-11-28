@@ -3,9 +3,9 @@
 Keep existing portable data in place. REMS_DATA_DIR permits a writable data
 location for protected installations without changing packaged resource paths.
 """
+import math
 import os
 import sys
-import math
 from functools import lru_cache
 
 
@@ -50,7 +50,7 @@ def webview_gui():
 def initial_window_size(screen_width=None, screen_height=None):
     """Fit a window in logical screen pixels, leaving space for desktop chrome."""
     try:
-        width, height = float(screen_width), float(screen_height)
+        width, height = float(screen_width or 0), float(screen_height or 0)
         if not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
             raise ValueError('Invalid screen dimensions')
     except (TypeError, ValueError, OverflowError):

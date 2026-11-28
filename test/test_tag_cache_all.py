@@ -26,9 +26,15 @@ class _TextResp:
     async def text(self):
         return XML
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class _Session:
-    async def get(self, *a, **k):
+    def get(self, *a, **k):
         return _TextResp()
 
 
@@ -47,11 +53,17 @@ def test_konachan_persists(tmp_path, monkeypatch):
         async def json(self):
             return [{"name": "mika_pikazo", "type": 1}]
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
     class _Session:
-        async def get(self, *a, **k):
+        def get(self, *a, **k):
             return _Resp()
 
-    w.session = _Session()
+    setattr(w, "session", _Session())
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
     assert w.tag_cache["mika_pikazo"] == "artist"
     saved = json.loads((tmp_path / "konachan_tag_types.json").read_text())
@@ -64,7 +76,7 @@ def test_konachan_persists(tmp_path, monkeypatch):
 def test_yande_persists(tmp_path, monkeypatch):
     _patch(tmp_path, monkeypatch, yande_mod, "yande_tag_types.json")
     w = YandeWorker("rem", 10, "", NET_CONFIG)
-    w.session = _Session()
+    setattr(w, "session", _Session())
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
     assert w.tag_cache["mika_pikazo"] == 1  # yande stores raw int type codes
     saved = json.loads((tmp_path / "yande_tag_types.json").read_text())
@@ -76,7 +88,7 @@ def test_yande_persists(tmp_path, monkeypatch):
 def test_safebooru_persists(tmp_path, monkeypatch):
     _patch(tmp_path, monkeypatch, safebooru_mod, "safebooru_tag_types.json")
     w = SafebooruWorker("rem", 10, [], NET_CONFIG)
-    w.session = _Session()
+    setattr(w, "session", _Session())
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
     assert w.tag_cache["mika_pikazo"] == 1
     saved = json.loads((tmp_path / "safebooru_tag_types.json").read_text())
@@ -108,7 +120,7 @@ def test_gsbooru_persists(tmp_path, monkeypatch):
         def get(self, *a, **k):
             return _CM()
 
-    w.session = _Session()
+    setattr(w, "session", _Session())
     asyncio.run(w._fetch_tag_types(["mika_pikazo"]))
     assert w.tag_cache["mika_pikazo"] == "artist"
     saved = json.loads((tmp_path / "gsbooru_tag_types.json").read_text())

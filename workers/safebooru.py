@@ -26,14 +26,14 @@ class SafebooruWorker(BaseWorker):
 
     async def _fetch_tag_types(self, tag_names):
         async def attempt(tag_name):
-            resp = await self.session.get("https://safebooru.org/index.php", params={
+            async with self._session.get("https://safebooru.org/index.php", params={
                 "page": "dapi", "s": "tag", "q": "index",
                 # safebooru tag search needs entity-encoded names (kal&#039;tsit_...); &#x27; doesn't match
                 "name": html.escape(tag_name, quote=False).replace("'", "&#039;"), "limit": 50
-            })
-            if resp.status != 200:
-                return False
-            root = ET.fromstring(await resp.text())
+            }) as resp:
+                if resp.status != 200:
+                    return False
+                root = ET.fromstring(await resp.text())
             # ponytail: scan every row for the exact tag
             for tag_el in root.findall("tag"):
                 if tag_el.get("name", "").lower() == tag_name.lower():
@@ -42,7 +42,7 @@ class SafebooruWorker(BaseWorker):
             return True  # 200 processed: match OR genuinely absent
         return await self._run_tag_fetch(tag_names, attempt, TAG_TYPES_FILE)
 
-    def _categorize_tags(self, tag_names, cache):
+    def _categorize_tags_dict(self, tag_names, cache):
         result = {"artist": [], "character": [], "copyright": [], "metadata": [], "tag": []}
         for t in tag_names:
             tag_type = cache.get(t, 0)
@@ -55,23 +55,32 @@ class SafebooruWorker(BaseWorker):
 
         collected_count = 0
         pid = 0
+        # pid is a page number and the server offsets by limit: a shrinking
+        # limit shifted later pages back onto earlier posts
+        page_limit = min(100, self.amount) if self.amount > 0 else 100
 
         consecutive_errors = 0
+        retried_rate_limit = False
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {pid})")
-                limit_val = min(100, self.amount - collected_count if self.amount > 0 else 100)
 
-                resp = await self.session.get("https://safebooru.org/index.php", params={
+                async with self._session.get("https://safebooru.org/index.php", params={
                     "page": "dapi", "s": "post", "q": "index",
-                    "tags": self.original_tag, "pid": pid, "limit": limit_val, "json": 1
-                })
-                if resp.status in [403, 429]:
-                    self.log(f"ERROR {resp.status}. Change proxy.")
-                    break
-                resp.raise_for_status()
+                    "tags": self.original_tag, "pid": pid, "limit": page_limit, "json": 1
+                }) as resp:
+                    if resp.status in [403, 429]:
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {pid}")
+                            await asyncio.sleep(30)
+                            continue
+                        self.log(f"ERROR {resp.status}. Change proxy.")
+                        break
+                    resp.raise_for_status()
 
-                data = await resp.json()
+                    data = await resp.json()
+
                 if isinstance(data, dict):
                     posts = data.get("post", [])
                 elif isinstance(data, list):
@@ -99,6 +108,7 @@ class SafebooruWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             all_tag_names = set()
             for post in posts:
                 if not isinstance(post, dict):
@@ -136,7 +146,7 @@ class SafebooruWorker(BaseWorker):
 
                 tags_raw = post.get("tag_string", post.get("tags", ""))
                 tag_names = [html.unescape(t.strip()) for t in tags_raw.split() if t.strip()]
-                cats = self._categorize_tags(tag_names, cache)
+                cats = self._categorize_tags_dict(tag_names, cache)
                 artists = cats["artist"]
                 characters = cats["character"]
                 copyrights = cats["copyright"]

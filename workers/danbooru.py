@@ -45,9 +45,9 @@ class DanbooruWorker(BaseWorker):
 
     async def _log_auth_status(self):
         # ponytail: one cheap call so the log states the real tier —
-        # Member accounts keep the 2-tag cap, so "authenticated" alone misleads
+        # Member accounts keep the 3-tag cap, so "authenticated" alone misleads
         try:
-            async with self.session.get(
+            async with self._session.get(
                     "https://danbooru.donmai.us/profile.json",
                     headers=self._auth,
                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -60,7 +60,7 @@ class DanbooruWorker(BaseWorker):
                 name = prof.get("name", self.dan_login)
                 tier = prof.get("level_string", "")
                 if tier.lower() == "member":
-                    self.log(f"Authenticated as {name} ({tier} — 2-tag search limit still applies; higher tiers raise it)")
+                    self.log(f"Authenticated as {name} ({tier} — 3-tag search limit still applies; higher tiers raise it)")
                 elif tier:
                     self.log(f"Authenticated as {name} ({tier})")
                 else:
@@ -75,31 +75,42 @@ class DanbooruWorker(BaseWorker):
 
         collected_count = 0
         page = 1
+        # page number + limit on the server side: keep the size constant or
+        # later pages offset back onto posts already fetched
+        page_limit = min(200, self.amount) if self.amount > 0 else 200
 
         consecutive_errors = 0
+        retried_rate_limit = False
         made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
-                limit_val = min(200, self.amount - collected_count if self.amount > 0 else 200)
 
-                resp = await self.session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": limit_val}, headers=self._auth)
-                if resp.status in [403, 429]:
-                    self.log(f"ERROR {resp.status}. Change proxy.")
-                    break
-                if resp.status == 401 and self._auth:
-                    self.log("Auth failed — check your Danbooru username/API key in Options.")
-                    break
-                if resp.status == 422:
-                    n = len(self.original_tag.split())
-                    if self._auth:
-                        self.log(f"ERROR 422: query exceeds your account's tag limit — your query has {n} tags. Reduce tags and retry.")
-                    else:
-                        self.log(f"ERROR 422: Danbooru allows max 2 search tags without login (rating excluded) — your query has {n}. Add your login + API key in Options, or reduce tags.")
-                    break
-                resp.raise_for_status()
+                async with self._session.get("https://danbooru.donmai.us/posts.json", params={"tags": self.api_tag, "page": page, "limit": page_limit}, headers=self._auth) as resp:
+                    if resp.status in [403, 429]:
+                        # one transient rate-limit hit should not kill a long
+                        # run — pause once, refetch the same page
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {page}")
+                            await asyncio.sleep(30)
+                            continue
+                        self.log(f"ERROR {resp.status}. Change proxy.")
+                        break
+                    if resp.status == 401 and self._auth:
+                        self.log("Auth failed — check your Danbooru username/API key in Options.")
+                        break
+                    if resp.status == 422:
+                        n = len(self.original_tag.split())
+                        if self._auth:
+                            self.log(f"ERROR 422: query exceeds your account's tag limit — your query has {n} tags. Reduce tags and retry.")
+                        else:
+                            self.log(f"ERROR 422: Danbooru allows max 3 search tags without login (rating excluded) — your query has {n}. Add your login + API key in Options, or reduce tags.")
+                        break
+                    resp.raise_for_status()
 
-                posts = await resp.json()
+                    posts = await resp.json()
+
                 if not isinstance(posts, list):
                     break
 
@@ -124,6 +135,7 @@ class DanbooruWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             had_valid = False
             for post in posts:
                 if self.stop_event.is_set() or (self.amount > 0 and collected_count >= self.amount):

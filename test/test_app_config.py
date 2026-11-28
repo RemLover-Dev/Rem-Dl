@@ -1,5 +1,9 @@
+import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 import os
 import sys
+
 from PIL import Image
 
 
@@ -96,7 +100,7 @@ def test_rule34py_importlib_metadata_safeguard(monkeypatch):
             try:
                 return mock_fail_version(distribution_name)
             except Exception:
-                if distribution_name and str(distribution_name).lower() in ("rule34py", "pinterest-dl", "pinterest_dl"):
+                if distribution_name and str(distribution_name).lower() in ("rule34py",):
                     return "4.2.0"
                 raise
 

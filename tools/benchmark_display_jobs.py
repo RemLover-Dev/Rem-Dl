@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.jobs import submit_shared
@@ -14,7 +15,7 @@ from core.jobs import submit_shared
 def run(source, modern):
     tree = ast.parse(source)
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_generate_display_full')
-    namespace = {'submit_shared': submit_shared}
+    namespace: dict[str, Any] = {'submit_shared': submit_shared}
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
         namespace.update(_display_pool=workers, _display_inflight={},
                          _display_inflight_lock=threading.RLock() if modern else threading.Lock())

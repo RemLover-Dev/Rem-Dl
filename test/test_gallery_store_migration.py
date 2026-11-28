@@ -46,6 +46,15 @@ def _seed_history(path):
     return hist
 
 
+def test_deleting_tags_prunes_orphaned_terms(store):
+    s, entries, _ = store
+    s.replace_all(entries)
+    assert s.ids_matching_tags("1girl") == {"a"}
+    s.delete("a")
+    assert s.ids_matching_tags("1girl") == set()
+    assert s.ids_matching_tags("hug") == {"b"}
+
+
 @pytest.fixture
 def store(tmp_path):
     entries = _seed_gallery(tmp_path)
@@ -64,9 +73,9 @@ def test_migration_preserves_every_tag(store):
     assert s.count() == len(entries)
     for src in entries:
         got = s.get_entry(src["id"])
-        assert got is not None, "entry %s missing after migration" % src["filename"]
+        assert got is not None, "entry {} missing after migration".format(src["filename"])
         assert _tags_fingerprint(got["tags"]) == _tags_fingerprint(src["tags"]), \
-            "tags lost for %s: %r -> %r" % (src["filename"], src["tags"], got["tags"])
+            "tags lost for {}: {!r} -> {!r}".format(src["filename"], src["tags"], got["tags"])
 
 
 def test_migration_preserves_non_tag_fields(store):
@@ -77,7 +86,7 @@ def test_migration_preserves_non_tag_fields(store):
         for col in ("filepath", "site", "downloaded_at", "rating",
                     "meta_mtime", "md5_misses"):
             assert got.get(col) == src.get(col), \
-                "%s.%s: %r -> %r" % (src["filename"], col, src.get(col), got.get(col))
+                "{}.{}: {!r} -> {!r}".format(src["filename"], col, src.get(col), got.get(col))
         assert got["favourite"] is src["favourite"]
     assert by_fn["two.gif"]["sources"] == ["nekos.life", "zerochan"]
 
@@ -102,7 +111,7 @@ def test_json_is_retired_not_deleted(store):
 
 def test_non_tag_write_cannot_touch_tags(store):
     """The structural guarantee: filepath/favourite updates reach no tag row."""
-    s, entries, _ = store
+    s, _entries, _ = store
     before = s.get_tags("a")
     assert before == {"tag": ["1girl", "blue hair", "smile"], "artist": ["someone"],
                       "copyright": ["touhou"], "character": ["rem"]}
@@ -145,6 +154,22 @@ def test_broken_migration_leaves_json_alone(tmp_path, monkeypatch):
     assert os.path.exists(s.gallery_json), "json must survive a failed migration"
 
 
+def test_corrupt_history_blocks_migration_and_keeps_json(tmp_path):
+    """A corrupt history source must not be silently retired (data loss)."""
+    import os
+    _seed_gallery(tmp_path)
+    (tmp_path / "image_history.json").write_text("{not json", encoding="utf-8")
+    s = GalleryStore(
+        db_path=str(tmp_path / "gallery.db"),
+        gallery_json=str(tmp_path / "gallery.json"),
+        history_json=str(tmp_path / "image_history.json"),
+    )
+    with pytest.raises(MigrationError):
+        s.count()
+    assert os.path.exists(s.history_json), "corrupt history must survive"
+    assert not os.path.exists(s.history_json + ".migrated")
+
+
 def test_save_with_tagless_entries_leaves_stored_tags_alone(store):
     """The cutover's central rule: a stripped entry must not clear tags.
 
@@ -163,7 +188,7 @@ def test_save_with_tagless_entries_leaves_stored_tags_alone(store):
     for src in entries:
         got = s.get_entry(src["id"])
         assert _tags_fingerprint(got["tags"]) == _tags_fingerprint(src["tags"]), \
-            "tags lost for %s" % src["filename"]
+            "tags lost for {}".format(src["filename"])
     assert s.get_entry("a")["filepath"] == "GELBOORU/X/ONE.PNG"
 
 

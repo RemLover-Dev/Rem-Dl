@@ -21,7 +21,6 @@ from workers.nekos_best import NekosBestWorker
 from workers.nekos_life import NekosLifeWorker
 from workers.nekosapi import NekosApiWorker
 from workers.nekosia import NekosiaWorker
-from workers.pinterest_worker import PinterestWorker
 from workers.pixiv import PixivWorker
 from workers.rule34 import Rule34Worker
 from workers.safebooru import SafebooruWorker
@@ -220,13 +219,6 @@ class TestWorkerFolderBuildingWithProhibitedChars:
         rel = os.path.relpath(w.tag_dir, str(tmp_path))
         assert ":" not in rel
 
-    def test_pinterest_worker_folder(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
-        w = PinterestWorker("re:zero pins", 10, True, self.NET_CONFIG)
-        assert os.path.isdir(w.site_root)
-        rel = os.path.relpath(w.site_root, str(tmp_path))
-        assert ":" not in rel
-
     def test_zerochan_worker_folder(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         w = ZerochanWorker("Rem (Re:Zero)", 10, self.NET_CONFIG)
@@ -239,7 +231,8 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
     def test_enqueue_download_sanitizes_prohibited_characters(self, monkeypatch, tmp_path):
         monkeypatch.setattr("core.shared.MASTER_FOLDER", str(tmp_path))
         dl = BaseDownloader("test_worker", "Test:Site", 10, {"anti_ban_pause": 0})
-        dl.download_queue = asyncio.Queue()
+        queue = asyncio.Queue()
+        setattr(dl, "download_queue", queue)
 
         async def _run():
             unsafe_dir = os.path.join(dl.site_root, "tag:with:colons")
@@ -248,8 +241,8 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
 
             enqueued = await dl.enqueue_download("http://example.com/img.png", unsafe_filepath, unsafe_filename, ["re:zero"])
             assert enqueued is True
-            item = dl.download_queue.get_nowait()
-            q_url, q_filepath, q_filename, q_tags, *_ = item
+            item = queue.get_nowait()
+            _q_url, q_filepath, q_filename, _q_tags, *_ = item
 
             assert ":" not in q_filename
             assert "*" not in q_filename
@@ -287,7 +280,7 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
             def get(self, *args, **kwargs):
                 return MockResponse()
 
-        dl.session = MockSession()
+        setattr(dl, "session", MockSession())
 
         async def _run_download():
             folder = os.path.join(dl.site_root, "Safe_Tag")
@@ -306,23 +299,3 @@ class TestBaseDownloaderEnqueueWithProhibitedChars:
             assert safe_name in dl.dl_history
 
         asyncio.run(_run_download())
-
-
-def test_pinterest_proxy_patch_reads_the_workers_config_not_the_browser_type():
-    """The old inline closure took `self` as BrowserType.launch's first arg,
-    shadowing the worker's self — login died on BrowserType.net_config."""
-    from workers.pinterest_worker import _launch_with_proxy
-
-    seen = {}
-    orig = lambda bt, **kw: seen.update(kw)
-
-    _launch_with_proxy(orig, {"use_proxy": True, "proxy_url": "http://127.0.0.1:10808"})("bt", headless=True)
-    assert seen["proxy"] == {"server": "http://127.0.0.1:10808"}
-
-    seen.clear()
-    _launch_with_proxy(orig, {"use_proxy": False, "proxy_url": "http://127.0.0.1:10808"})("bt")
-    assert "proxy" not in seen
-
-    seen.clear()
-    _launch_with_proxy(orig, {"use_proxy": True, "proxy_url": ""})("bt")
-    assert "proxy" not in seen

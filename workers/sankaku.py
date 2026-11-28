@@ -81,7 +81,7 @@ class SankakuWorker(BaseWorker):
 
         return session
 
-    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, source_md5=None):
+    async def enqueue_download(self, url, filepath, filename, tags_list, artists=None, characters=None, copyrights=None, metadata_tags=None, outfits=None, groups=None, hair=None, eyes=None, rating=None, source_md5=None):
         if artists is None: artists = []
         if filename in self.dl_history or filename in self.queued_items or os.path.exists(filepath):
             return False
@@ -92,7 +92,8 @@ class SankakuWorker(BaseWorker):
         self.enqueued_count += 1
         # Download immediately — Sankaku signed URLs expire before queued download starts
         try:
-            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0)
+            return await self._async_download_file(url, filepath, filename, tags_list, artists, 0,
+                                                   characters, copyrights, metadata_tags)
         finally:
             # no worker loop owns this item — the outcome is known right here
             self._release_source_claims((filepath,))
@@ -114,15 +115,18 @@ class SankakuWorker(BaseWorker):
 
         collected_count = 0
         page = 1
+        # page number + limit on the server side: keep the size constant or
+        # later pages offset back onto posts already fetched
+        page_limit = min(40, self.amount) if self.amount > 0 else 40
 
         consecutive_errors = 0
+        retried_rate_limit = False
         made_dirs = set()
         while not self.stop_event.is_set() and (self.amount == 0 or collected_count < self.amount):
             try:
                 self.log(f"Scanning API... (Page {page})")
-                limit_val = min(40, self.amount - collected_count if self.amount > 0 else 40)
 
-                params = {"limit": limit_val, "page": page}
+                params: dict[str, str | int] = {"limit": page_limit, "page": page}
                 if self.net_config.get("hide_pools", False):
                     params["hide_posts_in_books"] = "always"
 
@@ -130,17 +134,25 @@ class SankakuWorker(BaseWorker):
                 if tags_param:
                     params["tags"] = tags_param
 
-                resp = await self.session.get(f"{API_BASE}/posts", params=params)
-                if resp.status in [403, 429]:
-                    try:
-                        err = await resp.json()
-                        self.log(f"API error: {err.get('error') or err.get('errors', [str(resp.status)])[0]}")
-                    except Exception:
-                        self.log(f"ERROR {resp.status}. Check proxy/credentials.")
-                    break
-                resp.raise_for_status()
+                async with self._session.get(f"{API_BASE}/posts", params=params) as resp:
+                    if resp.status in [403, 429]:
+                        # one transient rate-limit hit should not kill a long
+                        # run — pause once, refetch the same page
+                        if not retried_rate_limit:
+                            retried_rate_limit = True
+                            self.log(f"HTTP {resp.status} — waiting 30s, then retrying page {page}")
+                            await asyncio.sleep(30)
+                            continue
+                        try:
+                            err = await resp.json()
+                            self.log(f"API error: {err.get('error') or err.get('errors', [str(resp.status)])[0]}")
+                        except Exception:
+                            self.log(f"ERROR {resp.status}. Check proxy/credentials.")
+                        break
+                    resp.raise_for_status()
 
-                data = await resp.json()
+                    data = await resp.json()
+
                 if isinstance(data, dict):
                     posts = data.get("data") or data.get("posts") or []
                 elif isinstance(data, list):
@@ -151,7 +163,7 @@ class SankakuWorker(BaseWorker):
 
                 if not posts:
                     if page == 1:
-                        self.log(f"ZERO images found for '{self.api_tag}'. Auth: {'yes' if self.session.headers.get('Authorization') else 'none'}")
+                        self.log(f"ZERO images found for '{self.api_tag}'. Auth: {'yes' if self._session.headers.get('Authorization') else 'none'}")
                     break
 
             except Exception as e:
@@ -168,6 +180,7 @@ class SankakuWorker(BaseWorker):
                 continue
 
             consecutive_errors = 0
+            retried_rate_limit = False
             await asyncio.sleep(0.25)
 
             had_valid = False

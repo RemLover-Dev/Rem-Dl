@@ -2,8 +2,11 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("bypass_access_guard")
 
 import Rems_Dl
 
@@ -57,6 +60,65 @@ def test_preview_strips_audio(tmp_path):
     # second call hits the cache, no new file
     assert preview_path(str(src), str(cache)) == out
     assert len(os.listdir(cache)) == 1
+
+
+def test_prune_removes_cold_previews_only(tmp_path):
+    from core.preview_cache import prune_older_than
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cold = cache / "cold.mp4"
+    warm = cache / "warm.mp4"
+    cold.write_bytes(b"x")
+    warm.write_bytes(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(str(cold), (old, old))
+    assert prune_older_than(str(cache), days=30) == 1
+    assert not cold.exists()
+    assert warm.exists()
+
+
+def test_serving_a_preview_touches_its_cache(tmp_path):
+    from core.preview_cache import _cache_path, ready_for
+    src = tmp_path / "video.mp4"
+    src.write_bytes(b"v")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cached = _cache_path(str(src), str(cache))
+    with open(cached, "wb") as f:
+        f.write(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(cached, (old, old))
+    assert ready_for(str(src), str(cache)) == cached
+    assert time.time() - os.path.getmtime(cached) < 60
+
+
+def test_prune_keeps_previews_read_recently(tmp_path):
+    from core.preview_cache import prune_older_than
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    seen = cache / "seen.mp4"
+    seen.write_bytes(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(str(seen), (time.time(), old))  # read now, mtime cold
+    assert prune_older_than(str(cache), days=30) == 0
+    assert seen.exists()
+
+
+def test_viewing_the_original_touches_the_remux(client, tmp_path, monkeypatch):
+    from core.preview_cache import _cache_path
+    src = tmp_path / "v.mp4"
+    src.write_bytes(b"v")
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
+    monkeypatch.setattr(Rems_Dl, "PREVIEW_CACHE_DIR", str(tmp_path / "pcache"))
+    cached = _cache_path(str(src), str(tmp_path / "pcache"))
+    os.makedirs(os.path.dirname(cached), exist_ok=True)
+    with open(cached, "wb") as f:
+        f.write(b"x")
+    old = time.time() - 40 * 86400
+    os.utime(cached, (old, old))
+    r = client.get("/api/gallery/file/v.mp4", headers=H)
+    assert r.status_code == 200
+    assert time.time() - os.path.getmtime(cached) < 60
 
 
 @requires_ffmpeg
@@ -145,3 +207,36 @@ def test_preview_route_traversal_blocked(client, tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "PREVIEW_CACHE_DIR", str(tmp_path / "pcache"))
     r = client.get("/api/gallery/preview/..%2F..%2Fetc%2Fpasswd", headers=H)
     assert r.status_code in (403, 404)
+
+
+def _make_image(path, pix_fmt):
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi",
+         "-i", "testsrc=size=96x64", "-frames:v", "1", "-pix_fmt", pix_fmt,
+         str(path)], check=True, timeout=60)
+
+
+@requires_ffmpeg
+def test_thumbnails_use_ffmpeg_not_pil(tmp_path, monkeypatch):
+    """Alpha probe and thumbnail generation are ffmpeg/ffprobe only — no
+    in-process decode (the old path decoded every source with PIL)."""
+    png = tmp_path / "alpha.png"
+    _make_image(png, "rgba")
+
+    def no_pil(*_a, **_k):
+        raise AssertionError("PIL must not decode thumbnails")
+
+    monkeypatch.setattr(Rems_Dl.Image, "open", no_pil)
+    assert Rems_Dl._thumb_alpha_hint(str(png)) is True
+    data, ext, mime = Rems_Dl._generate_thumb_bytes(str(png))
+    assert (ext, mime) == (".png", "image/png")
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@requires_ffmpeg
+def test_opaque_thumbnail_is_jpeg(tmp_path):
+    jpg = tmp_path / "plain.jpg"
+    _make_image(jpg, "yuvj420p")
+    data, ext, mime = Rems_Dl._generate_thumb_bytes(str(jpg))
+    assert (ext, mime) == (".jpg", "image/jpeg")
+    assert data[:2] == b"\xff\xd8"

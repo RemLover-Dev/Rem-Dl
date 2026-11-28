@@ -60,7 +60,9 @@ if __name__ == '__main__':
             for _ in range(7):
                 start = time.perf_counter()
                 response = client.get('/api/gallery?search=tag%20123&per_page=45')
-                assert response.status_code == 200 and response.json['total'] == len(expected)
+                assert response.status_code == 200
+                body = response.json
+                assert body is not None and body['total'] == len(expected)
                 samples.append((time.perf_counter()-start)*1000)
         print(f'Updated /api/gallery search metadata, median 7: {statistics.median(samples):.1f} ms')
         print('No full Python inverted index retained. Synthetic results; user disk/thumbs/browser paint are not measured.')

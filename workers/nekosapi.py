@@ -71,7 +71,7 @@ class NekosApiWorker(BaseDownloader):
             params = self._query_params(min(batch_size, need - collected), offset)
 
             try:
-                async with self.session.get(f"{self.api_base}/images", params=params) as resp:
+                async with self._session.get(f"{self.api_base}/images", params=params) as resp:
                     if resp.status in (403, 429):
                         self.log(f"API BAN ({resp.status}). Change VPN node.")
                         break

@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from core.database import get_settings
-from core.dedup_store import DedupStore, PureHash
+from core.dedup_store import DedupStore, PureHash, sizes_comparable
 from core.shared import check_duplicate
 
 
@@ -28,6 +28,20 @@ class TestDedupStore:
         assert str(h1) == "0000000000000000"
         assert str(h2) == "000000000000000f"
         assert int(h2) == 15
+
+    def test_candidate_index_finds_near_hashes(self, dedup_env):
+        store, _ = dedup_env
+        base = (1 << 200) | (1 << 100)
+        with store._lock:
+            store._index_put_locked(1, base)
+        near = base
+        for bit in (0, 40, 80, 120, 160, 200, 240, 33, 73, 113, 153, 193):
+            near ^= 1 << bit
+        assert 1 in store._candidate_ids(PureHash(near))
+        far = base
+        for bit in range(0, 256, 16):
+            far ^= 1 << bit
+        assert 1 not in store._candidate_ids(PureHash(far))
 
     def test_add_and_duplicate_detection(self, dedup_env):
         store, tmp_dir = dedup_env
@@ -94,7 +108,9 @@ class TestDedupStore:
         store.remove_by_filepath(p)
         assert store.count() == 0
 
-    def test_remove_missing_files(self, dedup_env):
+    def test_missing_files_keep_records(self, dedup_env):
+        # moved/deleted files RETAIN their hash records (user request): a
+        # re-added image must keep dedup identity instead of restarting from 0
         store, tmp_dir = dedup_env
         p1 = os.path.join(tmp_dir, "keep.png")
         p2 = os.path.join(tmp_dir, "remove.png")
@@ -105,11 +121,83 @@ class TestDedupStore:
         store.check_and_add(p2)
         assert store.count() == 2
         os.remove(p2)
-        swept = store.remove_missing_files()
-        assert swept == 1
-        assert store.count() == 1
-        # Second run is idempotent
-        assert store.remove_missing_files() == 0
+        missing = store.count_missing_files()
+        assert missing == 1
+        assert store.count() == 2
+        # second sweep is a pure re-comment: same count, rows untouched
+        assert store.count_missing_files() == 1
+        assert store.count() == 2
+
+    def test_retained_record_pruned_when_same_image_readd(self, dedup_env):
+        store, tmp_dir = dedup_env
+        p = os.path.join(tmp_dir, "img.png")
+        img = Image.new("RGB", (220, 220), color=(90, 120, 160))
+        img.save(p)
+        assert not store.check_and_add(p).is_duplicate
+        os.remove(p)
+        same = os.path.join(tmp_dir, "moved_back.png")
+        Image.new("RGB", (220, 220), color=(90, 120, 160)).save(same)
+        # the identical image returns as a NEW file; ghost record pruned so
+        # the re-add is accepted as its own current-path record
+        res = store.check_and_add(same)
+        assert not res.is_duplicate
+
+    def test_keep_larger_reports_pre_unlink_stat_only_after_removal(self, dedup_env):
+        store, tmp_dir = dedup_env
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (256, 256), (20, 50, 80))
+        draw = ImageDraw.Draw(image)
+        for x in range(0, 256, 16):
+            draw.rectangle((x, 0, x + 7, 255), fill=(80 + x // 2, 100, 130))
+        draw.ellipse((60, 50, 180, 170), fill=(230, 40, 50))
+        draw.rectangle((100, 150, 220, 210), fill=(30, 200, 90))
+
+        small = os.path.join(tmp_dir, "small.png")
+        large = os.path.join(tmp_dir, "large.png")
+        image.save(small, "PNG", compress_level=9)
+        image.save(large, "PNG", compress_level=0)
+        assert os.path.getsize(large) > os.path.getsize(small)
+        assert not store.check_and_add(small, site="first").is_duplicate
+        old_stat = os.stat(small)
+
+        result = store.check_and_add(large, site="second")
+        assert not result.is_duplicate
+        assert result.replaced_path == small
+        assert result.replaced_stat == (old_stat.st_mtime_ns, old_stat.st_size)
+        assert not os.path.exists(small)
+        assert os.path.exists(large)
+
+    def test_keep_larger_unlink_failure_does_not_report_replacement(self, dedup_env, monkeypatch):
+        store, tmp_dir = dedup_env
+        from PIL import Image, ImageDraw
+        import core.dedup_store as dedup_module
+
+        image = Image.new("RGB", (256, 256), (20, 50, 80))
+        draw = ImageDraw.Draw(image)
+        for x in range(0, 256, 16):
+            draw.rectangle((x, 0, x + 7, 255), fill=(80 + x // 2, 100, 130))
+        draw.ellipse((60, 50, 180, 170), fill=(230, 40, 50))
+        draw.rectangle((100, 150, 220, 210), fill=(30, 200, 90))
+
+        small = os.path.join(tmp_dir, "small.png")
+        large = os.path.join(tmp_dir, "large.png")
+        image.save(small, "PNG", compress_level=9)
+        image.save(large, "PNG", compress_level=0)
+        assert not store.check_and_add(small, site="first").is_duplicate
+        real_remove = os.remove
+
+        def fail_old(path, *args, **kwargs):
+            if os.path.realpath(path) == os.path.realpath(small):
+                raise PermissionError("simulated unlink failure")
+            return real_remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(dedup_module.os, "remove", fail_old)
+        result = store.check_and_add(large, site="second")
+        assert not result.is_duplicate
+        assert result.replaced_path is None
+        assert result.replaced_stat is None
+        assert os.path.exists(small)
 
     def test_settings_toggle(self, tmp_path, monkeypatch):
         store = DedupStore(os.path.join(tmp_path, "toggle.sqlite3"))
@@ -176,3 +264,56 @@ class TestDedupStore:
 
         assert len(errors) == 0
         assert store.count() > 0
+
+
+def test_sizes_comparable_only_within_one_format_family():
+    assert sizes_comparable("a.png", "b.jpg")
+    assert sizes_comparable("a.jxl", "b.JXL")
+    assert not sizes_comparable("a.jxl", "b.png")
+
+
+class TestKeepLargerAcrossFormats:
+    def test_converted_jxl_is_not_replaced_by_a_bigger_png(self, tmp_path):
+        """Auto-JXL shrinks the stored file; the same pixels re-downloaded as a
+        bigger PNG must stay a duplicate instead of replacing the .jxl."""
+        store = DedupStore(db_path=str(tmp_path / "dedup.sqlite3"))
+        try:
+            png = tmp_path / "img.png"
+            Image.new("RGB", (300, 300), color=(100, 150, 200)).save(png)
+            assert not store.check_and_add(
+                str(png), site="zerochan", post_id="1").is_duplicate
+            jxl = tmp_path / "img.jxl"
+            jxl.write_bytes(b"x" * 64)          # converted: much smaller on disk
+            store.relocate_filepath(str(png), str(jxl))
+            png.unlink()
+            bigger = tmp_path / "img_big.png"
+            Image.new("RGB", (300, 300), color=(100, 150, 200)).save(
+                bigger, compress_level=0)
+            res = store.check_and_add(bigger, site="zerochan", post_id="2")
+            assert res.is_duplicate
+            assert res.matched_path == str(jxl)
+        finally:
+            store.close()
+
+    def test_bigger_pixels_replace_converted_jxl(self, tmp_path):
+        """A genuinely higher-resolution copy must still win after auto-JXL,
+        even though its format family differs from the stored .jxl."""
+        store = DedupStore(db_path=str(tmp_path / "dedup.sqlite3"))
+        try:
+            png = tmp_path / "img.png"
+            Image.new("RGB", (300, 300), color=(100, 150, 200)).save(png)
+            assert not store.check_and_add(
+                str(png), site="gelbooru", post_id="1").is_duplicate
+            jxl = tmp_path / "img.jxl"
+            jxl.write_bytes(b"x" * 64)
+            store.relocate_filepath(str(png), str(jxl))
+            png.unlink()
+            bigger = tmp_path / "img_big.png"
+            Image.new("RGB", (600, 600), color=(100, 150, 200)).save(bigger)
+            res = store.check_and_add(str(bigger), site="gelbooru", post_id="2")
+            assert not res.is_duplicate
+            assert res.replaced_path == str(jxl)
+            assert not jxl.exists()
+            assert bigger.exists()
+        finally:
+            store.close()

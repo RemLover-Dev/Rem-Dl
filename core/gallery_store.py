@@ -19,6 +19,7 @@ mismatch it raises and leaves the JSON in place to be retried.
 """
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -34,11 +35,11 @@ TAG_BUCKETS = (
 ENTRY_FIELDS = (
     "id", "filename", "filepath", "site", "favourite",
     "downloaded_at", "rating", "sources", "meta_mtime", "md5_misses",
+    "width", "height",
 )
 
 
 from core.runtime_paths import app_base_dir as _app_base_dir
-
 
 BASE_DIR = _app_base_dir()
 DATABASE_DIR = os.path.join(BASE_DIR, "database")
@@ -72,6 +73,18 @@ def _idx_key(tag):
                    for c in str(tag)).replace("_", " ")
 
 
+def _needles(term):
+    """Search needles for a term.
+
+    Some sites store tags with \\uXXXX escapes (e.g. >_< arrives as
+    >_\\u003C and the vocab indexes the escape verbatim), so a term with
+    `<` also tries the escaped spelling. The decoded needle covers rows
+    that were stored unescaped."""
+    base = _idx_key(term)
+    enc = base.replace("<", "\\u003c")
+    return [base] if enc == base else [base, enc]
+
+
 def _tags_fingerprint(tags):
     """Order- and duplicate-insensitive identity for an entry's tags.
 
@@ -97,8 +110,15 @@ def _tags_from_row(rows):
 
 
 def _entry_from_row(row):
-    """sqlite row -> the entry shape callers expect (sources is stored as JSON)."""
-    d = dict(row)
+    """sqlite row -> the entry shape callers expect (sources is stored as JSON).
+
+    None-valued columns are omitted: this is the shape of every row in the
+    permanently resident gallery list, and four optional columns (rating,
+    sources, meta_mtime, md5_misses) are None for ~95% of rows — skipping
+    them builds a smaller dict, ~25% less resident RAM. Reads via .get()
+    see the same values and saves write the same NULLs back.
+    """
+    d = {k: v for k, v in dict(row).items() if v is not None}
     d["favourite"] = bool(d.get("favourite"))
     src = d.get("sources")
     if isinstance(src, str):
@@ -146,9 +166,18 @@ class GalleryStore:
                     rating TEXT,
                     sources TEXT,
                     meta_mtime REAL,
-                    md5_misses INTEGER
+                    md5_misses INTEGER,
+                    width INTEGER,
+                    height INTEGER
                 )
             """)
+            # pre-200 rows predate the dimension columns — ALTER is idempotent
+            # per column, so probe before adding
+            _cols = {r[1] for r in conn.execute("PRAGMA table_info(gallery)")}
+            for _c in ("width", "height"):
+                if _c not in _cols:
+                    conn.execute(f"ALTER TABLE gallery ADD COLUMN {_c} INTEGER")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_dims ON gallery(width, height)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_filename ON gallery(filename)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_filepath ON gallery(filepath)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gallery_ts ON gallery(downloaded_at)")
@@ -171,6 +200,9 @@ class GalleryStore:
             conn.execute("""CREATE TRIGGER IF NOT EXISTS gallery_terms_insert AFTER INSERT ON gallery_tags
                 BEGIN INSERT OR IGNORE INTO gallery_tag_terms(tag, normalized)
                 VALUES (NEW.tag, LOWER(REPLACE(NEW.tag, '_', ' '))); END""")
+            conn.execute("""CREATE TRIGGER IF NOT EXISTS gallery_terms_delete AFTER DELETE ON gallery_tags
+                BEGIN DELETE FROM gallery_tag_terms WHERE tag = OLD.tag
+                AND NOT EXISTS (SELECT 1 FROM gallery_tags WHERE tag = OLD.tag); END""")
             if not conn.execute("SELECT 1 FROM gallery_search_state WHERE version=1").fetchone():
                 conn.execute("INSERT OR IGNORE INTO gallery_tag_terms SELECT DISTINCT tag, LOWER(REPLACE(tag, '_', ' ')) FROM gallery_tags")
                 conn.execute("INSERT INTO gallery_search_state VALUES (1)")
@@ -218,10 +250,11 @@ class GalleryStore:
             try:
                 with open(src, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            except Exception:
-                # leave the file alone — a corrupt/absent source must not
-                # silently become an empty gallery
-                return
+            except Exception as e:
+                # leave the file alone; refusing the connection (caller does)
+                # beats serving an empty gallery that looks like data loss
+                raise MigrationError(
+                    f"corrupt gallery source {src}: {e}") from e
             entries = data.get("images", []) if isinstance(data, dict) else []
 
             # 1) verify every entry's tags would round-trip before writing
@@ -299,8 +332,11 @@ class GalleryStore:
         try:
             with open(self.history_json, "r", encoding="utf-8") as f:
                 hist = json.load(f)
-        except Exception:
-            return
+        except Exception as e:
+            # never retire a corrupt source: raising keeps the JSON in place
+            # (and refuses the connection) so the import can be retried
+            raise MigrationError(
+                f"corrupt history source {self.history_json}: {e}") from e
         rows = [(h.get("site"), h.get("filename"), h.get("filepath"),
                  json.dumps(h.get("tags") or {}), h.get("downloaded_at"))
                 for h in hist if isinstance(h, dict)]
@@ -313,16 +349,18 @@ class GalleryStore:
     # --- gallery: reads ------------------------------------------------------
 
     def count(self):
-        return self._connect().execute("SELECT COUNT(*) FROM gallery").fetchone()[0]
+        with self._lock:
+            return self._connect().execute("SELECT COUNT(*) FROM gallery").fetchone()[0]
 
     def lightweight_entries(self):
         """Every entry WITHOUT tags — this is what stays resident."""
-        conn = self._connect()
-        cols = ", ".join(ENTRY_FIELDS)
-        out = []
-        for row in conn.execute("SELECT %s FROM gallery" % cols):
-            out.append(_entry_from_row(row))
-        return out
+        with self._lock:
+            conn = self._connect()
+            cols = ", ".join(ENTRY_FIELDS)
+            out = []
+            for row in conn.execute(f"SELECT {cols} FROM gallery"):
+                out.append(_entry_from_row(row))
+            return out
 
     def chunk_with_tags(self, offset, limit):
         """A slice of full entries (tags included) for chunked filtering.
@@ -330,21 +368,21 @@ class GalleryStore:
         Filtering is elementwise, so callers can walk the whole gallery one
         chunk at a time and never hold more than `limit` entries' tags.
         """
-        conn = self._connect()
-        cols = ", ".join("g.%s" % c for c in ENTRY_FIELDS)
-        rows = conn.execute(
-            "SELECT %s FROM gallery g ORDER BY g.rowid LIMIT ? OFFSET ?"
-            % cols, (limit, offset)).fetchall()
-        if not rows:
-            return []
-        ids = [r["id"] for r in rows]
-        tagmap = self._tags_for_ids(conn, ids)
-        out = []
-        for r in rows:
-            d = _entry_from_row(r)
-            d["tags"] = tagmap.get(d["id"], {})
-            out.append(d)
-        return out
+        with self._lock:
+            conn = self._connect()
+            cols = ", ".join(f"g.{c}" for c in ENTRY_FIELDS)
+            rows = conn.execute(
+                f"SELECT {cols} FROM gallery g ORDER BY g.rowid LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            if not rows:
+                return []
+            ids = [r["id"] for r in rows]
+            tagmap = self._tags_for_ids(conn, ids)
+            out = []
+            for r in rows:
+                d = _entry_from_row(r)
+                d["tags"] = tagmap.get(d["id"], {})
+                out.append(d)
+            return out
 
     def _tags_for_ids(self, conn, ids):
         if not ids:
@@ -357,8 +395,7 @@ class GalleryStore:
             batch = ids[offset:offset + 500]
             marks = ",".join("?" * len(batch))
             cur = conn.execute(
-                "SELECT gallery_id, bucket, tag FROM gallery_tags WHERE gallery_id IN (%s)"
-                % marks, batch)
+                f"SELECT gallery_id, bucket, tag FROM gallery_tags WHERE gallery_id IN ({marks})", batch)
             for row in cur:
                 out.setdefault(row["gallery_id"], []).append((row["bucket"], row["tag"]))
         return {k: _tags_from_row(v) for k, v in out.items()}
@@ -395,35 +432,39 @@ class GalleryStore:
 
     def get_entry(self, gid):
         """One full entry (tags included) by id."""
-        conn = self._connect()
-        cols = ", ".join(ENTRY_FIELDS)
-        row = conn.execute("SELECT %s FROM gallery WHERE id = ?" % cols, (gid,)).fetchone()
-        if row is None:
-            return None
-        d = _entry_from_row(row)
-        d["tags"] = self._tags_for_ids(conn, [gid]).get(gid, {})
-        return d
+        with self._lock:
+            conn = self._connect()
+            cols = ", ".join(ENTRY_FIELDS)
+            row = conn.execute(f"SELECT {cols} FROM gallery WHERE id = ?", (gid,)).fetchone()
+            if row is None:
+                return None
+            d = _entry_from_row(row)
+            d["tags"] = self._tags_for_ids(conn, [gid]).get(gid, {})
+            return d
 
     def get_tags(self, gid):
         """One entry's tags, or {} — the recovery/compare path."""
-        conn = self._connect()
-        cur = conn.execute(
-            "SELECT bucket, tag FROM gallery_tags WHERE gallery_id = ?", (gid,))
-        return _tags_from_row([(r["bucket"], r["tag"]) for r in cur])
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "SELECT bucket, tag FROM gallery_tags WHERE gallery_id = ?", (gid,))
+            return _tags_from_row([(r["bucket"], r["tag"]) for r in cur])
 
     def filenames(self):
-        return {r["filename"] for r in
-                self._connect().execute("SELECT filename FROM gallery")}
+        with self._lock:
+            return {r["filename"] for r in
+                    self._connect().execute("SELECT filename FROM gallery")}
 
     def favourite_filenames(self):
-        return {r["filename"] for r in self._connect().execute(
-            "SELECT filename FROM gallery WHERE favourite = 1")}
+        with self._lock:
+            return {r["filename"] for r in self._connect().execute(
+                "SELECT filename FROM gallery WHERE favourite = 1")}
 
     def all_entries_with_tags(self):
         """Full entries — offline scripts only; this is the resident-RAM path."""
         conn = self._connect()
         cols = ", ".join(ENTRY_FIELDS)
-        rows = conn.execute("SELECT %s FROM gallery ORDER BY rowid" % cols).fetchall()
+        rows = conn.execute(f"SELECT {cols} FROM gallery ORDER BY rowid").fetchall()
         tagmap = self._tags_for_ids(conn, [r["id"] for r in rows])
         out = []
         for r in rows:
@@ -446,13 +487,14 @@ class GalleryStore:
         conn.execute(
             """INSERT OR REPLACE INTO gallery
                (id, filename, filepath, site, favourite, downloaded_at,
-                rating, sources, meta_mtime, md5_misses)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                rating, sources, meta_mtime, md5_misses, width, height)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (gid, fn, e.get("filepath"), e.get("site"),
              1 if e.get("favourite") else 0, e.get("downloaded_at"),
              e.get("rating"),
              json.dumps(e.get("sources")) if e.get("sources") is not None else None,
-             e.get("meta_mtime"), e.get("md5_misses")))
+             e.get("meta_mtime"), e.get("md5_misses"),
+             e.get("width"), e.get("height")))
         return gid
 
     def save_entries(self, entries):
@@ -466,32 +508,41 @@ class GalleryStore:
         with self._lock:
             conn = self._connect()
             present = set()
-            for e in entries:
-                gid = self._upsert_fields_locked(conn, e)
-                if gid is None:
-                    continue
-                present.add(gid)
-                if "tags" in e:
-                    self._set_tags_locked(conn, gid, e["tags"])
-            stale = [r["id"] for r in conn.execute("SELECT id FROM gallery")
-                     if r["id"] not in present]
-            for gid in stale:
-                conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
-                conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
-            conn.commit()
+            try:
+                for e in entries:
+                    gid = self._upsert_fields_locked(conn, e)
+                    if gid is None:
+                        continue
+                    present.add(gid)
+                    if "tags" in e:
+                        self._set_tags_locked(conn, gid, e["tags"])
+                stale = [r["id"] for r in conn.execute("SELECT id FROM gallery")
+                         if r["id"] not in present]
+                for gid in stale:
+                    conn.execute("DELETE FROM gallery_tags WHERE gallery_id = ?", (gid,))
+                    conn.execute("DELETE FROM gallery WHERE id = ?", (gid,))
+                conn.commit()
+            except Exception:
+                # a half-done prune left open would ride the next unrelated commit
+                conn.rollback()
+                raise
             return len(stale)
 
     def save_entries_partial(self, entries):
         """Upsert only the given entries; rows absent here remain untouched."""
         with self._lock:
             conn = self._connect()
-            for e in entries:
-                gid = self._upsert_fields_locked(conn, e)
-                if gid is None:
-                    continue
-                if "tags" in e:
-                    self._set_tags_locked(conn, gid, e["tags"])
-            conn.commit()
+            try:
+                for e in entries:
+                    gid = self._upsert_fields_locked(conn, e)
+                    if gid is None:
+                        continue
+                    if "tags" in e:
+                        self._set_tags_locked(conn, gid, e["tags"])
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     @contextmanager
     def _reader(self):
@@ -514,26 +565,80 @@ class GalleryStore:
         with self._reader() as conn:
             return self._tags_for_ids(conn, list(ids))
 
-    def ids_matching_tags(self, term, exact=False):
+    def ids_matching_tags(self, term: str, exact: bool = False) -> set:
         """Search the persistent vocabulary, then indexed tag postings.
 
         Only distinct tag strings are scanned for substring queries. No full
         Python inverted index is built or rebuilt after a rescan. instr is
         literal: percent/underscore are not SQL wildcard operators here.
         """
-        needle = _idx_key(term)
+        needle = _needles(term)
         predicate = "normalized = ?" if exact else "instr(normalized, ?) > 0"
+        clause = " OR ".join([predicate] * len(needle))
         # A separate WAL reader can search while a bulk save holds the writer
         # lock. It sees a committed snapshot; the trigger updates vocabulary
         # and tag rows atomically. Close immediately: no connection pool growth.
         with self._reader() as conn:
             return {row[0] for row in conn.execute(
                 "SELECT DISTINCT gallery_id FROM gallery_tags WHERE tag IN "
-                "(SELECT tag FROM gallery_tag_terms WHERE " + predicate + ")", (needle,))}
+                "(SELECT tag FROM gallery_tag_terms WHERE " + clause + ")",
+                tuple(needle))}
 
     def warm_search_index(self):
         """Ensure the persistent vocabulary exists; no resident tag sets."""
         self._connect()
+
+    def ids_matching_dims(self, conds):
+        """{ids matching every (dim, op, value)} — h:/w: search answered by
+        SQL. op is '=', '>' or '<'. Rows without a stored dimension never
+        match, so a negated term's set subtracts cleanly: undimensioned rows
+        (videos, not yet backfilled) stay in the result."""
+        if not conds:
+            return set()
+        clause = " AND ".join(
+            f"{col} IS NOT NULL AND {col} {sqlop} ?" for col, sqlop, _ in conds)
+        args = tuple(v for _, _, v in conds)
+        with self._reader() as conn:
+            return {r[0] for r in conn.execute(
+                f"SELECT id FROM gallery WHERE {clause}", args)}
+
+    def entries_missing_dims(self, limit):
+        """[(id, filepath)] for the dimension backfill, oldest first.
+        width = -1 marks a row probed and undimensionable (video or corrupt
+        file) so it is not re-probed forever."""
+        with self._reader() as conn:
+            return [(r[0], r[1]) for r in conn.execute(
+                "SELECT id, filepath FROM gallery "
+                "WHERE width IS NULL AND height IS NULL AND filepath IS NOT NULL "
+                "LIMIT ?", (limit,))]
+
+    def reset_dim_sentinels(self):
+        """Un-mark image files that were probed undimensionable.
+
+        An earlier backfill resolved relative paths against the wrong
+        working directory, so whole libraries of perfectly readable jxl/png
+        rows were poisoned with the -1 sentinel. Videos (which PIL can
+        never read) keep theirs."""
+        conds = " OR ".join("lower(filepath) LIKE '%." + ext + "'"
+                            for ext in ("jxl", "jpg", "jpeg", "png", "webp",
+                                        "gif", "bmp", "tiff", "tif"))
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE gallery SET width = NULL, height = NULL "
+                "WHERE width = -1 AND height = -1 AND (" + conds + ")")
+            conn.commit()
+
+    def set_dims_bulk(self, rows):
+        """[(width, height, id)] written in one transaction — the backfill's
+        commit-per-row made 30k probes crawl at sqlite's fsync pace."""
+        if not rows:
+            return
+        with self._lock:
+            conn = self._connect()
+            conn.executemany(
+                "UPDATE gallery SET width = ?, height = ? WHERE id = ?", rows)
+            conn.commit()
 
     def all_ids(self):
         """Every gallery id — the starting set for an all-negation search."""
@@ -543,8 +648,12 @@ class GalleryStore:
     def insert_entry(self, record):
         with self._lock:
             conn = self._connect()
-            self._insert_entry_locked(conn, record)
-            conn.commit()
+            try:
+                self._insert_entry_locked(conn, record)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def update_fields(self, gid, fields):
         """Update non-tag columns only — tags are not reachable from here."""
@@ -557,17 +666,24 @@ class GalleryStore:
             # passing it raw is a "type 'list' is not supported" bind error
             vals = [json.dumps(fields[c]) if c == "sources" and fields[c] is not None
                     else fields[c] for c in cols]
-            conn.execute(
-                "UPDATE gallery SET %s WHERE id = ?"
-                % ", ".join("%s = ?" % c for c in cols),
-                vals + [gid])
-            conn.commit()
+            try:
+                conn.execute(
+                    "UPDATE gallery SET {} WHERE id = ?".format(", ".join(f"{c} = ?" for c in cols)),
+                    vals + [gid])
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def set_tags(self, gid, tags):
         with self._lock:
             conn = self._connect()
-            self._set_tags_locked(conn, gid, tags)
-            conn.commit()
+            try:
+                self._set_tags_locked(conn, gid, tags)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def set_favourite(self, ids, value):
         if isinstance(ids, str):
@@ -579,7 +695,7 @@ class GalleryStore:
             conn = self._connect()
             marks = ",".join("?" * len(ids))
             cur = conn.execute(
-                "UPDATE gallery SET favourite = ? WHERE id IN (%s)" % marks,
+                f"UPDATE gallery SET favourite = ? WHERE id IN ({marks})",
                 [1 if value else 0] + ids)
             conn.commit()
             return cur.rowcount
@@ -620,35 +736,173 @@ class GalleryStore:
     # --- image history -------------------------------------------------------
 
     def history_all(self):
-        conn = self._connect()
-        out = []
-        for row in conn.execute(
-                "SELECT site, filename, filepath, tags, downloaded_at "
-                "FROM image_history ORDER BY seq DESC"):
+        with self._lock:
+            conn = self._connect()
+            out = []
+            for row in conn.execute(
+                    "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                    "FROM image_history ORDER BY seq DESC"):
+                d = dict(row)
+                try:
+                    d["tags"] = json.loads(d.get("tags") or "{}")
+                except Exception:
+                    d["tags"] = {}
+                out.append(d)
+            return out
+
+    def history_page(self, limit: int, offset: int, terms=None,
+                     from_ts=None, to_ts=None) -> tuple:
+        """Paged read for the History tab (newest first).
+
+        terms: every term must appear in the same haystack the frontend
+        matched client-side (site + filepath + all tag values, lowercased,
+        underscores as spaces). from_ts/to_ts bound downloaded_at (seconds).
+        Returns (rows, total_matched) — total covers the whole filter so the
+        client knows when to stop paging.
+        """
+        terms = [t for t in (terms or []) if t]
+        with self._reader() as conn:
+            if not terms and from_ts is None and to_ts is None:
+                # fast path: one indexed page straight from SQL — the full
+                # scan below re-parses every row's tags JSON per page view
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                    "FROM image_history ORDER BY seq DESC LIMIT ? OFFSET ?",
+                    (limit, offset))]
+                total = conn.execute("SELECT COUNT(*) FROM image_history").fetchone()[0]
+                for d in rows:
+                    try:
+                        d["tags"] = json.loads(d.get("tags") or "{}")
+                    except Exception:
+                        d["tags"] = {}
+                return rows, total
+            # shortcut: filtered search still decodes every row; move to FTS5
+            # if history grows past ~50k rows
+            rows = []
+            for row in conn.execute(
+                    "SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                    "FROM image_history ORDER BY seq DESC"):
+                d = dict(row)
+                try:
+                    d["tags"] = json.loads(d.get("tags") or "{}")
+                except Exception:
+                    d["tags"] = {}
+                rows.append(d)
+        if terms or from_ts or to_ts:
+            # tags can be stored with \\uXXXX escapes (e.g. >_\\u003c for >_<)
+            # — decode them so a user's search of the DISPLAYED tag matches
+            _UNI_ESC = re.compile(r"\\[uU]([0-9a-fA-F]{4})")
+
+            def _hay(d):
+                tag_vals = []
+                for v in (d.get("tags") or {}).values():
+                    if isinstance(v, list):
+                        tag_vals.extend(str(t) for t in v)
+                return _UNI_ESC.sub(lambda m: chr(int(m.group(1), 16)),
+                                    (d.get("site") or "") + " "
+                                    + (d.get("filepath") or d.get("filename") or "") + " "
+                                    + " ".join(tag_vals)).lower().replace("_", " ")
+
+            def _ok(d):
+                t = d.get("downloaded_at") or 0
+                if from_ts is not None and t < from_ts:
+                    return False
+                if to_ts is not None and t > to_ts:
+                    return False
+                hay = _hay(d)
+                return all(term in hay for term in terms)
+            rows = [d for d in rows if _ok(d)]
+        return rows[offset:offset + limit], len(rows)
+
+    def history_get(self, filename, filepath=None):
+        """One row by identity — exact filepath first, else newest filename
+        match. The viewer's tag box calls this per opened image instead of
+        paging/refetching the whole history."""
+        with self._lock:
+            conn = self._connect()
+            sel = ("SELECT seq AS history_id, site, filename, filepath, tags, downloaded_at "
+                   "FROM image_history ")
+            row = None
+            if filepath:
+                row = conn.execute(sel + "WHERE filepath = ? ORDER BY seq DESC LIMIT 1",
+                                   (filepath,)).fetchone()
+            if row is None and filename:
+                row = conn.execute(sel + "WHERE filename = ? ORDER BY seq DESC LIMIT 1",
+                                   (filename,)).fetchone()
+            if row is None:
+                return None
             d = dict(row)
             try:
                 d["tags"] = json.loads(d.get("tags") or "{}")
             except Exception:
                 d["tags"] = {}
-            out.append(d)
-        return out
+            return d
 
     def history_insert(self, entry):
         with self._lock:
             conn = self._connect()
-            cur = conn.execute(
-                """INSERT INTO image_history
-                   (site, filename, filepath, tags, downloaded_at)
-                   VALUES (?,?,?,?,?)""",
-                (entry.get("site"), entry.get("filename"), entry.get("filepath"),
-                 json.dumps(entry.get("tags") or {}), entry.get("downloaded_at")))
-            conn.commit()
+            try:
+                cur = conn.execute(
+                    """INSERT INTO image_history
+                       (site, filename, filepath, tags, downloaded_at)
+                       VALUES (?,?,?,?,?)""",
+                    (entry.get("site"), entry.get("filename"), entry.get("filepath"),
+                     json.dumps(entry.get("tags") or {}), entry.get("downloaded_at")))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             return cur.lastrowid
 
     def history_delete(self, filename):
+        """Legacy basename delete; callers should prefer ID/path methods."""
         with self._lock:
             conn = self._connect()
             cur = conn.execute("DELETE FROM image_history WHERE filename = ?", (filename,))
+            conn.commit()
+            return cur.rowcount
+
+    def history_delete_by_id(self, history_id):
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute("DELETE FROM image_history WHERE seq = ?", (int(history_id),))
+            conn.commit()
+            return cur.rowcount
+
+    def history_count_by_filename(self, filename):
+        with self._reader() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM image_history WHERE filename = ?", (filename,)
+            ).fetchone()[0]
+
+    def history_delete_by_filepath(self, filepath):
+        """Delete only history rows for this exact stored filepath."""
+        path = str(filepath or "")
+        if not path:
+            return 0
+        normalized = path.replace("\\", "/")
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM image_history WHERE filepath = ? "
+                "OR REPLACE(filepath, '\\', '/') = ?",
+                (path, normalized),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def history_delete_by_site_filepath(self, site, filepath):
+        path = str(filepath or "")
+        if not path:
+            return 0
+        normalized = path.replace("\\", "/")
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM image_history WHERE site = ? AND (filepath = ? "
+                "OR REPLACE(filepath, '\\', '/') = ?)",
+                (site, path, normalized),
+            )
             conn.commit()
             return cur.rowcount
 
@@ -686,8 +940,22 @@ class GalleryStore:
     def close(self):
         with self._lock:
             if self._conn is not None:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except sqlite3.Error:
+                    pass
                 self._conn.close()
                 self._conn = None
+
+    def checkpoint(self):
+        """Fold the WAL back into the main DB. Called after big writes so a
+        crash never has to replay a weeks-old log."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except sqlite3.Error:
+                    pass
 
 
 _store = None

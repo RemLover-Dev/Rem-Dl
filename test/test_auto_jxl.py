@@ -1,11 +1,8 @@
 """Settings-tab hook + conversion pipeline for auto JXL after download."""
-import json
 import os
 from pathlib import Path
 
 import pytest
-
-
 
 
 def test_hook_disabled_ignores_download(tmp_path, monkeypatch):

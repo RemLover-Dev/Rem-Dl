@@ -14,8 +14,8 @@ manual step, and it is safe to run twice:
   * every rename is derived from the on-disk name, so an interrupted run can
     simply be rerun — a half-renamed tree converges instead of compounding;
   * nothing is ever deleted. When two folders want the same name the contents
-    are merged and any file whose name already exists in the target is kept
-    as it is, never overwritten.
+    are merged and a file whose name already exists in the target is renamed
+    with a numeric suffix, so both survive; nothing is overwritten.
 
 Only the app's own download root is touched, never an arbitrary folder a user
 points the app at — renaming unrelated trees is not something this should do
@@ -33,22 +33,43 @@ MARKER_FILE = os.path.join(DATABASE_DIR, ".folder_policy_v2")
 MAPPING_FILE = os.path.join(DATABASE_DIR, "folder_rename_map.json")
 # a table's path column to retitle
 _PATH_TABLES = ("gallery", "image_history")
+# app-owned directories that must keep their exact names
+_INTERNAL_DIRS = {"__pycache__"}
+
+
+def _is_internal_dir(name):
+    return name.startswith(".") or name in _INTERNAL_DIRS
+
+
+def _policy_component(name, folder_component):
+    return name if _is_internal_dir(name) else folder_component(name)
 
 
 def _scan(root):
     """Every directory under root, as '/'-separated paths relative to it."""
     found = []
     for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _is_internal_dir(d)]
         for d in dirnames:
             found.append(os.path.relpath(os.path.join(dirpath, d), root).replace(os.sep, "/"))
     return found
 
 
+def _unique_path(path):
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(path):
+        path = f"{base} ({n}){ext}"
+        n += 1
+    return path
+
+
 def _merge_dir(src, dst):
     """Move everything under src into dst, then drop the emptied src.
 
-    A file whose name already exists in dst is left alone rather than
-    overwritten — two different downloads sharing a name are both wanted.
+    A file whose name already exists in dst is renamed with a numeric suffix
+    rather than overwritten — two different downloads sharing a name are both
+    wanted.
     """
     moved = kept = 0
     for dirpath, _dirnames, filenames in os.walk(src):
@@ -58,8 +79,8 @@ def _merge_dir(src, dst):
         for name in filenames:
             s, d = os.path.join(dirpath, name), os.path.join(target, name)
             if os.path.exists(d):
+                d = _unique_path(d)
                 kept += 1
-                continue
             shutil.move(s, d)
             moved += 1
     shutil.rmtree(src, ignore_errors=True)
@@ -70,7 +91,7 @@ def _rename_tree(root, folder_component):
     dirs = _scan(root)
     # deepest first: renaming a parent first would strand its children's paths
     todo = sorted(
-        ((d, "/".join(folder_component(p) for p in d.split("/"))) for d in dirs),
+        ((d, "/".join(_policy_component(p, folder_component) for p in d.split("/"))) for d in dirs),
         key=lambda kv: kv[0].count("/"), reverse=True)
     todo = [(old, new) for old, new in todo if old != new]
 
@@ -103,7 +124,7 @@ def _rename_tree(root, folder_component):
             skipped += 1
 
     # the mapping is what makes this reversible, so write it even on a rerun
-    mapping = {d: "/".join(folder_component(p) for p in d.split("/")) for d in _scan(root)}
+    mapping = {d: "/".join(_policy_component(p, folder_component) for p in d.split("/")) for d in _scan(root)}
     try:
         os.makedirs(DATABASE_DIR, exist_ok=True)
         with open(MAPPING_FILE, "w", encoding="utf-8") as fh:
@@ -136,7 +157,9 @@ def _retitle_paths(root, folder_component):
                 if len(parts) < 2:
                     continue
                 *dirs, filename = parts
-                new_parts = [folder_component(d) for d in dirs] + [filename]
+                if dirs and _is_internal_dir(dirs[0]):
+                    continue
+                new_parts = [_policy_component(d, folder_component) for d in dirs] + [filename]
                 new_path = "/".join(new_parts)
                 if new_path != filepath:
                     # the rename pass can skip a directory (locked file,
@@ -194,7 +217,7 @@ def migrate_folder_policy(root, force=False):
     _touch_marker()
     if renamed or merged or rewritten:
         print(f"Folder naming policy applied: {renamed} folders renamed, "
-              f"{merged} merged ({kept} name clashes kept as-is), "
+              f"{merged} merged ({kept} name clashes renamed), "
               f"{rewritten} stored paths retitled, {skipped} skipped.")
         if unresolved:
             print(f"  {unresolved} stored paths still point at files that are not "

@@ -13,7 +13,7 @@ We are thrilled to present **Rem 5.6 (Rems Dl v5.6.0)**! This major release intr
 
 ### 🌐 Hardened Headless, Server & Docker Operation
 - **Persistent Headless Daemon:** In headless, server (`--headless`, `--server`), or Docker environments, closing browser tabs will **not** terminate the process.
-- **Docker Image Updates:** Official container builds on GHCR with full dependency packaging (including `PySocks` and `pinterest-dl`).
+- **Docker Image Updates:** Official container builds on GHCR with full dependency packaging (including `PySocks`).
 - **Secure Thumbnail Proxy:** Thread-safe notification and thumbnail caching with strict SSRF filtering and allowed host verification.
 
 ### 🛡️ Scraper Resilience & Rate Limiting

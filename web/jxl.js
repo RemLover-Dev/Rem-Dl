@@ -34,10 +34,17 @@
     function render(next) {
         job = next;
         controls();
+        // dot on the Settings tab while a conversion runs — poll keeps going
+        // while the job is active even from another tab, so this stays live
+        const dot = $('jxlDot');
+        if (dot) dot.style.display = active(job) ? 'inline-block' : 'none';
         const done = (job.completed || 0) + (job.failed || 0);
+        // in-flight encodes add a fractional step so the bar moves inside a file
+        const inflight = job.progress || 0;
         $('jxlProgress').max = Math.max(job.total || 1, 1);
-        $('jxlProgress').value = done;
+        $('jxlProgress').value = Math.min(job.total || 1, done + inflight);
         let message = job.state === 'idle' ? 'Ready. Verified results replace source images in the same folder.' : `${job.state}: ${done}/${job.total || 0} processed · ${job.completed || 0} completed · ${job.failed || 0} failed`;
+        if (inflight > 0) message += ` · ${Math.round((done + inflight) * 100 / Math.max(job.total || 1, 1))}%`;
         if (job.parallel_workers) message += ` · ${(job.active || []).length} active / ${job.parallel_workers} slots · ${job.cpu_threads} CPU threads shared`;
         if (job.current) message += ' · ' + job.current;
         if (job.error) message += ' · ' + job.error;
@@ -81,7 +88,13 @@
                 $('jxlStatus').textContent = 'Install the JPEG XL add-on in the Python environment running Rems-Dl: python -m pip install -r requirements-jxl.txt, then restart.';
             }
             schedule();
-        } catch (error) { if (epoch === requestEpoch) $('jxlStatus').textContent = error.message; }
+        } catch (error) {
+            if (epoch === requestEpoch) {
+                $('jxlStatus').textContent = error.message;
+                // a single failed poll must not stop the live bar for good
+                if (active(job)) schedule();
+            }
+        }
         finally { fetching = false; }
     }
     async function browse(kind) {
@@ -115,6 +128,7 @@
     const options = $('Options');
     new MutationObserver(() => {if (options.style.display !== 'none') refresh();}).observe(options, {attributes:true, attributeFilter:['style']});
     if (options.style.display !== 'none') refresh();
+    else refresh(); // one status fetch at load: a job active since before page load lights the dot
 
     const comparison = (function () {
         const modal = $('jxlCompareModal'), canvas = $('jxlCompareCanvas'), context = canvas.getContext('2d');
@@ -181,7 +195,7 @@
             center=center.map((c,i)=>c+(cursor[i]-viewport[i]/2)/zoom-(cursor[i]-viewport[i]/2)/next);
             zoom=next;fitting=false;clamp();requestDraw();
         }
-        function load(url) {return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('Unable to load comparison. Available memory may be insufficient, or the files may have changed.'));img.src=url;});}
+        function load(url) {return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('Unable to load comparison. Available memory may be insufficient, or the files may have changed.'));img.src=(typeof withBase!=='undefined')?withBase(url):url;});}
         async function modeChanged() {
             $('jxlMixLabel').textContent=mode()==='Fade'?'Converted opacity':'Original reveal';
             $('jxlMix').disabled=!['Reveal','Fade'].includes(mode());$('jxlDiffGain').disabled=mode()!=='Difference';

@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 from core.shared import STOP_EVENTS, BaseDownloader
 
@@ -10,16 +11,22 @@ class _StopJoinWorker(BaseDownloader):
     def __init__(self):
         super().__init__("test_stop_join", "Test:StopJoin", 8, {"anti_ban_pause": 0})
 
-    async def _create_session(self):
+    async def _create_session(self) -> Any:
         self.proxy = None
 
     async def scraper_task(self):
+        queue = self.download_queue
+        assert queue is not None
         for i in range(8):
-            self.download_queue.put_nowait(
+            queue.put_nowait(
                 (f"url{i}", f"/tmp/{i}.jpg", f"{i}.jpg", ["t"], [], 0,
                  None, None, None, None, None, None, None))
 
-    async def _async_download_file(self, *item):
+    async def _async_download_file(self, url, filepath, filename, tags_list,
+                                   artists, file_size=0, characters=None,
+                                   copyrights=None, metadata_tags=None,
+                                   outfits=None, groups=None, hair=None,
+                                   eyes=None, rating=None):
         while not self.stop_event.is_set():
             await asyncio.sleep(0.02)
         return False

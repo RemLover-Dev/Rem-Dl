@@ -102,6 +102,7 @@ def test_watchers_survive_corrupt_store(tmp_path, monkeypatch):
     assert [w["tags"] for w in ws] == [["ringeko-chan"]]
 
     out, err = watchers.update("w_x", {"tags": ["mika_pikazo"]})
+    assert out is not None
     assert err is None and out["tags"] == ["mika_pikazo"]
     with open(f, encoding="utf-8") as fh:
         healed = json.load(fh)

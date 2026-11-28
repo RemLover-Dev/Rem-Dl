@@ -28,6 +28,7 @@ import sys
 import time
 import urllib.parse
 from collections import Counter
+from typing import cast
 
 from core import shared
 
@@ -283,10 +284,16 @@ def _embed(path, tags, site):
     ext = os.path.splitext(path)[1].lower()
     if ext not in shared.EMBEDDABLE or not os.path.isfile(path):
         return False
+    old_sites = []
+    old = shared.read_image_metadata(path)
+    if old:
+        from backfill_tags import parse_meta
+        old_sites, _t = parse_meta(old)
     shared.write_image_metadata(
         path, tags.get("tag", []), tags.get("artist", []), site,
         tags.get("character"), tags.get("copyright"), tags.get("metadata"),
-        tags.get("outfit"), tags.get("group"), tags.get("hair"), tags.get("eyes"))
+        tags.get("outfit"), tags.get("group"), tags.get("hair"), tags.get("eyes"),
+        extra_sites=old_sites[1:])
     return True
 
 
@@ -298,7 +305,7 @@ def _upgrade(path, post):
     url = post.get("file_url")
     if not url or not post.get("md5"):
         return False
-    data = _get(url, {}, parse="content", timeout=300)
+    data = cast(bytes, _get(url, {}, parse="content", timeout=300))
     if hashlib.md5(data).hexdigest() != str(post["md5"]).lower():
         return False
     tmp = path + ".fullsize"
@@ -441,7 +448,7 @@ def refetch_gallery_bare(limit=None, dry=False, entries=None, progress=None,
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--limit", type=int, default=None,
                         help="stop after N bare entries")
     parser.add_argument("--dry", action="store_true", help="report only")

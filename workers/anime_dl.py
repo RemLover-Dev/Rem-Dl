@@ -2,6 +2,7 @@ import asyncio
 import os
 import threading
 import time
+from typing import Any, cast
 
 from curl_cffi import requests as curl_requests
 
@@ -13,6 +14,7 @@ from core.shared import (
     add_to_gallery,
     build_tagd,
     check_duplicate,
+    dims_log_token,
     folder_component,
     pace_wait,
     safe_ensure_dir,
@@ -61,20 +63,24 @@ def _rate_limit_session(session, rate=_SITE_RATE):
     return session
 
 class AnimeDlWorker(BaseDownloader):
-    def __init__(self, tag, amount, net_config):
+    def __init__(self, tag, amount, net_config, exclusions=None):
         super().__init__("anime_dl", "AnimePictures", amount, net_config)
         self.tag = tag.strip().lower()
         toks = self.tag.split()
         # site search has no '-' operator (live: "-x" is just ANDed as "x")
         # — dashes are stripped from the query and filtered client-side
         self.exclude_tags = [t[1:] for t in toks if t.startswith('-') and len(t) > 1]
+        for t in exclusions or []:
+            t = str(t).strip().lstrip('-')
+            if t and t not in self.exclude_tags:
+                self.exclude_tags.append(t)
         self._exclude_norm = {t.replace("_", " ").strip().lower() for t in self.exclude_tags}
         self.tag = " ".join(t for t in toks if not t.startswith('-'))
         self.tag_slug = folder_component(self.tag, fallback="anime_pictures")
         self.tag_dir = os.path.join(self.site_root, self.tag_slug)
         safe_ensure_dir(self.tag_dir)
         
-        self.curl_session = None
+        self.curl_session: Any = None
 
     def _excluded(self, tag_names):
         if not self._exclude_norm:
@@ -104,7 +110,9 @@ class AnimeDlWorker(BaseDownloader):
                 resp = await asyncio.to_thread(
                     self.curl_session.get,
                     url,
-                    timeout=600,
+                    # stream mode: curl_cffi maps the tuple's second value to
+                    # the LOW_SPEED stall bound — a dead stream can't hang 10m
+                    timeout=(10, 30),
                     stream=True,
                     headers={"Referer": "https://anime-pictures.net/"}
                 )
@@ -119,21 +127,24 @@ class AnimeDlWorker(BaseDownloader):
                 def _stream_body():
                     chunks = []
                     got = 0
-                    with open(part_path, "wb") as f:
-                        # curl ignores chunk_size and picks its own chunking
-                        for chunk in resp.iter_content():
-                            if not chunk:
-                                continue
-                            if self.stop_event.is_set():
-                                break
-                            f.write(chunk)
-                            chunks.append(chunk)
-                            got += len(chunk)
-                            now = time.monotonic()
-                            if total and now - self._last_progress_emit >= 0.2:
-                                self._last_progress_emit = now
-                                self._inflight[filepath] = got / total
-                                loop.call_soon_threadsafe(self._emit_progress)
+                    try:
+                        with open(part_path, "wb") as f:
+                            # curl ignores chunk_size and picks its own chunking
+                            for chunk in resp.iter_content():
+                                if not chunk:
+                                    continue
+                                if self.stop_event.is_set():
+                                    break
+                                f.write(chunk)
+                                chunks.append(chunk)
+                                got += len(chunk)
+                                now = time.monotonic()
+                                if total and now - self._last_progress_emit >= 0.2:
+                                    self._last_progress_emit = now
+                                    self._inflight[filepath] = got / total
+                                    loop.call_soon_threadsafe(self._emit_progress)
+                    finally:
+                        resp.close()
                     return b"".join(chunks)
 
                 content = await asyncio.to_thread(_stream_body)
@@ -160,13 +171,23 @@ class AnimeDlWorker(BaseDownloader):
                         pass
                     self.enqueued_count -= 1
                     self.duplicate_count += 1
-                    self._remember_filename(filename)
+                    await asyncio.to_thread(self._remember_filename, filename)
                     await asyncio.to_thread(absorb_duplicate, dup, self.name, tags_list,
                                             artists, characters, copyrights,
                                             metadata_tags, outfits, groups, hair, eyes)
                     return False
 
                 self.downloaded_count += 1
+                # the post that produced this file is no longer "new" — drop
+                # its watcher notification (URL/filename carry the site's
+                # hash or the post id, so no post_id plumbing is needed)
+                try:
+                    from core import notifications as _notif
+                    await asyncio.to_thread(_notif.drop_downloaded,
+                                            _notif.source_for_worker(self.name),
+                                            url, filename, generated["md5"])
+                except Exception as e:
+                    self.log(f"Notification prune skipped: {e}")
                 self.dl_history.add(filename)
                 await asyncio.to_thread(save_history, self.site_root, self.dl_history)
 
@@ -190,7 +211,7 @@ class AnimeDlWorker(BaseDownloader):
                 # ponytail: metadata must land before gallery publish, else thumbs read a half-written file
                 await asyncio.to_thread(write_image_metadata, filepath, tags_list, artists, self.name, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
                 await asyncio.to_thread(add_to_gallery, self.name, filename, rel_path, tags_list, artists, characters, copyrights, metadata_tags, outfits, groups, hair, eyes)
-                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}")
+                self.log(f"[SUCCESS] Downloaded {filename} ({self.downloaded_count}/{target_total}) [{pct}%] |PATH| {rel_path} |TAGS| {top_tags} |TAGD| {tagd}{dims_log_token(filepath)}")
                 return True
 
             except Exception as e:
@@ -230,7 +251,7 @@ class AnimeDlWorker(BaseDownloader):
             return []
         kind = {1: "character", 4: "artist", 5: "copyright", 7: "metadata"}
         return [{"name": t["tag"].replace("_", " "), "count": t.get("num_pub", t.get("num", 0)),
-                 "kind": kind.get(t.get("type"), "tag")}
+                 "kind": kind.get(cast(int, t.get("type")), "tag")}
                 for t in r2.json().get("tags", [])
                 if isinstance(t, dict) and t.get("tag")]
 
@@ -314,6 +335,10 @@ class AnimeDlWorker(BaseDownloader):
                     done, pending = await asyncio.wait(
                         pending, return_when=asyncio.FIRST_COMPLETED)
                     for fut in done:
+                        # the wait() condition only guards the round, so a whole
+                        # batch of finished details could blow past the amount
+                        if collected >= need:
+                            break
                         if fut.cancelled():
                             continue
                         try:
@@ -370,5 +395,5 @@ class AnimeDlWorker(BaseDownloader):
             self.log(f"Enqueued {collected} item{'s' if collected != 1 else ''}.")
 
 
-def worker_anime_dl(tag, amount, net_config):
-    AnimeDlWorker(tag, amount, net_config).run()
+def worker_anime_dl(tag, amount, net_config, exclusions=None):
+    AnimeDlWorker(tag, amount, net_config, exclusions).run()

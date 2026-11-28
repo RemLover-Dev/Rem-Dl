@@ -37,14 +37,12 @@ licenses for the parts they cover.
    file and https://www.gnu.org/licenses/old-licenses/gpl-2.0.html.
 
 2. gallery-dl tool (external, optional, never bundled) -- GPL-2.0-only
-   The Zerochan worker can drive a separately installed copy of gallery-dl
-   out-of-process (``python -m gallery_dl``). No gallery-dl code is shipped
-   in this repository or inside the prebuilt binaries. At startup (source
-   runs only), core/gallery_dl_interop.py (MIT, our own code) may enable the
-   ``page-html`` option inside the user's *own installed copy* of
-   gallery-dl; frozen builds skip this and use the built-in Zerochan JSON
-   API engine instead. gallery-dl remains governed solely by its own
-   GPL-2.0-only license: https://codeberg.org/mikf/gallery-dl
+   The Zerochan worker and the Pixiv OAuth helper flow can drive a
+   separately installed copy of gallery-dl out-of-process (``python -m
+   gallery_dl``). No gallery-dl code is shipped in this repository or inside
+   the prebuilt binaries, and no part of it is modified at runtime.
+   gallery-dl remains governed solely by its own GPL-2.0-only license:
+   https://codeberg.org/mikf/gallery-dl
 
 3. rule34Py library (external dependency, bundled in binaries) -- GPL-3.0-only
    The Rule34 worker imports the rule34Py package

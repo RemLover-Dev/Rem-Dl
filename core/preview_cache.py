@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import weakref
 
 _locks = weakref.WeakValueDictionary()
@@ -42,21 +43,72 @@ def _has_audio(src: str) -> bool:
     return audio
 
 
-def _key(src: str) -> str:
-    st = os.stat(src)
+def _key(src: str, stat_info=None) -> str:
+    if stat_info is None:
+        st = os.stat(src)
+        mtime_ns, size = st.st_mtime_ns, st.st_size
+    else:
+        mtime_ns, size = stat_info
     return hashlib.sha1(
-        f"{os.path.abspath(src)}:{st.st_mtime_ns}:{st.st_size}".encode()).hexdigest()
+        f"{os.path.abspath(src)}:{mtime_ns}:{size}".encode()).hexdigest()
 
 
-def _cache_path(src: str, cache_dir: str) -> str:
-    return os.path.join(cache_dir, f"{_key(src)}.mp4")
+def _cache_path(src: str, cache_dir: str, stat_info=None) -> str:
+    return os.path.join(cache_dir, f"{_key(src, stat_info)}.mp4")
 
 
-def evict(src: str, cache_dir: str) -> bool:
-    """Drop the cached remux for src. Call while src still exists — the key
-    derives from its mtime/size. Returns True if a cache file was removed."""
+def _touch(path: str) -> None:
+    """Stamp a served cache file so prune_older_than sees real last use.
+
+    The remux is created once and only read after that — without this, mtime
+    means 'created', and a preview the user opens daily would be pruned."""
     try:
-        os.remove(_cache_path(src, cache_dir))
+        os.utime(path)
+    except OSError:
+        pass
+
+
+def touch(src: str, cache_dir: str) -> None:
+    """Refresh the remux's last-use stamp when the original is played."""
+    try:
+        _touch(_cache_path(src, cache_dir))
+    except OSError:
+        pass
+
+
+def prune_older_than(cache_dir: str, days: int = 30) -> int:
+    """Delete remux copies not served for `days`.
+
+    Last use is max(mtime, atime): serving stamps mtime, and where utime
+    cannot write it the read still bumps atime, so a viewed preview survives.
+    """
+    cutoff = time.time() - days * 86400
+    try:
+        names = os.listdir(cache_dir)
+    except OSError:
+        return 0
+    removed = 0
+    for name in names:
+        if not name.endswith(".mp4"):
+            continue
+        path = os.path.join(cache_dir, name)
+        try:
+            if max(os.path.getmtime(path), os.path.getatime(path)) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def evict(src: str, cache_dir: str, stat_info=None) -> bool:
+    """Drop the cached remux for src.
+
+    Normally call before unlink. A dedup keep-larger hook may call after the
+    old file was removed and supply its pre-unlink ``(mtime_ns, size)`` pair.
+    """
+    try:
+        os.remove(_cache_path(src, cache_dir, stat_info))
         return True
     except OSError:
         return False
@@ -68,6 +120,7 @@ def ready_for(src: str, cache_dir: str):
     generation is the caller's business, on a thread that isn't a request)."""
     dst = _cache_path(src, cache_dir)
     if os.path.exists(dst):
+        _touch(dst)
         return dst
     key = _key(src)
     with _guard:
@@ -82,9 +135,11 @@ def preview_path(src: str, cache_dir: str) -> str:
     """Return a path to a video-only copy of src (or src itself if it has no audio)."""
     dst = _cache_path(src, cache_dir)
     if os.path.exists(dst):
+        _touch(dst)
         return dst
     with _lock(dst):
         if os.path.exists(dst):
+            _touch(dst)
             return dst
         key = _key(src)
         with _guard:
@@ -97,7 +152,7 @@ def preview_path(src: str, cache_dir: str) -> str:
         os.close(fd)
         try:
             subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", src,
+                ["ffmpeg", "-nostdin", "-y", "-v", "error", "-threads", "1", "-i", src,
                  "-map", "0:v:0", "-an", "-c:v", "copy",
                  "-movflags", "+faststart", tmp],
                 check=True, timeout=120)
