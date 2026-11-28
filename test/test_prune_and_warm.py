@@ -31,7 +31,9 @@ def _make(master, rel):
 def test_prune_dead_entries_keeps_offline_root(tmp_path, monkeypatch):
     monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
     _make(tmp_path, "Zerochan/a.png")
-    key = "deadbeef01"
+    root = "/mnt/offline-hdd/Rem"
+    key = Rems_Dl._root_key(root)
+    monkeypatch.setattr(Rems_Dl, "_configured_gallery_roots", lambda: [root])
     gallery = {"images": [
         {"filename": "a.png", "filepath": "Zerochan/a.png"},
         {"filename": "gone.png", "filepath": "Zerochan/gone.png"},
@@ -44,6 +46,19 @@ def test_prune_dead_entries_keeps_offline_root(tmp_path, monkeypatch):
     # offline-root row (link itself missing) is kept
     assert sorted(r["filename"] for r in removed_names) == ["empty.png", "gone.png"]
     assert names == ["a.png", "hdd.png"]
+
+
+def test_prune_drops_rows_of_removed_root(tmp_path, monkeypatch):
+    """A root the user removed from the list must not leave ghost cards."""
+    monkeypatch.setattr(Rems_Dl, "MASTER_FOLDER", str(tmp_path))
+    key = Rems_Dl._root_key("/mnt/removed-hdd/Rem")
+    monkeypatch.setattr(Rems_Dl, "_configured_gallery_roots", lambda: [])
+    gallery = {"images": [
+        {"filename": "hdd.png", "filepath": f".gallery_roots/{key}/Danbooru/hdd.png"},
+    ]}
+    removed_names = Rems_Dl._prune_dead_gallery_entries(gallery)
+    assert [r["filename"] for r in removed_names] == ["hdd.png"]
+    assert gallery["images"] == []
 
 
 def test_prune_keeps_rows_when_master_root_is_missing(tmp_path, monkeypatch):

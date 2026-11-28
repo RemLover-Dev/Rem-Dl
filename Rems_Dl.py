@@ -2902,7 +2902,9 @@ def _ensure_root_link(root):
     return link
 
 
-def _gallery_roots():
+def _configured_gallery_roots():
+    """Every saved extra root, existing or not — a missing one is an offline
+    drive and must stay visible so the user can remove it."""
     try:
         raw = DatabaseManager.load_ui_config().get("gallery_roots") or []
     except Exception:
@@ -2912,9 +2914,13 @@ def _gallery_roots():
         for r in raw:
             if isinstance(r, str) and r.strip():
                 p = os.path.realpath(os.path.expanduser(r.strip()))
-                if os.path.isdir(p) and p != os.path.realpath(MASTER_FOLDER):
+                if p != os.path.realpath(MASTER_FOLDER):
                     roots.append(p)
     return roots
+
+
+def _gallery_roots():
+    return [p for p in _configured_gallery_roots() if os.path.isdir(p)]
 
 
 def _gallery_root_bases():
@@ -2990,7 +2996,11 @@ def gallery_roots_manage():
                 _ensure_root_link(r)
             except OSError:
                 pass
-        return jsonify(master=os.path.realpath(MASTER_FOLDER), roots=roots)
+        # configured roots whose folder is gone (unplugged drive): still list
+        # them so the UI can offer removal instead of hiding the ghost rows
+        offline = [r for r in _configured_gallery_roots() if r not in roots]
+        return jsonify(master=os.path.realpath(MASTER_FOLDER), roots=roots,
+                       offline=offline)
     payload = request.get_json(silent=True) or {}
     try:
         saved = list(DatabaseManager.load_ui_config().get("gallery_roots") or [])
@@ -5337,6 +5347,9 @@ def _prune_dead_gallery_entries(gallery, known_paths=None):
     get the isfile check, so a fresh download is never culled."""
     if not _master_root_accessible():
         return []
+    # an offline root keeps its rows only while it is still configured;
+    # once the user removes it, its ghost rows must go
+    configured_keys = {_root_key(r) for r in _configured_gallery_roots()}
     kept, removed_names = [], []
     for i in gallery["images"]:
         fp = i.get("filepath", "")
@@ -5349,6 +5362,7 @@ def _prune_dead_gallery_entries(gallery, known_paths=None):
             continue
         parts = fp.replace("\\", "/").split("/")
         if (len(parts) > 2 and parts[0] == _ROOTS_LINK_DIR
+                and parts[1] in configured_keys
                 and not os.path.lexists(
                     os.path.join(MASTER_FOLDER, parts[0], parts[1]))):
             kept.append(i)

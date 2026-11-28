@@ -250,11 +250,29 @@ def test_gallery_roots_reject_home_and_its_ancestors(client):
         assert r.status_code == 400, path
 
 
-def test_gallery_roots_reject_outside_allowed_roots(client, tmp_path):
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    r = client.post("/api/gallery/roots", json={"path": str(outside)}, headers=H)
+def test_gallery_roots_reject_outside_allowed_roots(client):
+    # tmp_path sits inside the user profile on Windows (so it is a valid
+    # home folder there); a sibling of home is outside the allowed roots on
+    # every OS and needs no mkdir — the guard rejects it before isdir.
+    home = os.path.realpath(os.path.expanduser("~"))
+    outside = os.path.join(os.path.dirname(home), "rem_dl_outside_root_test")
+    r = client.post("/api/gallery/roots", json={"path": outside}, headers=H)
     assert r.status_code == 400
+
+
+def test_offline_configured_root_listed_and_removable(client, tmp_path, monkeypatch):
+    """An unplugged drive must stay visible so its ghost rows can be removed."""
+    missing = os.path.realpath(str(tmp_path / "unplugged"))
+    monkeypatch.setattr(Rems_Dl.DatabaseManager, "load_ui_config",
+                        staticmethod(lambda: {"gallery_roots": [missing]}))
+    saved = {}
+    monkeypatch.setattr(Rems_Dl.DatabaseManager, "update_ui_config",
+                        staticmethod(lambda c: saved.update(c) or {}))
+    data = client.get("/api/gallery/roots", headers=H).get_json()
+    assert data["roots"] == [] and data["offline"] == [missing]
+    r = client.delete("/api/gallery/roots", json={"path": missing}, headers=H)
+    assert r.status_code == 200
+    assert saved.get("gallery_roots") == []
 
 
 def test_filepath_cache_resolves_each_same_named_row_by_path(client, roots_env):

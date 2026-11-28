@@ -5897,7 +5897,29 @@ function isTypingTarget(t) {
     return false;
 }
 
-// gallery pagination: arrows/PageUp/PageDown turn pages when nothing else owns the keys
+// gallery scroll: the grid is a div scroller, so arrow/PageUp/PageDown have
+// nothing to scroll when focus sits on the page body — drive it explicitly
+document.addEventListener('keydown', function(e) {
+    const gal = document.getElementById('Gallery');
+    if (!gal || gal.style.display === 'none') return;
+    const viewer = document.getElementById('galleryViewer');
+    if (viewer && viewer.style.display === 'flex') return;
+    if (document.querySelector('.gallery-dropdown-menu.open, .custom-confirm-overlay')) return;
+    if (isTypingTarget(e.target)) return;
+    const grid = document.getElementById('galleryGrid');
+    if (!grid) return;
+    const page = Math.max(80, grid.clientHeight - 40);
+    let delta = null;
+    if (e.key === 'ArrowDown') delta = 100;
+    else if (e.key === 'ArrowUp') delta = -100;
+    else if (e.key === 'PageDown') delta = page;
+    else if (e.key === 'PageUp') delta = -page;
+    if (delta === null) return;
+    e.preventDefault();
+    grid.scrollBy({ top: delta, behavior: 'smooth' });
+});
+
+// gallery pagination: ←/→ (and a/d) turn pages when nothing else owns the keys
 // (the image viewer above keeps ←/→ for next/prev image while it is open)
 // While a key is held, pages render normally but with placeholder thumbs so the
 // traversal stays visible without fetching previews for every page passed over.
@@ -5926,7 +5948,7 @@ function galleryPageNav(page) {
 // frozen repaint — swallow paging keys until the held key is released
 let _viewerKeyCooldown = false;
 let _viewerOpenedPage = null;
-const _pageKeys = new Set(['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'a', 'd']);
+const _pageKeys = new Set(['ArrowLeft', 'ArrowRight', 'a', 'd']);
 document.addEventListener('keydown', function(e) {
     const gal = document.getElementById('Gallery');
     if (!gal || gal.style.display === 'none') return;
@@ -5937,8 +5959,8 @@ document.addEventListener('keydown', function(e) {
     if (_viewerKeyCooldown && _pageKeys.has(e.key)) return;
     let page = null;
     const k = e.key.toLowerCase();
-    if (e.key === 'ArrowRight' || e.key === 'PageDown' || k === 'd') page = currentGalleryPage + 1;
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || k === 'a') page = currentGalleryPage - 1;
+    if (e.key === 'ArrowRight' || k === 'd') page = currentGalleryPage + 1;
+    else if (e.key === 'ArrowLeft' || k === 'a') page = currentGalleryPage - 1;
     if (page === null || page < 1 || page > (galleryState.total_pages || 1)) return;
     e.preventDefault();
     galleryPageNav(page);
@@ -7403,7 +7425,52 @@ function toggleViewerFav() {
     document.addEventListener('mouseup', stopViewerDrag); document.addEventListener('mouseleave', stopViewerDrag);
     async function importGallery() { if (storeGet('gallery_imported')) return; try { let resp = await fetch("/api/gallery/import", {method: "POST"}); let data = await resp.json(); if (data.success) { storeSet('gallery_imported', '1'); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } } catch (e) { console.error("gallery import failed:", e); } }
 // --- extra gallery roots (folders outside the download folder) ---
-async function loadGalleryRoots() { try { const resp = await fetch('/api/gallery/roots'); const data = await resp.json(); const list = document.getElementById('galleryRootList'); if (!list) return; list.innerHTML = ''; const mkRow = (path, removable, badge) => { const row = document.createElement('div'); row.className = 'gallery-root-item'; const span = document.createElement('span'); span.className = 'gallery-root-path'; span.textContent = path; span.title = path; row.appendChild(span); if (badge) { const b = document.createElement('em'); b.className = 'gallery-root-badge'; b.textContent = badge; row.appendChild(b); } if (removable) { const del = document.createElement('button'); del.className = 'action-btn'; del.textContent = '\u2715'; del.title = 'Stop reading this folder (image records + hashes are kept)'; del.onclick = () => removeGalleryRoot(path); row.appendChild(del); } list.appendChild(row); }; if (data.master) mkRow(data.master, false, 'main'); if (!data.roots || !data.roots.length) { if (!data.master) list.innerHTML = '<div class="gallery-roots-empty">No extra folders yet. Add an HDD path; rescan then reads its images.</div>'; else list.appendChild(Object.assign(document.createElement('div'), { className: 'gallery-roots-empty', textContent: 'No extra folders yet. Add an HDD path; rescan then reads its images.' })); return; } data.roots.forEach(p => mkRow(p, true)); } catch (e) { showToast('Could not load gallery folders: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
+async function loadGalleryRoots() {
+    try {
+        const resp = await fetch('/api/gallery/roots');
+        const data = await resp.json();
+        const list = document.getElementById('galleryRootList');
+        if (!list) return;
+        list.innerHTML = '';
+        const mkRow = (path, removable, badge) => {
+            const row = document.createElement('div');
+            row.className = 'gallery-root-item';
+            const span = document.createElement('span');
+            span.className = 'gallery-root-path';
+            span.textContent = path;
+            span.title = path;
+            row.appendChild(span);
+            if (badge) {
+                const b = document.createElement('em');
+                b.className = 'gallery-root-badge';
+                b.textContent = badge;
+                row.appendChild(b);
+            }
+            if (removable) {
+                const del = document.createElement('button');
+                del.className = 'action-btn';
+                del.textContent = '\u2715';
+                del.title = 'Stop reading this folder (image records + hashes are kept)';
+                del.onclick = () => removeGalleryRoot(path);
+                row.appendChild(del);
+            }
+            list.appendChild(row);
+        };
+        if (data.master) mkRow(data.master, false, 'main');
+        // a configured root whose folder is gone (unplugged drive) stays
+        // listed so its ghost rows can be removed
+        const offline = new Set(data.offline || []);
+        const roots = (data.roots || []).concat(data.offline || []);
+        if (!roots.length) {
+            list.appendChild(Object.assign(document.createElement('div'), {
+                className: 'gallery-roots-empty',
+                textContent: 'No extra folders yet. Add an HDD path; rescan then reads its images.'
+            }));
+            return;
+        }
+        roots.forEach(p => mkRow(p, true, offline.has(p) ? 'offline' : null));
+    } catch (e) { showToast('Could not load gallery folders: ' + (e.message || e), { warn: true, icon: WARN_ICON }); }
+}
 async function addGalleryRoot() { const input = document.getElementById('galleryRootInput'); const path = input.value.trim(); if (!path) return; try { const resp = await fetch('/api/gallery/roots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not add the folder', { warn: true, icon: WARN_ICON }); return; } input.value = ''; showToast('Folder added — scanning it now', { key: 'rescan' }); loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not add the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
 async function removeGalleryRoot(path) { try { const resp = await fetch('/api/gallery/roots', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }); const data = await resp.json(); if (!resp.ok) { showToast(data.error || 'Could not remove the folder', { warn: true, icon: WARN_ICON }); return; } loadGalleryRoots(); rescanGallery(); } catch (e) { showToast('Could not remove the folder: ' + (e.message || e), { warn: true, icon: WARN_ICON }); } }
 async function rescanGallery() { try { let resp = await fetch("/api/gallery/rescan", {method: "POST"}); let data = await resp.json(); if (data.started) { showToast("Rescan started - results will pop up when it finishes", { key: "rescan" }); return; } if (data.success) { showToast(`Rescan complete. Added ${data.added} new images, removed ${data.removed_entries ?? 0} stale entries / ${data.retained_records ?? 0} hash records kept for moved/deleted images.`, { key: "rescan" }); loadGallery(galleryPendingPage >= 2 ? galleryPendingPage : currentGalleryPage); populateGallerySiteFilter(true); } else showToast("Rescan failed", { warn: true, icon: WARN_ICON, key: "rescan" }); } catch (e) { showToast("Rescan failed: " + (e.message || e), { warn: true, icon: WARN_ICON, key: "rescan" }); } }
